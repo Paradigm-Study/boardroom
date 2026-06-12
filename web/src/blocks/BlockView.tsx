@@ -33,7 +33,7 @@ function Graph({ block, onNodeClick }: {
         id: n.id,
         position: { x: pos.x - 85, y: pos.y - 22 },
         data: { label: n.label },
-        style: { fontSize: 13, borderRadius: 8 },
+        style: { fontSize: 13, borderRadius: 8, background: '#fff', color: '#1a1a18' },
       }
     })
     const edges: Edge[] = block.edges.map((e, i) => ({
