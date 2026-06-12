@@ -55,7 +55,7 @@ export function CardView({ card }: { card: Card }) {
   return (
     <div className="fade-in" style={meta.vars}>
       <div className="card-head">
-        <span className="stage-tag"><meta.Icon size={14} strokeWidth={2.2} aria-hidden />{meta.label}</span>
+        <span className="stage-tag">{meta.label}</span>
         <h1 className="card-headline">{card.headline}</h1>
         <div className="card-meta">
           <span><Bot size={14} aria-hidden />{card.session.agent}</span>

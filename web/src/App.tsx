@@ -1,13 +1,11 @@
-import { Armchair, BellRing } from 'lucide-react'
+import { Armchair } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { fetchCards, subscribeCards } from './api.js'
 import { CardView } from './CardView.js'
-import { Inbox } from './Inbox.js'
-import { SessionRail } from './SessionRail.js'
-import { deriveSessions } from './sessions.js'
+import { TaskSidebar } from './TaskSidebar.js'
 
-function useHashRoute() {
+function useHashRoute(): string {
   const [hash, setHash] = useState(window.location.hash)
   useEffect(() => {
     const onChange = (): void => setHash(window.location.hash)
@@ -29,49 +27,36 @@ export function App() {
   }, [])
 
   const all = [...cards.values()]
-  const pendingCount = all.filter(c => c.status === 'pending').length
+  const pending = all
+    .filter(c => c.status === 'pending')
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+
   useEffect(() => {
-    document.title = pendingCount > 0 ? `(${pendingCount}) boardroom` : 'boardroom'
-  }, [pendingCount])
+    document.title = pending.length > 0 ? `(${pending.length}) boardroom` : 'boardroom'
+  }, [pending.length])
 
   const cardMatch = hash.match(/^#\/card\/(.+)$/)
-  const sessMatch = hash.match(/^#\/s\/(.+)$/)
-  const selectedSession = sessMatch ? decodeURIComponent(sessMatch[1]) : null
-  const card = cardMatch ? cards.get(cardMatch[1]) : undefined
-
-  const sessions = deriveSessions(all)
-  const visible = selectedSession ? all.filter(c => c.session.project === selectedSession) : all
-  const railSelection = card ? card.session.project : selectedSession
+  const routed = cardMatch ? cards.get(cardMatch[1]) : undefined
+  const shown = routed ?? (cardMatch ? undefined : pending[0])
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <a href="#/" className="wordmark">
-          <Armchair size={24} strokeWidth={1.8} aria-hidden />
-          boardroom
-        </a>
-        {pendingCount > 0 && (
-          <span className="pending-chip">
-            <span className="pulse" />
-            {pendingCount} waiting on you
-          </span>
-        )}
-        <span className="topbar-spacer" />
-        <span className="topbar-hint">
-          <BellRing size={13} aria-hidden />
-          agents are held until you decide
-        </span>
-      </header>
-      <div className="layout">
-        <SessionRail sessions={sessions} selected={railSelection} />
-        <main className="main-col">
-          {card
-            ? <CardView key={`${card.id}:${card.status}`} card={card} />
+    <div className="frame">
+      <TaskSidebar cards={all} selectedId={shown?.id ?? null} />
+      <main className="content">
+        <div className="content-inner">
+          {shown
+            ? <CardView key={`${shown.id}:${shown.status}`} card={shown} />
             : cardMatch
-              ? <p>Card not found.</p>
-              : <Inbox cards={visible} />}
-        </main>
-      </div>
+              ? <p style={{ color: 'var(--ink-3)' }}>Card not found.</p>
+              : (
+                <div className="zero">
+                  <Armchair size={36} strokeWidth={1.4} aria-hidden />
+                  <h2>The table is clear</h2>
+                  <p>When an agent needs a decision, the task appears on the left and a notification finds you.</p>
+                </div>
+              )}
+        </div>
+      </main>
     </div>
   )
 }
