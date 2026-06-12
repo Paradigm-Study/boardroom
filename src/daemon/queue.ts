@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import type { Card, CardResponse, DecisionAnswer } from '../shared/card.js'
+import { OTHER_OPTION_ID, type Card, type CardResponse, type DecisionAnswer } from '../shared/card.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
 
@@ -36,6 +36,12 @@ export class Queue extends EventEmitter {
       const a = answers[d.id]
       if (!a || a.chosen.length === 0) throw new ValidationError(`missing answer for decision "${d.id}"`)
       for (const chosen of a.chosen) {
+        if (chosen === OTHER_OPTION_ID) {
+          if (!a.custom?.trim()) {
+            throw new ValidationError(`decision "${d.id}": the "other" choice requires custom text`)
+          }
+          continue
+        }
         if (!d.options.some(o => o.id === chosen)) {
           throw new ValidationError(`decision "${d.id}": unknown option "${chosen}"`)
         }

@@ -1,16 +1,18 @@
+import { ArrowRight, Bot, ClipboardCopy, FileText, FolderGit2, ListChecks, Unplug } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { decideCard, offlineAnswerCard } from './api.js'
 import { BlockView } from './blocks/BlockView.js'
 import { DecisionRail } from './DecisionRail.js'
 import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
+import { STAGE } from './stage.js'
 
 export function CardView({ card }: { card: Card }) {
   const [answers, setAnswers] = useState<Record<string, DraftAnswer>>(() =>
     Object.fromEntries(
       card.decisions.map(d => {
         const saved = card.answers?.[d.id]
-        return [d.id, { chosen: saved?.chosen ?? [], note: saved?.note ?? '' }]
+        return [d.id, { chosen: saved?.chosen ?? [], note: saved?.note ?? '', custom: saved?.custom ?? '' }]
       }),
     ),
   )
@@ -19,6 +21,7 @@ export function CardView({ card }: { card: Card }) {
   const [busy, setBusy] = useState(false)
   const [offlineSummary, setOfflineSummary] = useState<string | null>(null)
 
+  const meta = STAGE[card.stage]
   const readonly = card.status === 'decided' || (card.status === 'orphaned' && !!card.answers)
   const highlightedBlocks = useMemo(() => {
     const d = card.decisions.find(d => d.id === focusedDecision)
@@ -50,24 +53,28 @@ export function CardView({ card }: { card: Card }) {
   const ready = answersComplete(card.decisions, answers)
 
   return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 19, margin: '0 0 4px' }}>{card.headline}</h1>
-        <div style={{ fontSize: 12, opacity: 0.6 }}>
-          {card.stage} · {card.session.agent} · {card.session.project}
-          {card.planRef && <> · <code>{card.planRef}</code></>}
-          {card.status !== 'pending' && <strong> · {card.status}</strong>}
+    <div className="fade-in" style={meta.vars}>
+      <div className="card-head">
+        <span className="stage-tag"><meta.Icon size={14} strokeWidth={2.2} aria-hidden />{meta.label}</span>
+        <h1 className="card-headline">{card.headline}</h1>
+        <div className="card-meta">
+          <span><Bot size={14} aria-hidden />{card.session.agent}</span>
+          <span><FolderGit2 size={14} aria-hidden />{card.session.project}</span>
+          {card.session.title && <span>{card.session.title}</span>}
+          {card.planRef && <span><FileText size={14} aria-hidden /><code>{card.planRef}</code></span>}
+          {card.status !== 'pending' && <span className={`status-chip ${card.status}`}>{card.status}</span>}
         </div>
         {card.status === 'orphaned' && !card.answers && !offlineSummary && (
-          <p style={{ fontSize: 13, background: 'light-dark(#FAEEDA, #4a3a14)', padding: '8px 12px', borderRadius: 8 }}>
-            The agent that asked this is gone. You can still answer — you'll get a summary to copy into the session yourself.
-          </p>
+          <div className="banner">
+            <Unplug size={16} aria-hidden />
+            <span>The agent that asked this is gone. You can still answer — you'll get a summary to paste into the session yourself.</span>
+          </div>
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 20, alignItems: 'start' }}>
+      <div className="card-grid">
         <div>
-          {card.blocks.length === 0 && <p style={{ opacity: 0.5, fontSize: 13 }}>No visuals attached.</p>}
+          {card.blocks.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>No visuals attached.</p>}
           {card.blocks.map(b => (
             <BlockView
               key={b.id}
@@ -78,7 +85,11 @@ export function CardView({ card }: { card: Card }) {
           ))}
         </div>
 
-        <div style={{ position: 'sticky', top: 20 }}>
+        <div className="rail">
+          <div className="rail-head">
+            <ListChecks size={14} aria-hidden />
+            Decisions <span className="count">({card.decisions.length})</span>
+          </div>
           <DecisionRail
             card={card}
             answers={answers}
@@ -89,26 +100,24 @@ export function CardView({ card }: { card: Card }) {
           />
 
           {!readonly && !offlineSummary && (
-            <button
-              disabled={!ready || busy}
-              onClick={() => void submit()}
-              style={{
-                width: '100%', padding: '10px 0', fontSize: 14, fontWeight: 600,
-                borderRadius: 10, border: 'none', color: '#fff',
-                background: ready ? '#1D9E75' : 'light-dark(#c9c8c2, #4a4a45)',
-              }}
-            >
-              {card.status === 'pending' ? 'Submit decisions' : 'Record offline answer'}
-            </button>
+            <>
+              <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
+                {card.status === 'pending' ? 'Submit decisions' : 'Record offline answer'}
+                <ArrowRight size={16} aria-hidden />
+              </button>
+              {!ready && <p className="submit-hint">Answer every decision to submit</p>}
+              {ready && card.status === 'pending' && <p className="submit-hint">The agent resumes the moment you submit</p>}
+            </>
           )}
 
-          {error && <p style={{ color: '#D85A30', fontSize: 13 }}>{error}</p>}
+          {error && <p className="error-text">{error}</p>}
 
           {offlineSummary && (
-            <div>
-              <p style={{ fontSize: 13, fontWeight: 600 }}>Copy this into the agent session:</p>
-              <textarea readOnly value={offlineSummary} style={{ width: '100%', minHeight: 120, fontSize: 12, fontFamily: 'ui-monospace, monospace', borderRadius: 8, padding: 8 }} />
-              <button onClick={() => void navigator.clipboard.writeText(offlineSummary)} style={{ marginTop: 6, padding: '6px 12px', borderRadius: 8 }}>
+            <div className="offline-out">
+              <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Paste this into the agent session:</p>
+              <textarea readOnly value={offlineSummary} />
+              <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(offlineSummary)}>
+                <ClipboardCopy size={14} aria-hidden />
                 Copy to clipboard
               </button>
             </div>

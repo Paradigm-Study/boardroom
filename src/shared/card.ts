@@ -42,9 +42,12 @@ export type Stage = z.infer<typeof Stage>
 export const CardStatus = z.enum(['pending', 'decided', 'orphaned'])
 export type CardStatus = z.infer<typeof CardStatus>
 
+export const OTHER_OPTION_ID = '__other__'
+
 export const DecisionAnswer = z.object({
   chosen: z.array(z.string()).min(1),
   note: z.string().optional(),
+  custom: z.string().optional(),
 })
 export type DecisionAnswer = z.infer<typeof DecisionAnswer>
 

@@ -64,6 +64,13 @@ describe('Queue.decide', () => {
     expect(() => queue.decide('c1', { d1: { chosen: ['a', 'b'] } })).toThrow(ValidationError)
     expect(() => queue.decide('c1', { d1: { chosen: ['b'] } })).toThrow(/requires a note/)
   })
+
+  it('accepts the "__other__" choice with custom text, rejects it without', () => {
+    queue.add(card('c1'))
+    expect(() => queue.decide('c1', { d1: { chosen: ['__other__'] } })).toThrow(/custom text/)
+    const { response } = queue.decide('c1', { d1: { chosen: ['__other__'], custom: 'split the difference' } })
+    expect(response.summary).toContain('Other: split the difference')
+  })
 })
 
 describe('Queue.orphan', () => {

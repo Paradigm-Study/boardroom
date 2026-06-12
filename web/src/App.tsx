@@ -1,3 +1,4 @@
+import { Armchair, BellRing } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { fetchCards, subscribeCards } from './api.js'
@@ -34,10 +35,23 @@ export function App() {
   const card = cardMatch ? cards.get(cardMatch[1]) : undefined
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 20px' }}>
-      <header style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 24 }}>
-        <a href="#/" style={{ fontSize: 20, fontWeight: 600, textDecoration: 'none', color: 'inherit' }}>boardroom</a>
-        {pendingCount > 0 && <span style={{ fontSize: 13, opacity: 0.7 }}>{pendingCount} pending</span>}
+    <div className="shell">
+      <header className="topbar">
+        <a href="#/" className="wordmark">
+          <Armchair size={24} strokeWidth={1.8} aria-hidden />
+          boardroom
+        </a>
+        {pendingCount > 0 && (
+          <span className="pending-chip">
+            <span className="pulse" />
+            {pendingCount} waiting on you
+          </span>
+        )}
+        <span className="topbar-spacer" />
+        <span className="topbar-hint">
+          <BellRing size={13} aria-hidden />
+          agents are held until you decide
+        </span>
       </header>
       {card
         ? <CardView key={`${card.id}:${card.status}`} card={card} />

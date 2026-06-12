@@ -1,8 +1,15 @@
+import { AlertCircle, Check, PenLine, Star } from 'lucide-react'
 import type { Card, Decision } from '../../src/shared/card.js'
-import { noteMissing, toggleChoice, type DraftAnswer } from './helpers.js'
+import { customMissing, noteMissing, OTHER_OPTION_ID, toggleChoice, type DraftAnswer } from './helpers.js'
 
-function DecisionBox({ decision, answer, readonly, focused, onFocus, onChange }: {
+function offersOther(card: Card, decision: Decision): boolean {
+  return card.stage !== 'results' && decision.id !== 'plan_verdict'
+}
+
+function DecisionBox({ card, decision, index, answer, readonly, focused, onFocus, onChange }: {
+  card: Card
   decision: Decision
+  index: number
   answer: DraftAnswer
   readonly: boolean
   focused: boolean
@@ -10,21 +17,18 @@ function DecisionBox({ decision, answer, readonly, focused, onFocus, onChange }:
   onChange(a: DraftAnswer): void
 }) {
   const needsNote = noteMissing(decision, answer)
+  const otherOn = answer.chosen.includes(OTHER_OPTION_ID)
   return (
-    <div
-      onClick={onFocus}
-      style={{
-        border: focused ? '2px solid #7C5CBF' : '1px solid light-dark(#e3e2dd, #3a3a36)',
-        borderRadius: 10, padding: 12, marginBottom: 10,
-      }}
-    >
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{decision.prompt}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+    <div className={`decision${focused ? ' focused' : ''}`} onClick={onFocus}>
+      <span className="decision-num">{String(index + 1).padStart(2, '0')}</span>
+      <p className="decision-prompt">{decision.prompt}</p>
+      <div className="opts">
         {decision.options.map(o => {
-          const chosen = answer.chosen.includes(o.id)
+          const on = answer.chosen.includes(o.id)
           return (
             <button
               key={o.id}
+              className={`opt${on ? ' on' : ''}`}
               disabled={readonly}
               title={o.detail}
               onClick={e => {
@@ -32,30 +36,55 @@ function DecisionBox({ decision, answer, readonly, focused, onFocus, onChange }:
                 onFocus()
                 onChange({ ...answer, chosen: toggleChoice(decision, answer.chosen, o.id) })
               }}
-              style={{
-                border: chosen ? '2px solid #1D9E75' : '1px solid light-dark(#c9c8c2, #4a4a45)',
-                background: chosen ? 'light-dark(#E1F5EE, #0F4437)' : 'transparent',
-                color: 'inherit', borderRadius: 8, padding: '6px 10px', fontSize: 13,
-              }}
             >
-              {o.label}{o.recommended ? ' ✓rec' : ''}
+              {on && <Check size={13} strokeWidth={2.5} aria-hidden />}
+              {o.label}
+              {o.recommended && <Star size={12} className="star" fill="currentColor" aria-hidden />}
             </button>
           )
         })}
+        {offersOther(card, decision) && (
+          <button
+            className={`opt${otherOn ? ' on' : ''}`}
+            disabled={readonly}
+            title="Answer in your own words"
+            onClick={e => {
+              e.stopPropagation()
+              onFocus()
+              onChange({ ...answer, chosen: toggleChoice(decision, answer.chosen, OTHER_OPTION_ID) })
+            }}
+          >
+            <PenLine size={13} aria-hidden />
+            Other…
+          </button>
+        )}
       </div>
+      {otherOn && (
+        <input
+          className="other-input"
+          placeholder="Type your own answer…"
+          value={answer.custom}
+          disabled={readonly}
+          autoFocus={!readonly}
+          onClick={e => e.stopPropagation()}
+          onChange={e => onChange({ ...answer, custom: e.target.value })}
+        />
+      )}
       {(answer.chosen.length > 0 || !readonly) && (
         <textarea
-          placeholder={needsNote ? 'Note required for this choice…' : 'Optional note'}
+          className={`note${needsNote ? ' needs' : ''}`}
+          placeholder={needsNote ? 'A note is required for this choice…' : 'Optional note for the agent'}
           value={answer.note}
           disabled={readonly}
+          onClick={e => e.stopPropagation()}
           onChange={e => onChange({ ...answer, note: e.target.value })}
-          style={{
-            width: '100%', marginTop: 8, fontSize: 13, fontFamily: 'inherit',
-            borderRadius: 8, padding: 8, minHeight: 36, resize: 'vertical',
-            border: needsNote ? '2px solid #D85A30' : '1px solid light-dark(#c9c8c2, #4a4a45)',
-            background: 'transparent', color: 'inherit',
-          }}
         />
+      )}
+      {needsNote && !readonly && (
+        <p className="note-hint"><AlertCircle size={12} aria-hidden />This choice goes back to the agent as an instruction — say why.</p>
+      )}
+      {otherOn && customMissing(answer) && !readonly && (
+        <p className="note-hint"><AlertCircle size={12} aria-hidden />Type your answer above.</p>
       )}
     </div>
   )
@@ -71,11 +100,13 @@ export function DecisionRail({ card, answers, readonly, focusedDecision, onFocus
 }) {
   return (
     <div>
-      {card.decisions.map(d => (
+      {card.decisions.map((d, i) => (
         <DecisionBox
           key={d.id}
+          card={card}
           decision={d}
-          answer={answers[d.id] ?? { chosen: [], note: '' }}
+          index={i}
+          answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
           readonly={readonly}
           focused={focusedDecision === d.id}
           onFocus={() => onFocusDecision(d.id)}

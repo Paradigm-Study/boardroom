@@ -1,19 +1,24 @@
 import dagre from 'dagre'
+import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { Block } from '../../../src/shared/blocks.js'
 
-const cardStyle: React.CSSProperties = {
-  border: '1px solid light-dark(#e3e2dd, #3a3a36)',
-  borderRadius: 10,
-  padding: '14px 16px',
-  marginBottom: 14,
+const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
+  markdown: { label: 'Context', Icon: FileText },
+  graph: { label: 'Structure', Icon: Network },
+  phases: { label: 'Phases', Icon: Milestone },
+  options_compare: { label: 'Trade-offs', Icon: Scale },
+  table: { label: 'Data', Icon: Table2 },
+  diff_stat: { label: 'Change footprint', Icon: FileDiff },
+  evidence: { label: 'Evidence', Icon: Terminal },
+  mermaid: { label: 'Diagram', Icon: GitFork },
 }
 
 function Markdown({ text }: { text: string }) {
-  return <div style={{ fontSize: 14, lineHeight: 1.6 }}><ReactMarkdown>{text}</ReactMarkdown></div>
+  return <div className="prose"><ReactMarkdown>{text}</ReactMarkdown></div>
 }
 
 function Graph({ block, onNodeClick }: {
@@ -33,17 +38,26 @@ function Graph({ block, onNodeClick }: {
         id: n.id,
         position: { x: pos.x - 85, y: pos.y - 22 },
         data: { label: n.label },
-        style: { fontSize: 13, borderRadius: 8, background: '#fff', color: '#1a1a18' },
+        style: {
+          fontSize: 13,
+          fontFamily: 'var(--sans)',
+          borderRadius: 10,
+          background: 'var(--surface)',
+          color: 'var(--ink)',
+          border: '1.5px solid var(--line-2)',
+        },
       }
     })
     const edges: Edge[] = block.edges.map((e, i) => ({
       id: `e${i}`, source: e.from, target: e.to, label: e.label,
+      labelStyle: { fontSize: 11, fill: 'var(--ink-2)' },
+      labelBgStyle: { fill: 'var(--surface)' },
     }))
     return { nodes, edges }
   }, [block])
 
   return (
-    <div style={{ height: Math.max(220, block.nodes.length * 52) }}>
+    <div className="reactflow-wrap" style={{ height: Math.max(220, block.nodes.length * 52) }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -53,7 +67,7 @@ function Graph({ block, onNodeClick }: {
         onNodeClick={() => onNodeClick?.()}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={16} />
+        <Background gap={18} color="var(--line-2)" />
       </ReactFlow>
     </div>
   )
@@ -61,14 +75,15 @@ function Graph({ block, onNodeClick }: {
 
 function Phases({ block }: { block: Extract<Block, { type: 'phases' }> }) {
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', flexWrap: 'wrap' }}>
+    <div className="phases">
       {block.phases.map((p, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ background: 'light-dark(#EEEDFE, #3C3489)', color: 'light-dark(#3C3489, #CECBF6)', borderRadius: 8, padding: '8px 12px' }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{i + 1}. {p.title}</div>
-            {p.summary && <div style={{ fontSize: 12, opacity: 0.8 }}>{p.summary}</div>}
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="phase">
+            <span className="phase-num">{String(i + 1).padStart(2, '0')}</span>
+            <span className="phase-title">{p.title}</span>
+            {p.summary && <div className="phase-sum">{p.summary}</div>}
           </div>
-          {i < block.phases.length - 1 && <span style={{ opacity: 0.4 }}>→</span>}
+          {i < block.phases.length - 1 && <ArrowRight size={15} className="phase-arrow" aria-hidden />}
         </div>
       ))}
     </div>
@@ -77,17 +92,13 @@ function Phases({ block }: { block: Extract<Block, { type: 'phases' }> }) {
 
 function OptionsCompare({ block }: { block: Extract<Block, { type: 'options_compare' }> }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+    <div className="compare">
       {block.options.map((o, i) => (
-        <div key={i} style={{
-          border: o.recommended ? '2px solid #1D9E75' : '1px solid light-dark(#e3e2dd, #3a3a36)',
-          borderRadius: 10, padding: 12,
-        }}>
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-            {o.label}{o.recommended && <span style={{ fontSize: 11, color: '#1D9E75', marginLeft: 6 }}>recommended</span>}
-          </div>
-          {o.pros.map((p, j) => <div key={`p${j}`} style={{ fontSize: 12 }}>+ {p}</div>)}
-          {o.cons.map((c, j) => <div key={`c${j}`} style={{ fontSize: 12, opacity: 0.7 }}>− {c}</div>)}
+        <div key={i} className={`compare-opt${o.recommended ? ' rec' : ''}`}>
+          {o.recommended && <span className="rec-badge"><BadgeCheck size={11} aria-hidden />rec</span>}
+          <div className="compare-label">{o.label}</div>
+          {o.pros.map((p, j) => <div key={`p${j}`} className="pro"><span>+</span>{p}</div>)}
+          {o.cons.map((c, j) => <div key={`c${j}`} className="con"><span>−</span>{c}</div>)}
         </div>
       ))}
     </div>
@@ -96,13 +107,13 @@ function OptionsCompare({ block }: { block: Extract<Block, { type: 'options_comp
 
 function Table({ block }: { block: Extract<Block, { type: 'table' }> }) {
   return (
-    <table style={{ borderCollapse: 'collapse', fontSize: 13, width: '100%' }}>
+    <table className="tbl">
       <thead>
-        <tr>{block.columns.map((c, i) => <th key={i} style={{ textAlign: 'left', padding: '4px 10px 4px 0', borderBottom: '1px solid light-dark(#e3e2dd, #3a3a36)' }}>{c}</th>)}</tr>
+        <tr>{block.columns.map((c, i) => <th key={i}>{c}</th>)}</tr>
       </thead>
       <tbody>
         {block.rows.map((row, i) => (
-          <tr key={i}>{row.map((cell, j) => <td key={j} style={{ padding: '4px 10px 4px 0' }}>{cell}</td>)}</tr>
+          <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>
         ))}
       </tbody>
     </table>
@@ -111,12 +122,12 @@ function Table({ block }: { block: Extract<Block, { type: 'table' }> }) {
 
 function DiffStat({ block }: { block: Extract<Block, { type: 'diff_stat' }> }) {
   return (
-    <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
+    <div className="diff">
       {block.files.map((f, i) => (
-        <div key={i} style={{ display: 'flex', gap: 10, padding: '2px 0' }}>
-          <span style={{ flex: 1 }}>{f.path}</span>
-          <span style={{ color: '#1D9E75' }}>+{f.additions}</span>
-          <span style={{ color: '#D85A30' }}>−{f.deletions}</span>
+        <div key={i} className="diff-row">
+          <span className="path">{f.path}</span>
+          <span className="add">+{f.additions}</span>
+          <span className="del">−{f.deletions}</span>
         </div>
       ))}
     </div>
@@ -124,12 +135,16 @@ function DiffStat({ block }: { block: Extract<Block, { type: 'diff_stat' }> }) {
 }
 
 function Evidence({ block }: { block: Extract<Block, { type: 'evidence' }> }) {
+  const ok = block.exitCode === 0
   return (
-    <details>
-      <summary style={{ fontSize: 13, cursor: 'pointer' }}>
-        {block.command ?? 'output'}{block.exitCode !== undefined && ` · exit ${block.exitCode}`}
+    <details className="evidence">
+      <summary>
+        {block.command ?? 'output'}
+        {block.exitCode !== undefined && (
+          <span className={ok ? 'exit-ok' : 'exit-bad'}>exit {block.exitCode}</span>
+        )}
       </summary>
-      <pre style={{ fontSize: 12, overflowX: 'auto', background: 'light-dark(#f1efe8, #2a2a27)', padding: 10, borderRadius: 8 }}>{block.output}</pre>
+      <pre>{block.output}</pre>
     </details>
   )
 }
@@ -153,8 +168,8 @@ function Mermaid({ block }: { block: Extract<Block, { type: 'mermaid' }> }) {
     return () => { cancelled = true }
   }, [block])
 
-  if (failed) return <pre style={{ fontSize: 12 }}>{block.source}</pre>
-  if (!svg) return <p style={{ fontSize: 12, opacity: 0.5 }}>rendering…</p>
+  if (failed) return <pre style={{ fontSize: 12, fontFamily: 'var(--mono)' }}>{block.source}</pre>
+  if (!svg) return <p style={{ fontSize: 12, color: 'var(--ink-3)' }}>rendering…</p>
   return <div dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
@@ -163,6 +178,7 @@ export function BlockView({ block, highlighted, onClick }: {
   highlighted?: boolean
   onClick?: () => void
 }) {
+  const kind = KIND[block.type]
   let body: React.ReactNode
   switch (block.type) {
     case 'markdown': body = <Markdown text={block.text} />; break
@@ -176,13 +192,14 @@ export function BlockView({ block, highlighted, onClick }: {
   }
   return (
     <div
+      className={`block${highlighted ? ' highlight' : ''}`}
       onClick={block.type === 'graph' ? undefined : onClick}
-      style={{
-        ...cardStyle,
-        ...(highlighted ? { borderColor: '#7C5CBF', boxShadow: '0 0 0 1px #7C5CBF' } : {}),
-      }}
     >
-      {block.title && <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginBottom: 8 }}>{block.title}</div>}
+      <div className="block-kind">
+        <kind.Icon size={13} strokeWidth={2} aria-hidden />
+        {kind.label}
+        {block.title && <span className="title">· {block.title}</span>}
+      </div>
       {body}
     </div>
   )

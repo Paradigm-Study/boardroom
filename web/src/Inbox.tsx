@@ -1,10 +1,6 @@
+import { Archive, Bot, Check, Clock, FolderGit2, Inbox as InboxIcon, Unplug } from 'lucide-react'
 import type { Card } from '../../src/shared/card.js'
-
-const STAGE_COLOR: Record<Card['stage'], string> = {
-  clarify: '#7C5CBF',
-  plan: '#1D9E75',
-  results: '#D85A30',
-}
+import { STAGE } from './stage.js'
 
 function age(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
@@ -15,26 +11,27 @@ function age(iso: string): string {
 }
 
 function Row({ card }: { card: Card }) {
+  const meta = STAGE[card.stage]
   return (
     <a
       href={`#/card/${card.id}`}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
-        border: '1px solid light-dark(#e3e2dd, #3a3a36)', borderRadius: 10,
-        textDecoration: 'none', color: 'inherit', marginBottom: 8,
-      }}
+      className={`inbox-row fade-in${card.status !== 'pending' ? ' is-history' : ''}`}
+      style={meta.vars}
     >
-      <span style={{
-        fontSize: 11, fontWeight: 600, color: '#fff', background: STAGE_COLOR[card.stage],
-        padding: '2px 8px', borderRadius: 6, textTransform: 'uppercase',
-      }}>{card.stage}</span>
-      <span style={{ flex: 1 }}>
-        <span style={{ display: 'block', fontWeight: 500 }}>{card.headline}</span>
-        <span style={{ fontSize: 12, opacity: 0.6 }}>
-          {card.session.agent} · {card.session.project}{card.session.title ? ` · ${card.session.title}` : ''}
+      <span className="stage-glyph"><meta.Icon size={21} strokeWidth={1.9} aria-hidden /></span>
+      <span className="inbox-main">
+        <h3 className="inbox-headline">{card.headline}</h3>
+        <span className="inbox-meta">
+          <span><Bot size={13} aria-hidden />{card.session.agent}</span>
+          <span><FolderGit2 size={13} aria-hidden />{card.session.project}</span>
+          {card.session.title && <span>{card.session.title}</span>}
         </span>
       </span>
-      <span style={{ fontSize: 12, opacity: 0.6 }}>{card.status !== 'pending' ? `${card.status} · ` : ''}{age(card.createdAt)}</span>
+      <span className="inbox-side">
+        {card.status === 'decided' && <span className="status-chip decided"><Check size={12} aria-hidden />decided</span>}
+        {card.status === 'orphaned' && <span className="status-chip orphaned"><Unplug size={12} aria-hidden />orphaned</span>}
+        <span className="age"><Clock size={11} style={{ verticalAlign: -1, marginRight: 4 }} aria-hidden />{age(card.createdAt)}</span>
+      </span>
     </a>
   )
 }
@@ -45,10 +42,25 @@ export function Inbox({ cards }: { cards: Card[] }) {
   const rest = byNewest.filter(c => c.status !== 'pending')
   return (
     <div>
-      <h2 style={{ fontSize: 15, opacity: 0.7 }}>Needs you ({pending.length})</h2>
-      {pending.length === 0 && <p style={{ opacity: 0.5 }}>Nothing pending. Enjoy it.</p>}
+      <div className="section-label">
+        <InboxIcon size={14} aria-hidden /> Needs you <span className="count">({pending.length})</span>
+      </div>
+      {pending.length === 0 && (
+        <div className="empty">
+          <svg width="72" height="44" viewBox="0 0 72 44" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+            <ellipse cx="36" cy="20" rx="26" ry="9" />
+            <line x1="14" y1="24" x2="11" y2="38" /><line x1="58" y1="24" x2="61" y2="38" />
+            <line x1="30" y1="28.5" x2="29" y2="40" /><line x1="42" y1="28.5" x2="43" y2="40" />
+          </svg>
+          <p>The table is clear. Nothing needs you.</p>
+        </div>
+      )}
       {pending.map(c => <Row key={c.id} card={c} />)}
-      <h2 style={{ fontSize: 15, opacity: 0.7, marginTop: 32 }}>History</h2>
+      {rest.length > 0 && (
+        <div className="section-label" style={{ marginTop: 44 }}>
+          <Archive size={14} aria-hidden /> History <span className="count">({rest.length})</span>
+        </div>
+      )}
       {rest.map(c => <Row key={c.id} card={c} />)}
     </div>
   )

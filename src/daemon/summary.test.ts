@@ -55,4 +55,15 @@ describe('buildSummary — plan', () => {
     expect(s).toContain('Storage?: Cookie')
     expect(s).toContain('rotate refresh tokens weekly')
   })
+
+  it('renders a custom "other" answer with its text', () => {
+    const card: Card = {
+      ...resultsCard(), stage: 'clarify',
+      decisions: [
+        { id: 'd1', prompt: 'Storage?', options: [{ id: 'a', label: 'Cookie' }, { id: 'b', label: 'Local' }] },
+      ],
+    }
+    const s = buildSummary(card, { d1: { chosen: ['__other__'], custom: 'IndexedDB with a 7-day TTL' } })
+    expect(s).toContain('Storage?: Other: IndexedDB with a 7-day TTL')
+  })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from '../../src/shared/card.js'
-import { answersComplete, noteMissing, toggleChoice } from './helpers.js'
+import { answersComplete, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
 
 const decision: Decision = {
   id: 'd1', prompt: 'p',
@@ -21,16 +21,32 @@ describe('toggleChoice', () => {
 
 describe('noteMissing', () => {
   it('is true when a note-required option is chosen without a note', () => {
-    expect(noteMissing(decision, { chosen: ['b'], note: '' })).toBe(true)
-    expect(noteMissing(decision, { chosen: ['b'], note: 'because' })).toBe(false)
-    expect(noteMissing(decision, { chosen: ['a'], note: '' })).toBe(false)
+    expect(noteMissing(decision, { chosen: ['b'], note: '', custom: '' })).toBe(true)
+    expect(noteMissing(decision, { chosen: ['b'], note: 'because', custom: '' })).toBe(false)
+    expect(noteMissing(decision, { chosen: ['a'], note: '', custom: '' })).toBe(false)
   })
 })
 
 describe('answersComplete', () => {
   it('requires every decision answered with required notes present', () => {
     expect(answersComplete([decision], {})).toBe(false)
-    expect(answersComplete([decision], { d1: { chosen: ['b'], note: '' } })).toBe(false)
-    expect(answersComplete([decision], { d1: { chosen: ['a'], note: '' } })).toBe(true)
+    expect(answersComplete([decision], { d1: { chosen: ['b'], note: '', custom: '' } })).toBe(false)
+    expect(answersComplete([decision], { d1: { chosen: ['a'], note: '', custom: '' } })).toBe(true)
+  })
+
+  it('requires custom text when "other" is chosen', () => {
+    expect(answersComplete([decision], { d1: { chosen: [OTHER_OPTION_ID], note: '', custom: '' } })).toBe(false)
+    expect(answersComplete([decision], { d1: { chosen: [OTHER_OPTION_ID], note: '', custom: 'my own take' } })).toBe(true)
+  })
+})
+
+describe('toApiAnswers', () => {
+  it('includes custom only when "other" is chosen', () => {
+    const api = toApiAnswers({
+      d1: { chosen: [OTHER_OPTION_ID], note: '', custom: 'hybrid approach' },
+      d2: { chosen: ['a'], note: 'fine', custom: 'stale text' },
+    })
+    expect(api.d1).toEqual({ chosen: [OTHER_OPTION_ID], custom: 'hybrid approach' })
+    expect(api.d2).toEqual({ chosen: ['a'], note: 'fine' })
   })
 })

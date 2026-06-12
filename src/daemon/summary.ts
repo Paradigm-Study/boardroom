@@ -1,4 +1,12 @@
-import type { Card, DecisionAnswer } from '../shared/card.js'
+import { OTHER_OPTION_ID, type Card, type DecisionAnswer } from '../shared/card.js'
+
+function chosenLabels(d: Card['decisions'][number], a: DecisionAnswer): string {
+  return a.chosen
+    .map(c => c === OTHER_OPTION_ID
+      ? `Other: ${a.custom ?? ''}`
+      : d.options.find(o => o.id === c)?.label ?? c)
+    .join(', ')
+}
 
 export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>): string {
   const lines: string[] = []
@@ -23,8 +31,7 @@ export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>
     if (d.id === 'plan_verdict') continue
     const a = answers[d.id]
     if (!a) continue
-    const labels = d.options.filter(o => a.chosen.includes(o.id)).map(o => o.label).join(', ')
-    lines.push(`- ${d.prompt}: ${labels}${a.note ? ` — note: ${a.note}` : ''}`)
+    lines.push(`- ${d.prompt}: ${chosenLabels(d, a)}${a.note ? ` — note: ${a.note}` : ''}`)
   }
   if (card.stage === 'plan') {
     const v = answers['plan_verdict']
