@@ -4,6 +4,8 @@ import type { Card } from '../../src/shared/card.js'
 import { fetchCards, subscribeCards } from './api.js'
 import { CardView } from './CardView.js'
 import { Inbox } from './Inbox.js'
+import { SessionRail } from './SessionRail.js'
+import { deriveSessions } from './sessions.js'
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash)
@@ -26,13 +28,20 @@ export function App() {
     )
   }, [])
 
-  const pendingCount = [...cards.values()].filter(c => c.status === 'pending').length
+  const all = [...cards.values()]
+  const pendingCount = all.filter(c => c.status === 'pending').length
   useEffect(() => {
     document.title = pendingCount > 0 ? `(${pendingCount}) boardroom` : 'boardroom'
   }, [pendingCount])
 
   const cardMatch = hash.match(/^#\/card\/(.+)$/)
+  const sessMatch = hash.match(/^#\/s\/(.+)$/)
+  const selectedSession = sessMatch ? decodeURIComponent(sessMatch[1]) : null
   const card = cardMatch ? cards.get(cardMatch[1]) : undefined
+
+  const sessions = deriveSessions(all)
+  const visible = selectedSession ? all.filter(c => c.session.project === selectedSession) : all
+  const railSelection = card ? card.session.project : selectedSession
 
   return (
     <div className="shell">
@@ -53,11 +62,16 @@ export function App() {
           agents are held until you decide
         </span>
       </header>
-      {card
-        ? <CardView key={`${card.id}:${card.status}`} card={card} />
-        : cardMatch
-          ? <p>Card not found.</p>
-          : <Inbox cards={[...cards.values()]} />}
+      <div className="layout">
+        <SessionRail sessions={sessions} selected={railSelection} />
+        <main className="main-col">
+          {card
+            ? <CardView key={`${card.id}:${card.status}`} card={card} />
+            : cardMatch
+              ? <p>Card not found.</p>
+              : <Inbox cards={visible} />}
+        </main>
+      </div>
     </div>
   )
 }
