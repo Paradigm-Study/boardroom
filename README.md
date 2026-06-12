@@ -66,3 +66,17 @@ Config: `~/.config/boardroom/config.json` — `port` (4040),
 `remindEveryMinutes` (10), `notifications` (true). The daemon only ever
 binds 127.0.0.1; that is hardwired (it is the security predicate for
 running without auth).
+
+## Enforcement hooks (global, optional but recommended)
+
+Instructions alone are advisory — the model can lapse into its built-in
+question UI. Two `PreToolUse` hooks in `~/.claude/settings.json` redirect
+those lapses to the dashboard (see `hooks/`):
+
+- `redirect-ask.sh` — denies `AskUserQuestion` once per session with a
+  pointer to `clarify`, when the daemon is reachable.
+- `check-plan.sh` — denies `ExitPlanMode` once per session unless a plan
+  card for this project already exists on the dashboard.
+
+Both are deny-once: a second attempt always passes, so sessions are nudged,
+never caged, and a downed daemon disables them automatically.
