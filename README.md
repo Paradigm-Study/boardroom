@@ -13,20 +13,37 @@ npm run build:web
 npm run dev          # daemon + dashboard on http://127.0.0.1:4040
 ```
 
-## Connect an agent
+## Global setup (one-time per machine — no per-project config)
+
+Three pieces make boardroom ambient for every Claude Code session:
 
 ```bash
-claude mcp add --transport http boardroom http://127.0.0.1:4040/mcp
+# 1. Register the MCP server at user scope (all projects)
+claude mcp add --transport http --scope user boardroom http://127.0.0.1:4040/mcp
+
+# 2. Daemon as a login service (auto-start, auto-restart)
+cp docs/com.boardroom.daemon.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.boardroom.daemon.plist
 ```
 
-Tool calls hang until you decide — disable the client's MCP tool timeout.
-For Claude Code, set in your environment or `.claude/settings.json` `env`:
+3. Paste `docs/agent-snippet.md` into your **global** `~/.claude/CLAUDE.md`
+   (read by every session), and add to `~/.claude/settings.json`:
 
 ```json
 { "env": { "MCP_TOOL_TIMEOUT": "86400000", "MCP_TIMEOUT": "30000" } }
 ```
 
-Then paste `docs/agent-snippet.md` into the project's CLAUDE.md.
+(`MCP_TOOL_TIMEOUT` lets tool calls hang until you decide; the short
+`MCP_TIMEOUT` keeps connection attempts failing fast so the crash-only
+fallback still works when the daemon is down.)
+
+Uninstall the service: `launchctl bootout gui/$(id -u)/com.boardroom.daemon`.
+Daemon log: `~/Library/Logs/boardroom.log`.
+
+**Other clients (Codex, etc.):** the daemon side is identical — any
+MCP-capable agent connects to `http://127.0.0.1:4040/mcp`. Each client has
+its own global config surface for MCP servers, instructions, and tool
+timeouts; wire those three things once per client.
 
 ## Try it without an agent
 

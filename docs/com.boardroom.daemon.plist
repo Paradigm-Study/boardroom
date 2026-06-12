@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.boardroom.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/node@22/bin/node</string>
+    <string>/Users/paradigm.study/Desktop/Playground/boardroom/node_modules/tsx/dist/cli.mjs</string>
+    <string>src/daemon/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/paradigm.study/Desktop/Playground/boardroom</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/paradigm.study/Library/Logs/boardroom.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/paradigm.study/Library/Logs/boardroom.log</string>
+</dict>
+</plist>
