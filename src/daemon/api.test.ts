@@ -98,7 +98,7 @@ describe('GET /events', () => {
       .get('/events')
       .buffer(false)
       .parse((res, done) => {
-        res.on('data', () => { res.destroy(); done(null, null) })
+        res.on('data', () => { (res as unknown as { destroy(): void }).destroy(); done(null, null) })
       })
     expect(res.headers['content-type']).toContain('text/event-stream')
   })
