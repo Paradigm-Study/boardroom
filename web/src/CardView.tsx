@@ -1,9 +1,9 @@
-import { ArrowRight, Bot, ClipboardCopy, FileText, FolderGit2, ListChecks, Unplug } from 'lucide-react'
+import { ArrowRight, BookOpen, Bot, ClipboardCopy, FileText, FolderGit2, Unplug } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { decideCard, offlineAnswerCard } from './api.js'
 import { BlockView } from './blocks/BlockView.js'
-import { DecisionRail } from './DecisionRail.js'
+import { DecisionSection } from './Decision.js'
 import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
 import { STAGE } from './stage.js'
 
@@ -16,22 +16,20 @@ export function CardView({ card }: { card: Card }) {
       }),
     ),
   )
-  const [focusedDecision, setFocusedDecision] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [offlineSummary, setOfflineSummary] = useState<string | null>(null)
 
   const meta = STAGE[card.stage]
   const readonly = card.status === 'decided' || (card.status === 'orphaned' && !!card.answers)
-  const highlightedBlocks = useMemo(() => {
-    const d = card.decisions.find(d => d.id === focusedDecision)
-    return new Set(d?.blockRefs ?? [])
-  }, [card, focusedDecision])
 
-  function focusBlock(blockId: string): void {
-    const linked = card.decisions.find(d => (d.blockRefs ?? []).includes(blockId))
-    if (linked) setFocusedDecision(linked.id)
-  }
+  const { background, blockById } = useMemo(() => {
+    const linked = new Set(card.decisions.flatMap(d => d.blockRefs ?? []))
+    return {
+      background: card.blocks.filter(b => !linked.has(b.id)),
+      blockById: new Map(card.blocks.map(b => [b.id, b])),
+    }
+  }, [card])
 
   async function submit(): Promise<void> {
     setBusy(true)
@@ -51,9 +49,10 @@ export function CardView({ card }: { card: Card }) {
   }
 
   const ready = answersComplete(card.decisions, answers)
+  const answeredCount = card.decisions.filter(d => (answers[d.id]?.chosen.length ?? 0) > 0).length
 
   return (
-    <div className="fade-in" style={meta.vars}>
+    <div className="card-col" style={meta.vars}>
       <div className="card-head">
         <span className="stage-tag">{meta.label}</span>
         <h1 className="card-headline">{card.headline}</h1>
@@ -72,58 +71,51 @@ export function CardView({ card }: { card: Card }) {
         )}
       </div>
 
-      <div className="card-grid">
-        <div>
-          {card.blocks.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>No visuals attached.</p>}
-          {card.blocks.map(b => (
-            <BlockView
-              key={b.id}
-              block={b}
-              highlighted={highlightedBlocks.has(b.id)}
-              onClick={() => focusBlock(b.id)}
-            />
-          ))}
-        </div>
-
-        <div className="rail">
-          <div className="rail-head">
-            <ListChecks size={14} aria-hidden />
-            Decisions <span className="count">({card.decisions.length})</span>
+      {background.length > 0 && (
+        <details className="bg-fold" open>
+          <summary><BookOpen size={13} aria-hidden />Background · {background.length} block{background.length === 1 ? '' : 's'}</summary>
+          <div className="bg-body">
+            {background.map(b => <BlockView key={b.id} block={b} />)}
           </div>
-          <DecisionRail
-            card={card}
-            answers={answers}
-            readonly={readonly || busy}
-            focusedDecision={focusedDecision}
-            onFocusDecision={setFocusedDecision}
-            onChange={(id, a) => setAnswers(prev => ({ ...prev, [id]: a }))}
-          />
+        </details>
+      )}
 
-          {!readonly && !offlineSummary && (
-            <>
-              <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
-                {card.status === 'pending' ? 'Submit decisions' : 'Record offline answer'}
-                <ArrowRight size={16} aria-hidden />
-              </button>
-              {!ready && <p className="submit-hint">Answer every decision to submit</p>}
-              {ready && card.status === 'pending' && <p className="submit-hint">The agent resumes the moment you submit</p>}
-            </>
-          )}
+      {card.decisions.map((d, i) => (
+        <DecisionSection
+          key={d.id}
+          card={card}
+          decision={d}
+          index={i}
+          total={card.decisions.length}
+          blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
+          answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
+          readonly={readonly || busy}
+          onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
+        />
+      ))}
 
-          {error && <p className="error-text">{error}</p>}
-
-          {offlineSummary && (
-            <div className="offline-out">
-              <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Paste this into the agent session:</p>
-              <textarea readOnly value={offlineSummary} />
-              <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(offlineSummary)}>
-                <ClipboardCopy size={14} aria-hidden />
-                Copy to clipboard
-              </button>
-            </div>
-          )}
+      {!readonly && !offlineSummary && (
+        <div className="submit-bar">
+          <span className="submit-state">{answeredCount}/{card.decisions.length} answered</span>
+          <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
+            {card.status === 'pending' ? 'Submit decisions' : 'Record offline answer'}
+            <ArrowRight size={16} aria-hidden />
+          </button>
         </div>
-      </div>
+      )}
+
+      {error && <p className="error-text">{error}</p>}
+
+      {offlineSummary && (
+        <div className="offline-out">
+          <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Paste this into the agent session:</p>
+          <textarea readOnly value={offlineSummary} />
+          <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(offlineSummary)}>
+            <ClipboardCopy size={14} aria-hidden />
+            Copy to clipboard
+          </button>
+        </div>
+      )}
     </div>
   )
 }
