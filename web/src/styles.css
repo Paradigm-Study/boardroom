@@ -169,6 +169,49 @@ a { color: inherit; }
 .dsec-check { color: var(--ok); }
 .dsec-prompt { font-size: 17px; font-weight: 650; line-height: 1.4; margin: 0 0 14px; max-width: 56ch; }
 
+.results { border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.results-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg-2);
+}
+.results-head svg { color: var(--ink-3); }
+.results-title { font-size: 13.5px; font-weight: 600; }
+.results-progress { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.approve-all {
+  font-size: 12px; font-weight: 550; padding: 5px 12px;
+  border: 1px solid var(--line-2); border-radius: 999px;
+}
+.approve-all:hover { border-color: var(--ok); color: var(--ok); }
+
+.claim { padding: 0 16px; border-bottom: 1px solid var(--line); }
+.claim:last-child { border-bottom: none; }
+.claim-row { display: flex; align-items: center; gap: 11px; padding: 12px 0; }
+.claim-icon.idle { color: var(--ink-3); }
+.claim-icon.ok { color: var(--ok); }
+.claim-icon.bad { color: var(--pending); }
+.claim-text { flex: 1; font-size: 14px; line-height: 1.45; min-width: 0; }
+.claim.decided .claim-text { color: var(--ink-2); }
+.claim-chip {
+  font-size: 11px; font-family: var(--mono); color: var(--ink-2);
+  background: var(--bg-2); padding: 3px 9px; border-radius: 6px; white-space: nowrap; flex-shrink: 0;
+}
+.claim-expand { display: flex; color: var(--ink-3); padding: 2px; border-radius: 5px; }
+.claim-expand:hover { color: var(--ink); background: var(--bg-2); }
+.verdicts { display: flex; gap: 5px; flex-shrink: 0; }
+.vbtn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 28px; border: 1px solid var(--line-2); border-radius: var(--r);
+  color: var(--ink-3); transition: all 0.12s ease;
+}
+.vbtn:hover:not(:disabled) { border-color: var(--ink-3); color: var(--ink); }
+.vbtn:disabled { cursor: default; opacity: 0.5; }
+.vbtn.approve.on { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+.vbtn.deny.on { border-color: var(--pending); background: var(--pending-soft); color: var(--pending); }
+.vbtn.on:disabled { opacity: 1; }
+.claim-evidence { padding: 2px 0 14px 29px; }
+.claim-evidence .block:last-child { margin-bottom: 0; }
+.claim .note { margin: 0 0 14px 29px; width: calc(100% - 29px); }
+
 .submit-bar {
   position: sticky; bottom: 0; z-index: 5;
   display: flex; align-items: center; gap: 16px;

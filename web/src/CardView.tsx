@@ -6,6 +6,7 @@ import { BlockView } from './blocks/BlockView.js'
 import { DecisionSection } from './Decision.js'
 import { clearDrafts, loadDrafts, saveDrafts } from './drafts.js'
 import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
+import { ResultsChecklist } from './ResultsChecklist.js'
 import { STAGE } from './stage.js'
 
 export function CardView({ card }: { card: Card }) {
@@ -82,7 +83,7 @@ export function CardView({ card }: { card: Card }) {
         )}
       </div>
 
-      {background.length > 0 && (
+      {background.length > 0 && card.stage !== 'results' && (
         <details className="bg-fold" open>
           <summary><BookOpen size={13} aria-hidden />Background · {background.length} block{background.length === 1 ? '' : 's'}</summary>
           <div className="bg-body">
@@ -91,19 +92,29 @@ export function CardView({ card }: { card: Card }) {
         </details>
       )}
 
-      {card.decisions.map((d, i) => (
-        <DecisionSection
-          key={d.id}
-          card={card}
-          decision={d}
-          index={i}
-          total={card.decisions.length}
-          blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
-          answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
-          readonly={readonly || busy}
-          onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
-        />
-      ))}
+      {card.stage === 'results'
+        ? (
+          <ResultsChecklist
+            card={card}
+            blockById={blockById}
+            answers={answers}
+            readonly={readonly || busy}
+            onChange={(id, a) => setAnswers(prev => ({ ...prev, [id]: a }))}
+          />
+        )
+        : card.decisions.map((d, i) => (
+          <DecisionSection
+            key={d.id}
+            card={card}
+            decision={d}
+            index={i}
+            total={card.decisions.length}
+            blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
+            answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
+            readonly={readonly || busy}
+            onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
+          />
+        ))}
 
       {!readonly && !pickupSummary && (
         <div className="submit-bar">
