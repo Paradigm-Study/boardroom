@@ -1,28 +1,41 @@
 import { ArrowRight, BookOpen, Bot, ClipboardCopy, FileText, FolderGit2, Moon } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { decideCard } from './api.js'
 import { BlockView } from './blocks/BlockView.js'
 import { DecisionSection } from './Decision.js'
+import { clearDrafts, loadDrafts, saveDrafts } from './drafts.js'
 import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
 import { STAGE } from './stage.js'
 
 export function CardView({ card }: { card: Card }) {
-  const [answers, setAnswers] = useState<Record<string, DraftAnswer>>(() =>
-    Object.fromEntries(
+  const meta = STAGE[card.stage]
+  const orphaned = card.status === 'orphaned'
+  const readonly = card.status === 'decided'
+
+  const [answers, setAnswers] = useState<Record<string, DraftAnswer>>(() => {
+    const saved = !readonly ? loadDrafts(card.id) : null
+    return Object.fromEntries(
       card.decisions.map(d => {
-        const saved = card.answers?.[d.id]
-        return [d.id, { chosen: saved?.chosen ?? [], note: saved?.note ?? '', custom: saved?.custom ?? '' }]
+        const draft = saved?.[d.id]
+        const final = card.answers?.[d.id]
+        return [d.id, {
+          chosen: draft?.chosen ?? final?.chosen ?? [],
+          note: draft?.note ?? final?.note ?? '',
+          custom: draft?.custom ?? final?.custom ?? '',
+        }]
       }),
-    ),
-  )
+    )
+  })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [pickupSummary, setPickupSummary] = useState<string | null>(null)
 
-  const meta = STAGE[card.stage]
-  const orphaned = card.status === 'orphaned'
-  const readonly = card.status === 'decided'
+  // Persist every keystroke/click so an arriving card, a status change, or a
+  // page reload never loses in-progress work. Skip once the card is settled.
+  useEffect(() => {
+    if (!readonly && !pickupSummary) saveDrafts(card.id, answers)
+  }, [card.id, answers, readonly, pickupSummary])
 
   const { background, blockById } = useMemo(() => {
     const linked = new Set(card.decisions.flatMap(d => d.blockRefs ?? []))
@@ -37,6 +50,7 @@ export function CardView({ card }: { card: Card }) {
     setError(null)
     try {
       const { delivered, summary } = await decideCard(card.id, toApiAnswers(answers))
+      clearDrafts(card.id)
       if (!delivered) setPickupSummary(summary)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

@@ -35,9 +35,22 @@ export function App() {
     document.title = pending.length > 0 ? `(${pending.length}) boardroom` : 'boardroom'
   }, [pending.length])
 
-  const cardMatch = hash.match(/^#\/card\/(.+)$/)
-  const routed = cardMatch ? cards.get(cardMatch[1]) : undefined
-  const shown = routed ?? (cardMatch ? undefined : pending[0])
+  const routeId = hash.match(/^#\/card\/(.+)$/)?.[1] ?? null
+  const routed = routeId ? cards.get(routeId) : undefined
+  const onRoot = routeId === null
+  const newestPendingId = pending[0]?.id
+
+  // Auto-open the newest pending card ONLY from the root view, and pin the URL
+  // to it. Once you're on a card route, a newly arriving card updates the
+  // sidebar but never yanks you off the one you're filling in.
+  useEffect(() => {
+    if (onRoot && newestPendingId) {
+      history.replaceState(null, '', `#/card/${newestPendingId}`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    }
+  }, [onRoot, newestPendingId])
+
+  const shown = routed ?? (onRoot ? pending[0] : undefined)
 
   return (
     <div className="frame">
@@ -45,8 +58,8 @@ export function App() {
       <main className="content">
         <div className="content-inner">
           {shown
-            ? <CardView key={`${shown.id}:${shown.status}`} card={shown} />
-            : cardMatch
+            ? <CardView key={shown.id} card={shown} />
+            : routeId
               ? <p style={{ color: 'var(--ink-3)' }}>Card not found.</p>
               : (
                 <div className="zero">
