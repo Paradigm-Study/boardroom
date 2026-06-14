@@ -19,6 +19,8 @@ function card(id: string): Card {
   }
 }
 
+const noop = { resolve: () => {}, reject: () => {} }
+
 let dir: string
 let store: Store
 let queue: Queue
@@ -40,8 +42,8 @@ afterEach(() => {
 
 describe('GET /api/cards', () => {
   it('lists all cards, filterable by status', async () => {
-    queue.add(card('c1'))
-    queue.add(card('c2'))
+    queue.submit(card('c1'), noop)
+    queue.submit(card('c2'), noop)
     queue.decide('c2', { d1: { chosen: ['a'] } })
     const all = await request(app).get('/api/cards').expect(200)
     expect(all.body).toHaveLength(2)
@@ -52,7 +54,7 @@ describe('GET /api/cards', () => {
 
 describe('GET /api/cards/:id', () => {
   it('returns the card or 404', async () => {
-    queue.add(card('c1'))
+    queue.submit(card('c1'), noop)
     const res = await request(app).get('/api/cards/c1').expect(200)
     expect(res.body.id).toBe('c1')
     await request(app).get('/api/cards/nope').expect(404)
@@ -61,7 +63,7 @@ describe('GET /api/cards/:id', () => {
 
 describe('POST /api/cards/:id/decide', () => {
   it('decides a pending card', async () => {
-    queue.add(card('c1'))
+    queue.submit(card('c1'), noop)
     const res = await request(app)
       .post('/api/cards/c1/decide')
       .send({ answers: { d1: { chosen: ['a'] } } })
@@ -70,7 +72,7 @@ describe('POST /api/cards/:id/decide', () => {
   })
 
   it('maps errors: 400 validation, 404 unknown, 409 conflict', async () => {
-    queue.add(card('c1'))
+    queue.submit(card('c1'), noop)
     await request(app).post('/api/cards/c1/decide').send({ answers: {} }).expect(400)
     await request(app).post('/api/cards/nope/decide').send({ answers: {} }).expect(404)
     queue.decide('c1', { d1: { chosen: ['a'] } })
@@ -79,16 +81,20 @@ describe('POST /api/cards/:id/decide', () => {
   })
 })
 
-describe('POST /api/cards/:id/offline-answer', () => {
-  it('returns the copyable summary for orphaned cards, 409 otherwise', async () => {
-    queue.add(card('c1'))
-    await request(app).post('/api/cards/c1/offline-answer').send({ answers: { d1: { chosen: ['a'] } } }).expect(409)
-    queue.orphan('c1')
-    const res = await request(app)
-      .post('/api/cards/c1/offline-answer')
-      .send({ answers: { d1: { chosen: ['a'] } } })
-      .expect(200)
+describe('POST /api/cards/:id/decide — delivery flag', () => {
+  it('reports delivered=true when a live waiter is attached', async () => {
+    queue.submit(card('c1'), noop)
+    const res = await request(app).post('/api/cards/c1/decide').send({ answers: { d1: { chosen: ['a'] } } }).expect(200)
+    expect(res.body.delivered).toBe(true)
+  })
+
+  it('decides an orphaned card with delivered=false and a copyable summary', async () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)
+    const res = await request(app).post('/api/cards/c1/decide').send({ answers: { d1: { chosen: ['a'] } } }).expect(200)
+    expect(res.body.delivered).toBe(false)
     expect(res.body.summary).toContain('p: A')
+    expect(res.body.card.status).toBe('decided')
   })
 })
 

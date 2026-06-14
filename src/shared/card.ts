@@ -62,6 +62,8 @@ export const Card = z.object({
   status: CardStatus,
   createdAt: z.string(),
   decidedAt: z.string().optional(),
+  deliveredAt: z.string().optional(),
+  fingerprint: z.string().optional(),
   answers: z.record(z.string(), DecisionAnswer).optional(),
 })
 export type Card = z.infer<typeof Card>

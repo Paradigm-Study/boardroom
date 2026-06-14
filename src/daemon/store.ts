@@ -45,6 +45,22 @@ export class Store {
     return pending.length
   }
 
+  // A retried/reconnecting tool call reattaches to a prior card with the same
+  // fingerprint when it is either decided-but-never-delivered (claim the answer
+  // made while the agent was away — any age) or orphaned within the window (the
+  // agent dropped, e.g. machine slept, and came back before a decision). Pending
+  // cards are never targets — they still have a live waiter; stealing it would be
+  // wrong. Most recent match wins.
+  findReattachable(fingerprint: string | undefined, nowMs: number, windowMs = 24 * 60 * 60_000): Card | undefined {
+    if (!fingerprint) return undefined
+    const matches = this.list().filter(c => c.fingerprint === fingerprint)
+    const eligible = matches.filter(c =>
+      (c.status === 'decided' && !c.deliveredAt) ||
+      (c.status === 'orphaned' && nowMs - Date.parse(c.createdAt) < windowMs),
+    )
+    return eligible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  }
+
   close(): void {
     this.db.close()
   }

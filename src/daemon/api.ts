@@ -32,15 +32,8 @@ export function buildApiRouter(queue: Queue, store: Store): Router {
 
   router.post('/api/cards/:id/decide', (req, res) => {
     try {
-      const { card } = queue.decide(req.params.id, answersFrom(req))
-      res.json({ card })
-    } catch (err) { sendError(res, err) }
-  })
-
-  router.post('/api/cards/:id/offline-answer', (req, res) => {
-    try {
-      const { card, summary } = queue.offlineAnswer(req.params.id, answersFrom(req))
-      res.json({ card, summary })
+      const { card, summary, delivered } = queue.decide(req.params.id, answersFrom(req))
+      res.json({ card, summary, delivered })
     } catch (err) { sendError(res, err) }
   })
 

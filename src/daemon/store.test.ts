@@ -55,6 +55,36 @@ describe('Store', () => {
   })
 })
 
+describe('Store.findReattachable', () => {
+  const now = Date.now()
+  function fpCard(id: string, status: Card['status'], extra: Partial<Card> = {}): Card {
+    return { ...card(id), status, fingerprint: 'fp', createdAt: new Date(now).toISOString(), ...extra }
+  }
+
+  it('returns an orphaned card within the window', () => {
+    store.insert(fpCard('c1', 'orphaned'))
+    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+  })
+
+  it('returns a decided-but-undelivered card at any age', () => {
+    store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z' }))
+    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+  })
+
+  it('ignores pending cards, delivered cards, and stale orphans', () => {
+    store.insert(fpCard('pending', 'pending'))
+    store.insert(fpCard('delivered', 'decided', { deliveredAt: new Date(now).toISOString() }))
+    store.insert(fpCard('stale', 'orphaned', { createdAt: '2020-01-01T00:00:00.000Z' }))
+    expect(store.findReattachable('fp', now)).toBeUndefined()
+  })
+
+  it('returns undefined for an unknown or missing fingerprint', () => {
+    store.insert(fpCard('c1', 'orphaned'))
+    expect(store.findReattachable('other', now)).toBeUndefined()
+    expect(store.findReattachable(undefined, now)).toBeUndefined()
+  })
+})
+
 describe('loadConfig', () => {
   it('uses defaults when no config file exists', () => {
     const cfg = loadConfig(join(dir, 'cfgdir'))

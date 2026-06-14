@@ -10,20 +10,11 @@ export async function fetchCards(): Promise<Card[]> {
   return check(await fetch('/api/cards'))
 }
 
-export async function decideCard(id: string, answers: Record<string, DecisionAnswer>): Promise<Card> {
-  const res = await fetch(`/api/cards/${id}/decide`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answers }),
-  })
-  return (await check<{ card: Card }>(res)).card
-}
-
-export async function offlineAnswerCard(
+export async function decideCard(
   id: string,
   answers: Record<string, DecisionAnswer>,
-): Promise<{ card: Card; summary: string }> {
-  const res = await fetch(`/api/cards/${id}/offline-answer`, {
+): Promise<{ card: Card; summary: string; delivered: boolean }> {
+  const res = await fetch(`/api/cards/${id}/decide`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers }),

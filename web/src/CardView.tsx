@@ -1,7 +1,7 @@
-import { ArrowRight, BookOpen, Bot, ClipboardCopy, FileText, FolderGit2, Unplug } from 'lucide-react'
+import { ArrowRight, BookOpen, Bot, ClipboardCopy, FileText, FolderGit2, Moon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
-import { decideCard, offlineAnswerCard } from './api.js'
+import { decideCard } from './api.js'
 import { BlockView } from './blocks/BlockView.js'
 import { DecisionSection } from './Decision.js'
 import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
@@ -18,10 +18,11 @@ export function CardView({ card }: { card: Card }) {
   )
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [offlineSummary, setOfflineSummary] = useState<string | null>(null)
+  const [pickupSummary, setPickupSummary] = useState<string | null>(null)
 
   const meta = STAGE[card.stage]
-  const readonly = card.status === 'decided' || (card.status === 'orphaned' && !!card.answers)
+  const orphaned = card.status === 'orphaned'
+  const readonly = card.status === 'decided'
 
   const { background, blockById } = useMemo(() => {
     const linked = new Set(card.decisions.flatMap(d => d.blockRefs ?? []))
@@ -35,12 +36,8 @@ export function CardView({ card }: { card: Card }) {
     setBusy(true)
     setError(null)
     try {
-      if (card.status === 'pending') {
-        await decideCard(card.id, toApiAnswers(answers))
-      } else {
-        const { summary } = await offlineAnswerCard(card.id, toApiAnswers(answers))
-        setOfflineSummary(summary)
-      }
+      const { delivered, summary } = await decideCard(card.id, toApiAnswers(answers))
+      if (!delivered) setPickupSummary(summary)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -63,10 +60,10 @@ export function CardView({ card }: { card: Card }) {
           {card.planRef && <span><FileText size={14} aria-hidden /><code>{card.planRef}</code></span>}
           {card.status !== 'pending' && <span className={`status-chip ${card.status}`}>{card.status}</span>}
         </div>
-        {card.status === 'orphaned' && !card.answers && !offlineSummary && (
+        {orphaned && !pickupSummary && (
           <div className="banner">
-            <Unplug size={16} aria-hidden />
-            <span>The agent that asked this is gone. You can still answer — you'll get a summary to paste into the session yourself.</span>
+            <Moon size={16} aria-hidden />
+            <span>The agent's connection dropped (often the Mac sleeping). Decide anyway — it's delivered automatically when the agent reconnects, or copy the summary to paste in by hand.</span>
           </div>
         )}
       </div>
@@ -94,11 +91,11 @@ export function CardView({ card }: { card: Card }) {
         />
       ))}
 
-      {!readonly && !offlineSummary && (
+      {!readonly && !pickupSummary && (
         <div className="submit-bar">
           <span className="submit-state">{answeredCount}/{card.decisions.length} answered</span>
           <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
-            {card.status === 'pending' ? 'Submit decisions' : 'Record offline answer'}
+            {orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
             <ArrowRight size={16} aria-hidden />
           </button>
         </div>
@@ -106,11 +103,11 @@ export function CardView({ card }: { card: Card }) {
 
       {error && <p className="error-text">{error}</p>}
 
-      {offlineSummary && (
+      {pickupSummary && (
         <div className="offline-out">
-          <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Paste this into the agent session:</p>
-          <textarea readOnly value={offlineSummary} />
-          <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(offlineSummary)}>
+          <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:</p>
+          <textarea readOnly value={pickupSummary} />
+          <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(pickupSummary)}>
             <ClipboardCopy size={14} aria-hidden />
             Copy to clipboard
           </button>

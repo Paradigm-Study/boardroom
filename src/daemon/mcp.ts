@@ -52,9 +52,10 @@ function makeHangingHandler<I>(
 
     try {
       const response = await new Promise<CardResponse>((resolve, reject) => {
-        queue.add(card, { resolve, reject })
-        requestCtx.getStore()?.onAbort(() => queue.orphan(card.id))
-        ctx.mcpReq.signal.addEventListener('abort', () => queue.orphan(card.id), { once: true })
+        const { cardId, gen } = queue.submit(card, { resolve, reject })
+        const drop = (): void => queue.disconnect(cardId, gen)
+        requestCtx.getStore()?.onAbort(drop)
+        ctx.mcpReq.signal.addEventListener('abort', drop, { once: true })
       })
       return {
         content: [
