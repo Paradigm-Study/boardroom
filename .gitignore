@@ -3,3 +3,4 @@ web/dist/
 *.sqlite
 *.sqlite-*
 .DS_Store
+menubar/iconTemplate*.png

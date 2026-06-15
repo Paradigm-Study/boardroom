@@ -80,3 +80,23 @@ those lapses to the dashboard (see `hooks/`):
 
 Both are deny-once: a second attempt always passes, so sessions are nudged,
 never caged, and a downed daemon disables them automatically.
+
+## Menu-bar app (macOS)
+
+A thin Electron tray shell around the dashboard the daemon already serves —
+so boardroom lives in your menu bar instead of a browser tab. It shows the
+pending count next to the tray icon and drops down the full dashboard on
+click; right-click for "Open in browser" / "Quit". All state stays in the
+daemon — this is pure presentation.
+
+```bash
+cd menubar
+npm install      # also generates the tray icons (postinstall)
+npm start        # tray icon appears; click it
+```
+
+Electron (not Tauri) so there's no extra toolchain to install — it's
+isolated in `menubar/` and never touches the daemon package. Set
+`BOARDROOM_PORT` if your daemon isn't on 4040. To package a real `.app`,
+add `electron-builder` later; for personal use `npm start` (or a tiny
+LaunchAgent) is enough.

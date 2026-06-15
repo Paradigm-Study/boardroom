@@ -1,0 +1,58 @@
+// boardroom menu-bar app — a thin Electron tray shell around the dashboard the
+// daemon already serves. The daemon (LaunchAgent) owns all state; this only
+// renders it and shows a pending-count badge in the menu bar.
+const { app, Menu, nativeImage, shell, Tray } = require('electron')
+const { menubar } = require('menubar')
+const path = require('node:path')
+
+const PORT = process.env.BOARDROOM_PORT || '4040'
+const BASE = `http://127.0.0.1:${PORT}`
+const icon = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'))
+
+const mb = menubar({
+  index: `${BASE}/`,
+  icon,
+  tooltip: 'boardroom',
+  browserWindow: { width: 960, height: 700, webPreferences: { backgroundThrottling: false } },
+  showOnAllWorkspaces: true,
+  preloadWindow: true,
+})
+
+let lastTitle = ''
+async function refreshBadge() {
+  let title = ''
+  let tip = 'boardroom'
+  try {
+    const res = await fetch(`${BASE}/api/cards?status=pending`, { signal: AbortSignal.timeout(2500) })
+    const pending = await res.json()
+    const n = Array.isArray(pending) ? pending.length : 0
+    title = n > 0 ? ` ${n}` : ''
+    tip = n > 0 ? `boardroom — ${n} waiting on you` : 'boardroom — nothing pending'
+  } catch {
+    title = ' •'
+    tip = 'boardroom — daemon offline (start it and this clears)'
+  }
+  if (title !== lastTitle && mb.tray) {
+    mb.tray.setTitle(title)
+    mb.tray.setToolTip(tip)
+    lastTitle = title
+  }
+}
+
+mb.on('ready', () => {
+  mb.tray.setTitle('')
+  void refreshBadge()
+  setInterval(() => void refreshBadge(), 4000)
+
+  mb.tray.on('right-click', () => {
+    mb.tray.popUpContextMenu(Menu.buildFromTemplate([
+      { label: 'Open boardroom', click: () => mb.showWindow() },
+      { label: 'Open in browser', click: () => void shell.openExternal(`${BASE}/`) },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() },
+    ]))
+  })
+})
+
+// A menu-bar utility shouldn't keep a Dock icon or quit-on-close semantics.
+app.dock?.hide()
