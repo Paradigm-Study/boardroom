@@ -1,7 +1,7 @@
 // boardroom menu-bar app — a thin Electron tray shell around the dashboard the
 // daemon already serves. The daemon (LaunchAgent) owns all state; this only
 // renders it and shows a pending-count badge in the menu bar.
-const { app, Menu, nativeImage, shell, Tray } = require('electron')
+const { app, Menu, nativeImage, Notification, shell, Tray } = require('electron')
 const { menubar } = require('menubar')
 const path = require('node:path')
 
@@ -18,14 +18,45 @@ const mb = menubar({
   preloadWindow: true,
 })
 
+const STAGE_LABEL = { clarify: 'Needs scoping', plan: 'Plan to approve', results: 'Results to review' }
+
+function openCard(id) {
+  mb.showWindow()
+  mb.window?.webContents.executeJavaScript(`location.hash = '#/card/${id}'`).catch(() => {})
+}
+
+// Reliable native notifications live HERE (a real app bundle), not in the
+// headless daemon — Electron's Notification integrates with macOS permissions,
+// whereas the daemon's vendored terminal-notifier silently no-ops when the OS
+// suppresses it.
+function notifyNew(card) {
+  if (!Notification.isSupported()) { console.log('[notify] unsupported'); return }
+  console.log('[notify]', card.stage, '·', card.headline)
+  const n = new Notification({
+    title: `boardroom · ${STAGE_LABEL[card.stage] ?? card.stage}`,
+    subtitle: card.session?.project,
+    body: card.headline,
+    silent: false,
+  })
+  n.on('click', () => openCard(card.id))
+  n.show()
+}
+
 let lastTitle = ''
+let knownPending = null // Set of pending ids; null until first poll (no launch burst)
 async function refreshBadge() {
   let title = ''
   let tip = 'boardroom'
   try {
     const res = await fetch(`${BASE}/api/cards?status=pending`, { signal: AbortSignal.timeout(2500) })
     const pending = await res.json()
-    const n = Array.isArray(pending) ? pending.length : 0
+    const list = Array.isArray(pending) ? pending : []
+    const ids = new Set(list.map(c => c.id))
+    if (knownPending) {
+      for (const c of list) if (!knownPending.has(c.id)) notifyNew(c)
+    }
+    knownPending = ids
+    const n = list.length
     title = n > 0 ? ` ${n}` : ''
     tip = n > 0 ? `boardroom — ${n} waiting on you` : 'boardroom — nothing pending'
   } catch {
