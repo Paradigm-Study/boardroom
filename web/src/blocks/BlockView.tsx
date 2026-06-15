@@ -2,8 +2,6 @@ import dagre from 'dagre'
 import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
 import type { Block } from '../../../src/shared/blocks.js'
 
 const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
@@ -21,55 +19,58 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown>{text}</ReactMarkdown></div>
 }
 
-function Graph({ block, onNodeClick }: {
-  block: Extract<Block, { type: 'graph' }>
-  onNodeClick?: () => void
-}) {
-  const { nodes, edges } = useMemo(() => {
+const NODE_W = 156
+const NODE_H = 40
+
+// Static, on-brand SVG graph: dagre for layout, plain SVG for render. No canvas,
+// no dotted grid, no pan/zoom — and edge labels we actually control the contrast of.
+function Graph({ block }: { block: Extract<Block, { type: 'graph' }> }) {
+  const { nodes, edges, width, height } = useMemo(() => {
     const g = new dagre.graphlib.Graph()
-    g.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 70 })
+    g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 64, marginx: 8, marginy: 8 })
     g.setDefaultEdgeLabel(() => ({}))
-    for (const n of block.nodes) g.setNode(n.id, { width: 170, height: 44 })
-    for (const e of block.edges) g.setEdge(e.from, e.to)
+    for (const n of block.nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H, label: n.label })
+    for (const e of block.edges) g.setEdge(e.from, e.to, { label: e.label })
     dagre.layout(g)
-    const nodes: Node[] = block.nodes.map(n => {
-      const pos = g.node(n.id)
-      return {
-        id: n.id,
-        position: { x: pos.x - 85, y: pos.y - 22 },
-        data: { label: n.label },
-        style: {
-          fontSize: 13,
-          fontFamily: 'var(--sans)',
-          borderRadius: 10,
-          background: 'var(--surface)',
-          color: 'var(--ink)',
-          border: '1.5px solid var(--line-2)',
-        },
-      }
+    const nodes = block.nodes.map(n => ({ ...g.node(n.id), label: n.label }))
+    const edges = block.edges.map(e => {
+      const ge = g.edge(e.from, e.to) as { points: { x: number; y: number }[] }
+      const pts = ge.points
+      const mid = pts[Math.floor(pts.length / 2)]
+      return { points: pts, label: e.label, mid }
     })
-    const edges: Edge[] = block.edges.map((e, i) => ({
-      id: `e${i}`, source: e.from, target: e.to, label: e.label,
-      labelStyle: { fontSize: 11, fill: 'var(--ink-2)' },
-      labelBgStyle: { fill: 'var(--surface)' },
-    }))
-    return { nodes, edges }
+    const { width, height } = g.graph()
+    return { nodes, edges, width: width ?? 400, height: height ?? 200 }
   }, [block])
 
   return (
-    <div className="reactflow-wrap" style={{ height: Math.max(220, block.nodes.length * 52) }}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        fitView
-        nodesDraggable={false}
-        nodesConnectable={false}
-        onNodeClick={() => onNodeClick?.()}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={18} color="var(--line-2)" />
-      </ReactFlow>
-    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: Math.max(160, height), display: 'block' }} role="img">
+      <defs>
+        <marker id="b-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0 1 L8 5 L0 9 z" className="g-arrow" />
+        </marker>
+      </defs>
+      {edges.map((e, i) => (
+        <g key={i}>
+          <polyline
+            points={e.points.map(p => `${p.x},${p.y}`).join(' ')}
+            className="g-edge" fill="none" markerEnd="url(#b-arrow)"
+          />
+          {e.label && (
+            <text x={e.mid.x} y={e.mid.y - 4} textAnchor="middle" className="g-edge-label"
+              style={{ paintOrder: 'stroke', stroke: 'var(--bg)', strokeWidth: 4, strokeLinejoin: 'round' }}>
+              {e.label}
+            </text>
+          )}
+        </g>
+      ))}
+      {nodes.map((n, i) => (
+        <g key={i}>
+          <rect x={n.x - NODE_W / 2} y={n.y - NODE_H / 2} width={NODE_W} height={NODE_H} rx="8" className="g-node" />
+          <text x={n.x} y={n.y} textAnchor="middle" dominantBaseline="central" className="g-node-label">{n.label}</text>
+        </g>
+      ))}
+    </svg>
   )
 }
 
@@ -134,10 +135,10 @@ function DiffStat({ block }: { block: Extract<Block, { type: 'diff_stat' }> }) {
   )
 }
 
-function Evidence({ block }: { block: Extract<Block, { type: 'evidence' }> }) {
+function Evidence({ block, forceOpen }: { block: Extract<Block, { type: 'evidence' }>; forceOpen?: boolean }) {
   const ok = block.exitCode === 0
   return (
-    <details className="evidence">
+    <details className="evidence" open={forceOpen}>
       <summary>
         {block.command ?? 'output'}
         {block.exitCode !== undefined && (
@@ -173,27 +174,28 @@ function Mermaid({ block }: { block: Extract<Block, { type: 'mermaid' }> }) {
   return <div dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
-export function BlockView({ block, highlighted, onClick }: {
+export function BlockView({ block, highlighted, onClick, forceOpen }: {
   block: Block
   highlighted?: boolean
   onClick?: () => void
+  forceOpen?: boolean
 }) {
   const kind = KIND[block.type]
   let body: React.ReactNode
   switch (block.type) {
     case 'markdown': body = <Markdown text={block.text} />; break
-    case 'graph': body = <Graph block={block} onNodeClick={onClick} />; break
+    case 'graph': body = <Graph block={block} />; break
     case 'phases': body = <Phases block={block} />; break
     case 'options_compare': body = <OptionsCompare block={block} />; break
     case 'table': body = <Table block={block} />; break
     case 'diff_stat': body = <DiffStat block={block} />; break
-    case 'evidence': body = <Evidence block={block} />; break
+    case 'evidence': body = <Evidence block={block} forceOpen={forceOpen} />; break
     case 'mermaid': body = <Mermaid block={block} />; break
   }
   return (
     <div
       className={`block${highlighted ? ' highlight' : ''}`}
-      onClick={block.type === 'graph' ? undefined : onClick}
+      onClick={onClick}
     >
       <div className="block-kind">
         <kind.Icon size={13} strokeWidth={2} aria-hidden />

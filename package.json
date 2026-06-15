@@ -24,7 +24,6 @@
     "@modelcontextprotocol/client": "^2.0.0-alpha.2",
     "@modelcontextprotocol/node": "^2.0.0-alpha.2",
     "@modelcontextprotocol/server": "^2.0.0-alpha.2",
-    "@xyflow/react": "^12.11.0",
     "better-sqlite3": "^12.10.0",
     "dagre": "^0.8.5",
     "express": "^5.2.1",

@@ -5,7 +5,7 @@ import { decideCard } from './api.js'
 import { BlockView } from './blocks/BlockView.js'
 import { DecisionSection } from './Decision.js'
 import { clearDrafts, loadDrafts, saveDrafts } from './drafts.js'
-import { answersComplete, toApiAnswers, type DraftAnswer } from './helpers.js'
+import { answersComplete, customMissing, noteMissing, toApiAnswers, type DraftAnswer } from './helpers.js'
 import { ResultsChecklist } from './ResultsChecklist.js'
 import { STAGE } from './stage.js'
 
@@ -61,7 +61,10 @@ export function CardView({ card }: { card: Card }) {
   }
 
   const ready = answersComplete(card.decisions, answers)
-  const answeredCount = card.decisions.filter(d => (answers[d.id]?.chosen.length ?? 0) > 0).length
+  const answeredCount = card.decisions.filter(d => {
+    const a = answers[d.id]
+    return a && a.chosen.length > 0 && !noteMissing(d, a) && !customMissing(a)
+  }).length
 
   return (
     <div className="card-col" style={meta.vars}>

@@ -280,7 +280,16 @@ a { color: inherit; }
 }
 .exit-ok { color: var(--ok); } .exit-bad { color: var(--bad); }
 
-.reactflow-wrap { border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); }
+.g-node { fill: var(--bg); stroke: var(--line-2); stroke-width: 1; }
+.g-node-label { font-size: 12px; fill: var(--ink); font-family: var(--sans); }
+.g-edge { stroke: var(--line-2); stroke-width: 1.5; }
+.g-arrow { fill: var(--ink-3); }
+.g-edge-label { font-size: 10.5px; fill: var(--ink-2); font-family: var(--sans); }
+
+.multi-hint {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--ink-3); margin: -6px 0 12px;
+}
 
 .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .opt {

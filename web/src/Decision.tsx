@@ -1,4 +1,4 @@
-import { AlertCircle, Check, PenLine, Star } from 'lucide-react'
+import { AlertCircle, Check, CheckSquare, CopyCheck, PenLine, Square, Star } from 'lucide-react'
 import type { Block } from '../../src/shared/blocks.js'
 import type { Card, Decision } from '../../src/shared/card.js'
 import { BlockView } from './blocks/BlockView.js'
@@ -28,12 +28,14 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
         {answered && <Check size={13} strokeWidth={2.5} className="dsec-check" aria-hidden />}
       </div>
       <h2 className="dsec-prompt">{decision.prompt}</h2>
+      {decision.multi && <p className="multi-hint"><CopyCheck size={12} aria-hidden />Select all that apply</p>}
 
       {blocks.map(b => <BlockView key={b.id} block={b} />)}
 
       <div className="opts">
         {decision.options.map(o => {
           const on = answer.chosen.includes(o.id)
+          const Box = decision.multi ? (on ? CheckSquare : Square) : undefined
           return (
             <button
               key={o.id}
@@ -42,7 +44,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
               title={o.detail}
               onClick={() => onChange({ ...answer, chosen: toggleChoice(decision, answer.chosen, o.id) })}
             >
-              {on && <Check size={13} strokeWidth={2.5} aria-hidden />}
+              {Box ? <Box size={14} strokeWidth={2.2} aria-hidden /> : on && <Check size={13} strokeWidth={2.5} aria-hidden />}
               {o.label}
               {o.recommended && <Star size={12} className="star" fill="currentColor" aria-hidden />}
             </button>

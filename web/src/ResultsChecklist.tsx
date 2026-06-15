@@ -4,7 +4,11 @@ import type { Block } from '../../src/shared/blocks.js'
 import type { Card, Decision } from '../../src/shared/card.js'
 import { BlockView } from './blocks/BlockView.js'
 import { evidenceChip } from './evidenceChip.js'
-import { noteMissing, type DraftAnswer } from './helpers.js'
+import { customMissing, noteMissing, type DraftAnswer } from './helpers.js'
+
+function complete(d: Decision, a: DraftAnswer): boolean {
+  return a.chosen.length > 0 && !noteMissing(d, a) && !customMissing(a)
+}
 
 function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
   decision: Decision
@@ -49,7 +53,7 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
 
       {open && blocks.length > 0 && (
         <div className="claim-evidence">
-          {blocks.map(b => <BlockView key={b.id} block={b} />)}
+          {blocks.map(b => <BlockView key={b.id} block={b} forceOpen />)}
         </div>
       )}
 
@@ -74,7 +78,10 @@ export function ResultsChecklist({ card, blockById, answers, readonly, onChange 
   readonly: boolean
   onChange(id: string, a: DraftAnswer): void
 }) {
-  const reviewed = card.decisions.filter(d => (answers[d.id]?.chosen.length ?? 0) > 0).length
+  const reviewed = card.decisions.filter(d => {
+    const a = answers[d.id]
+    return a && complete(d, a)
+  }).length
 
   function approveAll(): void {
     for (const d of card.decisions) {
