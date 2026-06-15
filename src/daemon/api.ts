@@ -30,12 +30,18 @@ export function buildApiRouter(queue: Queue, store: Store): Router {
     res.json(card)
   })
 
-  router.post('/api/cards/:id/decide', (req, res) => {
+  const decideHandler = (req: Request<{ id: string }>, res: Response): void => {
     try {
       const { card, summary, delivered } = queue.decide(req.params.id, answersFrom(req))
       res.json({ card, summary, delivered })
     } catch (err) { sendError(res, err) }
-  })
+  }
+  router.post('/api/cards/:id/decide', decideHandler)
+  // Backward-compat alias: a long-lived dashboard tab loaded before decide()
+  // absorbed offline answers may still POST here. Keep it so an out-of-date
+  // tab keeps working (and never hits Express's HTML 404) — decide() already
+  // handles orphaned cards and returns { card, summary }.
+  router.post('/api/cards/:id/offline-answer', decideHandler)
 
   router.get('/events', (req, res) => {
     res.writeHead(200, {

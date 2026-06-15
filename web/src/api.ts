@@ -1,7 +1,15 @@
 import type { Card, DecisionAnswer } from '../../src/shared/card.js'
 
 async function check<T>(res: globalThis.Response): Promise<T> {
-  const body = await res.json()
+  const text = await res.text()
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    // Non-JSON (e.g. an HTML 404 page) — usually a dashboard tab left open
+    // across a daemon update calling a route that has since moved.
+    throw new Error(`Boardroom returned a non-JSON response (HTTP ${res.status}). The dashboard may be out of date — reload the page.`)
+  }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
   return body as T
 }

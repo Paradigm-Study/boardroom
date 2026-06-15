@@ -96,6 +96,17 @@ describe('POST /api/cards/:id/decide — delivery flag', () => {
     expect(res.body.summary).toContain('p: A')
     expect(res.body.card.status).toBe('decided')
   })
+
+  it('honors the legacy /offline-answer alias (stale tabs keep working)', async () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)
+    const res = await request(app)
+      .post('/api/cards/c1/offline-answer')
+      .send({ answers: { d1: { chosen: ['a'], note: 'quotes " backticks ` <tag> & emoji ✓' } } })
+      .expect(200)
+    expect(res.body.summary).toContain('quotes " backticks')
+    expect(res.body.card.status).toBe('decided')
+  })
 })
 
 describe('GET /events', () => {
