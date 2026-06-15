@@ -1,8 +1,9 @@
-import { Armchair } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Armchair, Bell } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import { fetchCards, subscribeCards } from './api.js'
 import { CardView } from './CardView.js'
+import { notifyCard, notifyPermission, requestNotify } from './notify.js'
 import { TaskSidebar } from './TaskSidebar.js'
 
 function useHashRoute(): string {
@@ -17,13 +18,26 @@ function useHashRoute(): string {
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
+  const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
+  const seenPending = useRef<Set<string> | null>(null) // null until first load → no launch burst
   const hash = useHashRoute()
 
   useEffect(() => {
-    void fetchCards().then(list => setCards(new Map(list.map(c => [c.id, c]))))
-    return subscribeCards(card =>
-      setCards(prev => new Map(prev).set(card.id, card)),
-    )
+    void fetchCards().then(list => {
+      setCards(new Map(list.map(c => [c.id, c])))
+      seenPending.current = new Set(list.filter(c => c.status === 'pending').map(c => c.id))
+    })
+    return subscribeCards(card => {
+      setCards(prev => new Map(prev).set(card.id, card))
+      const seen = seenPending.current
+      if (!seen) return
+      if (card.status === 'pending' && !seen.has(card.id)) {
+        seen.add(card.id)
+        notifyCard(card)
+      } else if (card.status !== 'pending') {
+        seen.delete(card.id)
+      }
+    })
   }, [])
 
   const all = [...cards.values()]
@@ -40,9 +54,6 @@ export function App() {
   const onRoot = routeId === null
   const newestPendingId = pending[0]?.id
 
-  // Auto-open the newest pending card ONLY from the root view, and pin the URL
-  // to it. Once you're on a card route, a newly arriving card updates the
-  // sidebar but never yanks you off the one you're filling in.
   useEffect(() => {
     if (onRoot && newestPendingId) {
       history.replaceState(null, '', `#/card/${newestPendingId}`)
@@ -56,6 +67,11 @@ export function App() {
     <div className="frame">
       <TaskSidebar cards={all} selectedId={shown?.id ?? null} />
       <main className="content">
+        {perm === 'default' && (
+          <button className="enable-alerts" onClick={() => void requestNotify().then(setPerm)}>
+            <Bell size={13} aria-hidden /> Enable desktop alerts
+          </button>
+        )}
         <div className="content-inner">
           {shown
             ? <CardView key={shown.id} card={shown} />

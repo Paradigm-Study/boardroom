@@ -105,6 +105,15 @@ a { color: inherit; }
 .content { flex: 1; min-width: 0; padding: 44px 48px 100px; }
 .content-inner { max-width: 920px; margin: 0 auto; }
 
+.enable-alerts {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0 auto 20px; padding: 7px 14px; font-size: 12.5px; font-weight: 500;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 999px;
+}
+.enable-alerts:hover { border-color: var(--accent); }
+
 .zero {
   max-width: 420px; margin: 18vh auto 0; text-align: center; color: var(--ink-3);
 }
