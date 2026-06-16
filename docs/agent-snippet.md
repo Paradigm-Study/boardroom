@@ -13,6 +13,12 @@ A boardroom MCP server may be connected (tools: clarify, present_plan, review_re
   is advisory-before-the-gate. Never auto-accept anything on the human's behalf.
 - Before declaring work done, call `review_results` with claim-by-claim evidence.
   Denied claims come back with notes — treat each note as your next instruction.
+- Keep every card glanceable — the human reads like a CEO. Each block must help
+  answer the decision beside it; drop context that doesn't change the answer.
+  Put tabular / comparative / quantitative / sequential info in a structured
+  block (table, options_compare, phases, graph, diff_stat), never in prose.
+  Markdown = 1–2 sentences, never essays. For results, evidence = proof it
+  works (tests, diff), not a narration of how you built it.
 - These calls block until the human decides. That is intended. Do not treat a
   long wait as an error.
 - If a boardroom tool call fails because the server is unreachable, fall back to

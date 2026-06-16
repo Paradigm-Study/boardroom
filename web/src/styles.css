@@ -249,6 +249,14 @@ a { color: inherit; }
 .prose { font-size: 14.5px; max-width: 68ch; }
 .prose p { margin: 0 0 0.7em; } .prose p:last-child { margin-bottom: 0; }
 .prose code { font-family: var(--mono); font-size: 13px; background: var(--bg-2); padding: 1px 5px; border-radius: 4px; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; }
+.prose li { margin: 0 0 0.3em; }
+.prose table { border-collapse: collapse; font-size: 13.5px; margin: 0.3em 0; }
+.prose th { text-align: left; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); padding: 0 12px 6px 0; border-bottom: 1px solid var(--line); }
+.prose td { padding: 5px 12px 5px 0; border-bottom: 1px solid var(--line); }
+.prose.clamped { max-height: 5em; overflow: hidden; -webkit-mask-image: linear-gradient(180deg, #000 62%, transparent); mask-image: linear-gradient(180deg, #000 62%, transparent); }
+.clamp-toggle { margin-top: 6px; font-size: 12px; font-weight: 500; color: var(--accent); }
+.clamp-toggle:hover { text-decoration: underline; }
 
 .phases { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
 .phase { background: var(--bg-2); border-radius: var(--r); padding: 9px 13px; min-width: 120px; }

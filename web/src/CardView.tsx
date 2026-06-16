@@ -87,7 +87,7 @@ export function CardView({ card }: { card: Card }) {
       </div>
 
       {background.length > 0 && card.stage !== 'results' && (
-        <details className="bg-fold" open>
+        <details className="bg-fold">
           <summary><BookOpen size={13} aria-hidden />Background · {background.length} block{background.length === 1 ? '' : 's'}</summary>
           <div className="bg-body">
             {background.map(b => <BlockView key={b.id} block={b} />)}

@@ -16,13 +16,16 @@ const requestCtx = new AsyncLocalStorage<RequestCtx>()
 
 const KEEPALIVE_MS = 30_000
 
+const GLANCEABLE =
+  ' AUTHORING RULES (the human reads like a CEO — keep it glanceable): every block must directly help answer THE decision next to it; omit context that does not change the answer. Put anything tabular/comparative/quantitative/sequential in a structured block (table, options_compare, phases, graph, diff_stat), NOT in prose. Keep markdown to 1–2 sentences — never multi-paragraph essays; long prose gets clamped behind "show more" and just wastes the reader.'
+
 const DESCRIPTIONS = {
   clarify:
-    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform it — the dashboard renders that context inline with the decision. The call blocks until the human answers in the boardroom dashboard — that is expected, do not time it out.',
+    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform it — the dashboard renders that context inline with the decision. The call blocks until the human answers in the boardroom dashboard — that is expected, do not time it out.' + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the blocks that inform it (rendered inline with the decision). A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. The call blocks until the human decides.",
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the blocks that inform it (rendered inline with the decision). A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. The call blocks until the human decides." + GLANCEABLE,
   review_results:
-    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. The human approves or denies each claim; denial notes in the response are your next instructions. Call this before declaring work done. The call blocks until the human decides.',
+    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). The human approves or denies each claim; denial notes are your next instructions. Call this before declaring work done. The call blocks until the human decides.' + GLANCEABLE,
 } as const
 
 interface ToolResult {

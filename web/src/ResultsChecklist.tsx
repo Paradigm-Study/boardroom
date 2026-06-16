@@ -20,7 +20,10 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
   const [open, setOpen] = useState(false)
   const verdict = answer.chosen[0]
   const denied = verdict === 'deny'
-  const chip = evidenceChip(blocks)
+  // Proof first (tests/diff/graph), the agent's prose explanation last — so the
+  // chip and the expanded view lead with what verifies the claim, not an essay.
+  const ordered = [...blocks].sort((a, b) => (a.type === 'markdown' ? 1 : 0) - (b.type === 'markdown' ? 1 : 0))
+  const chip = evidenceChip(ordered)
   const Icon = verdict === 'approve' ? CircleCheck : denied ? CircleX : Circle
   const iconClass = verdict === 'approve' ? 'ok' : denied ? 'bad' : 'idle'
 
@@ -51,9 +54,9 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
         </span>
       </div>
 
-      {open && blocks.length > 0 && (
+      {open && ordered.length > 0 && (
         <div className="claim-evidence">
-          {blocks.map(b => <BlockView key={b.id} block={b} forceOpen />)}
+          {ordered.map(b => <BlockView key={b.id} block={b} forceOpen />)}
         </div>
       )}
 

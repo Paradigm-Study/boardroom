@@ -1,7 +1,8 @@
 import dagre from 'dagre'
 import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { Block } from '../../../src/shared/blocks.js'
 
 const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
@@ -15,8 +16,29 @@ const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
   mermaid: { label: 'Diagram', Icon: GitFork },
 }
 
+// Prose is clamped to a few lines with a Show more toggle so a verbose agent
+// can't bury the decision under an essay. remark-gfm renders any markdown
+// tables / lists / task-lists as real structure instead of raw pipe text.
 function Markdown({ text }: { text: string }) {
-  return <div className="prose"><ReactMarkdown>{text}</ReactMarkdown></div>
+  const ref = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (el) setOverflows(el.scrollHeight > el.clientHeight + 4)
+  }, [text, expanded])
+  return (
+    <div>
+      <div ref={ref} className={`prose${expanded ? '' : ' clamped'}`}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      </div>
+      {(overflows || expanded) && (
+        <button className="clamp-toggle" onClick={() => setExpanded(e => !e)}>
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  )
 }
 
 const NODE_W = 156
