@@ -70,14 +70,23 @@ async function refreshBadge() {
   }
 }
 
+const reload = () => mb.window?.webContents.reloadIgnoringCache()
+
 mb.on('ready', () => {
   mb.tray.setTitle('')
   void refreshBadge()
   setInterval(() => void refreshBadge(), 4000)
 
+  // Cmd/Ctrl+R reloads the embedded dashboard (a frameless window has no menu
+  // bar, so wire it by hand) — the escape hatch for a stale cached bundle.
+  mb.window?.webContents.on('before-input-event', (_e, input) => {
+    if ((input.meta || input.control) && input.key.toLowerCase() === 'r') reload()
+  })
+
   mb.tray.on('right-click', () => {
     mb.tray.popUpContextMenu(Menu.buildFromTemplate([
       { label: 'Open boardroom', click: () => mb.showWindow() },
+      { label: 'Reload', accelerator: 'Cmd+R', click: reload },
       { label: 'Open in browser', click: () => void shell.openExternal(`${BASE}/`) },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
