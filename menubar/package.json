@@ -5,13 +5,14 @@
   "description": "macOS menu-bar shell for the boardroom dashboard",
   "main": "main.js",
   "scripts": {
-    "icon": "node make-icon.mjs",
-    "appicon": "node make-app-icon.mjs && iconutil -c icns -o build/icon.icns build/boardroom.iconset",
+    "appicon": "node make-icons.mjs && iconutil -c icns -o build/icon.icns build/boardroom.iconset",
     "start": "electron .",
     "pack": "npm run appicon && electron-builder --mac --dir",
-    "postinstall": "node make-icon.mjs"
+    "postinstall": "node make-icons.mjs",
+    "icons": "node make-icons.mjs"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8"
   },
@@ -35,7 +36,9 @@
       "category": "public.app-category.developer-tools",
       "target": "dir",
       "identity": null,
-      "extendInfo": { "LSUIElement": 1 }
+      "extendInfo": {
+        "LSUIElement": 1
+      }
     }
   }
 }
