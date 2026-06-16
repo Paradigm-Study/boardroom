@@ -143,6 +143,18 @@ a { color: inherit; }
 .status-chip.orphaned { background: var(--bg-3); color: var(--ink-2); }
 .status-chip.pending { background: var(--pending-soft); color: var(--pending); }
 
+.stage-role { font-size: 13px; color: var(--ink-2); margin: 12px 0 0; max-width: 64ch; }
+.stage-guide { margin: 6px 0 0; }
+.stage-guide summary {
+  font-size: 12px; color: var(--ink-3); cursor: pointer; list-style: none;
+  display: inline-flex; align-items: center; gap: 5px; width: fit-content;
+}
+.stage-guide summary::-webkit-details-marker { display: none; }
+.stage-guide summary::before { content: '›'; display: inline-block; transition: transform 0.15s ease; }
+.stage-guide[open] summary::before { transform: rotate(90deg); }
+.stage-guide ul { margin: 8px 0 0; padding-left: 1.1em; max-width: 64ch; }
+.stage-guide li { font-size: 12.5px; color: var(--ink-2); margin: 0 0 4px; line-height: 1.5; }
+
 .banner {
   display: flex; gap: 10px; align-items: flex-start;
   background: var(--pending-soft); color: var(--pending);

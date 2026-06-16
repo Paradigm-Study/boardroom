@@ -95,6 +95,15 @@ export function CardView({ card }: { card: Card }) {
             <span>The agent's connection dropped (often the Mac sleeping). Decide anyway — it's delivered automatically when the agent reconnects, or copy the summary to paste in by hand.</span>
           </div>
         )}
+        {!readonly && (
+          <>
+            <p className="stage-role">{meta.role}</p>
+            <details className="stage-guide">
+              <summary>How to decide here</summary>
+              <ul>{meta.guide.map((g, i) => <li key={i}>{g}</li>)}</ul>
+            </details>
+          </>
+        )}
       </div>
 
       {background.length > 0 && card.stage !== 'results' && (
