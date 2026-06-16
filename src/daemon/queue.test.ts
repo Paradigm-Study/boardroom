@@ -76,6 +76,22 @@ describe('Queue.decide', () => {
     expect(summary).toContain('Other: split the difference')
   })
 
+  it('plan send-back (revise) needs only the verdict, not every sub-decision', () => {
+    const planCard: Card = {
+      ...card('plan1'), stage: 'plan',
+      decisions: [
+        { id: 'storage', prompt: 'Storage?', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+        { id: 'plan_verdict', prompt: 'Verdict', options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }], noteRequiredOn: ['revise', 'reject'] },
+      ],
+    }
+    queue.submit(planCard, noop)
+    // approve still requires the sub-decision answered
+    expect(() => queue.decide('plan1', { plan_verdict: { chosen: ['approve'] } })).toThrow(ValidationError)
+    // revise needs only the verdict + its note
+    const { card: updated } = queue.decide('plan1', { plan_verdict: { chosen: ['revise'], note: 'rethink storage' } })
+    expect(updated.status).toBe('decided')
+  })
+
   it('decides an orphaned card with no live waiter as undelivered (claimable later)', () => {
     const { cardId, gen } = queue.submit(card('c1'), noop)
     queue.disconnect(cardId, gen)

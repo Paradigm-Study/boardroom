@@ -111,7 +111,15 @@ export class Queue extends EventEmitter {
   decide(id: string, answers: Record<string, DecisionAnswer>): { card: Card; summary: string; delivered: boolean } {
     const card = this.getOrThrow(id)
     if (card.status === 'decided') throw new ConflictError('card is already decided')
-    this.validateAnswers(card, answers)
+    // Plan send-back: rejecting/revising a plan is a verdict on the whole thing,
+    // so the human needn't have answered every sub-decision — validate only the
+    // verdict. Approval still requires agreeing to all the plan's decisions.
+    const verdict = answers['plan_verdict']?.chosen[0]
+    const planSendBack = card.stage === 'plan' && (verdict === 'revise' || verdict === 'reject')
+    this.validateAnswers(
+      planSendBack ? { ...card, decisions: card.decisions.filter(d => d.id === 'plan_verdict') } : card,
+      answers,
+    )
     const summary = buildSummary(card, answers)
     const entry = this.waiters.get(id)
     const delivered = entry !== undefined

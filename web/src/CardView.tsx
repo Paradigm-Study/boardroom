@@ -31,6 +31,14 @@ export function CardView({ card }: { card: Card }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [pickupSummary, setPickupSummary] = useState<string | null>(null)
+  const [sendingBack, setSendingBack] = useState(false)
+  const [sendBackNote, setSendBackNote] = useState('')
+
+  // Plan approval is NOT a separate gate — it's the act of submitting your
+  // agreement to the plan's decisions. The auto-appended verdict is driven by
+  // the submit bar, never shown as a row to answer.
+  const planMode = card.stage === 'plan'
+  const choiceDecisions = card.decisions.filter(d => !(planMode && d.id === 'plan_verdict'))
 
   // Persist every keystroke/click so an arriving card, a status change, or a
   // page reload never loses in-progress work. Skip once the card is settled.
@@ -46,11 +54,14 @@ export function CardView({ card }: { card: Card }) {
     }
   }, [card])
 
-  async function submit(): Promise<void> {
+  async function submit(planVerdict?: 'approve' | 'revise'): Promise<void> {
     setBusy(true)
     setError(null)
+    const payload = planVerdict
+      ? { ...answers, plan_verdict: { chosen: [planVerdict], note: planVerdict === 'revise' ? sendBackNote : '', custom: '' } }
+      : answers
     try {
-      const { delivered, summary } = await decideCard(card.id, toApiAnswers(answers))
+      const { delivered, summary } = await decideCard(card.id, toApiAnswers(payload))
       clearDrafts(card.id)
       if (!delivered) setPickupSummary(summary)
     } catch (err) {
@@ -60,8 +71,8 @@ export function CardView({ card }: { card: Card }) {
     }
   }
 
-  const ready = answersComplete(card.decisions, answers)
-  const answeredCount = card.decisions.filter(d => {
+  const ready = answersComplete(choiceDecisions, answers)
+  const answeredCount = choiceDecisions.filter(d => {
     const a = answers[d.id]
     return a && a.chosen.length > 0 && !noteMissing(d, a) && !customMissing(a)
   }).length
@@ -105,13 +116,13 @@ export function CardView({ card }: { card: Card }) {
             onChange={(id, a) => setAnswers(prev => ({ ...prev, [id]: a }))}
           />
         )
-        : card.decisions.map((d, i) => (
+        : choiceDecisions.map((d, i) => (
           <DecisionSection
             key={d.id}
             card={card}
             decision={d}
             index={i}
-            total={card.decisions.length}
+            total={choiceDecisions.length}
             blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
             answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
             readonly={readonly || busy}
@@ -119,9 +130,40 @@ export function CardView({ card }: { card: Card }) {
           />
         ))}
 
-      {!readonly && !pickupSummary && (
+      {!readonly && !pickupSummary && planMode && (
         <div className="submit-bar">
-          <span className="submit-state">{answeredCount}/{card.decisions.length} answered</span>
+          {sendingBack ? (
+            <div className="sendback">
+              <textarea
+                className="note needs"
+                placeholder="What should change before you'd approve? (sent back to the agent)"
+                value={sendBackNote}
+                autoFocus
+                onChange={e => setSendBackNote(e.target.value)}
+              />
+              <div className="sendback-actions">
+                <button className="submit ghost" onClick={() => setSendingBack(false)}>Cancel</button>
+                <button className="submit bad" disabled={!sendBackNote.trim() || busy} onClick={() => void submit('revise')}>
+                  Send back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button className="submit ghost" onClick={() => setSendingBack(true)}>Send back…</button>
+              <span className="submit-state">{ready ? 'agreed on all' : `${answeredCount}/${choiceDecisions.length} agreed`}</span>
+              <button className="submit" disabled={!ready || busy} onClick={() => void submit('approve')}>
+                {orphaned ? 'Approve (agent offline)' : 'Approve plan & proceed'}
+                <ArrowRight size={16} aria-hidden />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {!readonly && !pickupSummary && !planMode && (
+        <div className="submit-bar">
+          <span className="submit-state">{answeredCount}/{choiceDecisions.length} answered</span>
           <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
             {orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
             <ArrowRight size={16} aria-hidden />
