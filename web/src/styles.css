@@ -198,11 +198,12 @@ a { color: inherit; }
 .claim-icon.idle { color: var(--ink-3); }
 .claim-icon.ok { color: var(--ok); }
 .claim-icon.bad { color: var(--pending); }
-.claim-text { flex: 1; font-size: 14px; line-height: 1.45; min-width: 0; }
+.claim-text { flex: 1; font-size: 14px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere; }
 .claim.decided .claim-text { color: var(--ink-2); }
 .claim-chip {
   font-size: 11px; font-family: var(--mono); color: var(--ink-2);
-  background: var(--bg-2); padding: 3px 9px; border-radius: 6px; white-space: nowrap; flex-shrink: 0;
+  background: var(--bg-2); padding: 3px 9px; border-radius: 6px;
+  white-space: nowrap; flex-shrink: 1; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
 }
 .claim-expand { display: flex; color: var(--ink-3); padding: 2px; border-radius: 5px; }
 .claim-expand:hover { color: var(--ink); background: var(--bg-2); }
@@ -217,7 +218,9 @@ a { color: inherit; }
 .vbtn.approve.on { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .vbtn.deny.on { border-color: var(--pending); background: var(--pending-soft); color: var(--pending); }
 .vbtn.on:disabled { opacity: 1; }
-.claim-evidence { padding: 2px 0 14px 29px; }
+.claim-evidence { padding: 2px 0 14px 29px; min-width: 0; }
+.claim-evidence .block { max-width: 100%; overflow: hidden; }
+.claim-evidence pre { max-width: 100%; }
 .claim-evidence .block:last-child { margin-bottom: 0; }
 .claim .note { margin: 0 0 14px 29px; width: calc(100% - 29px); }
 

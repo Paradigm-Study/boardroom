@@ -26,4 +26,12 @@ describe('evidenceChip', () => {
   it('is empty when there is no evidence', () => {
     expect(evidenceChip([])).toBe('')
   })
+
+  it('keeps a long command chip short (no row-crushing)', () => {
+    const b: Block = { id: 'e', type: 'evidence', command: "grep -rln 'unstackAll|SquaresFourIcon|computeBatchGridPositions' src/", exitCode: 0, output: '...' }
+    const chip = evidenceChip([b])
+    expect(chip.length).toBeLessThanOrEqual(30)
+    expect(chip).toContain('grep')
+    expect(chip).toContain('exit 0')
+  })
 })
