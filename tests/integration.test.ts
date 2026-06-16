@@ -15,7 +15,7 @@ let httpServer: ReturnType<Daemon['app']['listen']>
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'boardroom-int-'))
   daemon = createDaemon({
-    port: 0, remindEveryMinutes: 10, notifications: false,
+    port: 0, remindEveryMinutes: 10, notifications: false, openOnPending: false,
     dbPath: join(dir, 'int.sqlite'), configDir: dir,
   })
   await new Promise<void>(resolve => {

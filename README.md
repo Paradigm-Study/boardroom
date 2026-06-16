@@ -92,11 +92,38 @@ daemon — this is pure presentation.
 ```bash
 cd menubar
 npm install      # also generates the tray icons (postinstall)
-npm start        # tray icon appears; click it
+npm start        # dev run: tray icon appears (runs as "Electron")
+npm run pack     # package boardroom.app → release/mac-arm64/boardroom.app
 ```
 
-Electron (not Tauri) so there's no extra toolchain to install — it's
-isolated in `menubar/` and never touches the daemon package. Set
-`BOARDROOM_PORT` if your daemon isn't on 4040. To package a real `.app`,
-add `electron-builder` later; for personal use `npm start` (or a tiny
-LaunchAgent) is enough.
+`npm run pack` builds a real, icon'd `boardroom.app` (a menu-bar-only app via
+`LSUIElement`; unsigned, so the first launch is right-click → Open). Drag it to
+`/Applications`, and add it to System Settings → General → Login Items to have
+it always there. Packaged, its tray icon **and its macOS notifications carry
+the boardroom icon** — that's the fix for the generic cog you saw from the
+daemon's notifier.
+
+Electron (not Tauri) so there's no extra toolchain to install — it's isolated
+in `menubar/` and never touches the daemon package. Set `BOARDROOM_PORT` if
+your daemon isn't on 4040.
+
+## Notifications
+
+Three surfaces, in order of reliability:
+
+- **Menu-bar app** (packaged) — fires native macOS notifications with the
+  boardroom icon; click → opens the card. The dependable path.
+- **Browser dashboard** — click "Enable desktop alerts" once; new cards pop a
+  Web Notification (boardroom icon, click → opens the card).
+- **Daemon** (`terminal-notifier`) — best-effort fallback; macOS often
+  suppresses it and its icon is a fixed generic cog. Set `notifications: false`
+  in config once you use the app/browser to silence it.
+
+Optional: set `openOnPending: true` in `~/.config/boardroom/config.json` to have
+the daemon auto-open the dashboard (default browser) straight to each new card —
+the decision comes to you, no hunting. (Off by default; auto-opening tabs is
+intrusive unless asked for.)
+
+Note: a live decision *inside the Claude Code preview pane* isn't supported —
+that pane launches and owns its own dev server and won't attach to the shared
+always-on daemon. Use the menu-bar app, the browser, or `openOnPending`.

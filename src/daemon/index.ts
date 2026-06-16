@@ -1,6 +1,6 @@
 import { createDaemon } from './app.js'
 import { loadConfig } from './config.js'
-import { startNotifications } from './notify.js'
+import { startAutoOpen, startNotifications } from './notify.js'
 
 const config = loadConfig()
 const { app, queue, orphanedOnBoot } = createDaemon(config)
@@ -12,3 +12,4 @@ app.listen(config.port, '127.0.0.1', () => {
 })
 
 startNotifications(queue, config)
+startAutoOpen(queue, config)

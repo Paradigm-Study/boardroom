@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import notifier from 'node-notifier'
 import type { Card } from '../shared/card.js'
 import type { Config } from './config.js'
@@ -42,4 +43,17 @@ export function startNotifications(queue: Queue, config: Config): void {
       timeout: 10,
     })
   }, config.remindEveryMinutes * 60_000).unref()
+}
+
+// Opt-in: pop the dashboard (default browser) straight to the card the moment a
+// decision is needed, so it comes to you instead of you hunting for it. Off by
+// default — auto-opening tabs is intrusive unless you asked for it.
+export function startAutoOpen(queue: Queue, config: Config): void {
+  if (!config.openOnPending) return
+  const seen = new Set<string>()
+  queue.on('card', (card: Card) => {
+    if (card.status !== 'pending' || seen.has(card.id)) return
+    seen.add(card.id)
+    spawn('open', [cardUrl(config.port, card.id)], { stdio: 'ignore' }).on('error', () => {})
+  })
 }
