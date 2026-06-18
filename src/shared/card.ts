@@ -14,7 +14,7 @@ export const Decision = z.object({
   prompt: z.string().min(1),
   options: z.array(DecisionOption).min(2),
   multi: z.boolean().optional(),
-  blockRefs: z.array(z.string()).optional(),
+  blockRefs: z.array(z.string()).optional().describe('Question-local context: ids of blocks that should appear inside this decision row. Blocks not referenced by any decision are global card context.'),
   noteRequiredOn: z.array(z.string()).optional(),
 }).superRefine((d, ctx) => {
   const ids = d.options.map(o => o.id)
@@ -44,10 +44,23 @@ export type CardStatus = z.infer<typeof CardStatus>
 
 export const OTHER_OPTION_ID = '__other__'
 
+export const AttachmentRef = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  mime: z.string().optional(),
+  size: z.number().int().nonnegative(),
+  path: z.string().min(1),
+  url: z.string().optional(),
+  field: z.string().optional(),
+  uploadedAt: z.string(),
+})
+export type AttachmentRef = z.infer<typeof AttachmentRef>
+
 export const DecisionAnswer = z.object({
   chosen: z.array(z.string()).min(1),
   note: z.string().optional(),
   custom: z.string().optional(),
+  attachments: z.array(AttachmentRef).optional(),
 })
 export type DecisionAnswer = z.infer<typeof DecisionAnswer>
 

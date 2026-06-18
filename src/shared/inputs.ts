@@ -25,12 +25,44 @@ function checkBlockRefs(
   })
 }
 
+function checkQuestionAndGlobalContext(
+  input: { blocks?: Block[]; decisions?: Decision[] },
+  ctx: z.RefinementCtx,
+): void {
+  const blockIds = new Set((input.blocks ?? []).map(b => b.id))
+  const referenced = new Set<string>()
+
+  ;(input.decisions ?? []).forEach((d, i) => {
+    if (d.id === 'plan_verdict') return
+    if ((d.blockRefs ?? []).length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'each decision must reference at least one question-local context block',
+        path: ['decisions', i, 'blockRefs'],
+      })
+    }
+    for (const ref of d.blockRefs ?? []) referenced.add(ref)
+  })
+
+  const hasGlobal = [...blockIds].some(id => !referenced.has(id))
+  if (!hasGlobal) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'card requires at least one global context block that is not referenced by any decision',
+      path: ['blocks'],
+    })
+  }
+}
+
 export const ClarifyInput = z.object({
   ...sessionFields,
   headline: z.string().min(1).describe('One-line summary of what you need decided'),
-  blocks: z.array(Block).default([]).describe('Optional visuals that help the human decide'),
+  blocks: z.array(Block).default([]).describe('Context blocks for the card. Include at least one global block left unreferenced and at least one question-local block referenced by each decision blockRefs.'),
   decisions: z.array(Decision).min(1).describe('The questions, as button decisions'),
-}).superRefine(checkBlockRefs)
+}).superRefine((input, ctx) => {
+  checkBlockRefs(input, ctx)
+  checkQuestionAndGlobalContext(input, ctx)
+})
 export type ClarifyInput = z.infer<typeof ClarifyInput>
 
 const STRUCTURAL = new Set(['graph', 'phases', 'options_compare'])
@@ -38,7 +70,7 @@ const STRUCTURAL = new Set(['graph', 'phases', 'options_compare'])
 export const PresentPlanInput = z.object({
   ...sessionFields,
   headline: z.string().min(1).describe('One-line summary of the plan'),
-  blocks: z.array(Block).min(1).describe('Plan visuals; must include at least one graph, phases, or options_compare block'),
+  blocks: z.array(Block).min(1).describe('Plan visuals; must include at least one graph, phases, or options_compare block, at least one unreferenced global block, and at least one question-local block referenced by each plan decision blockRefs.'),
   decisions: z.array(Decision).default([]).describe('Plan-level decisions; a final approve/revise/reject verdict is appended automatically'),
   planRef: z.string().optional().describe('Absolute path to the full plan markdown on disk, for drill-down'),
 }).superRefine((input, ctx) => {
@@ -60,6 +92,7 @@ export const PresentPlanInput = z.object({
     }
   })
   checkBlockRefs(input, ctx)
+  checkQuestionAndGlobalContext(input, ctx)
 })
 export type PresentPlanInput = z.infer<typeof PresentPlanInput>
 

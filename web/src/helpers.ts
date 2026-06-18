@@ -1,4 +1,4 @@
-import { OTHER_OPTION_ID, type Decision } from '../../src/shared/card.js'
+import { OTHER_OPTION_ID, type AttachmentRef, type Decision } from '../../src/shared/card.js'
 
 export { OTHER_OPTION_ID }
 
@@ -6,6 +6,7 @@ export interface DraftAnswer {
   chosen: string[]
   note: string
   custom: string
+  attachments?: AttachmentRef[]
 }
 
 export function toggleChoice(decision: Decision, chosen: string[], optionId: string): string[] {
@@ -30,12 +31,13 @@ export function answersComplete(decisions: Decision[], answers: Record<string, D
 
 export function toApiAnswers(
   answers: Record<string, DraftAnswer>,
-): Record<string, { chosen: string[]; note?: string; custom?: string }> {
+): Record<string, { chosen: string[]; note?: string; custom?: string; attachments?: AttachmentRef[] }> {
   return Object.fromEntries(
     Object.entries(answers).map(([id, a]) => [id, {
       chosen: a.chosen,
       ...(a.note.trim() ? { note: a.note.trim() } : {}),
       ...(a.chosen.includes(OTHER_OPTION_ID) && a.custom.trim() ? { custom: a.custom.trim() } : {}),
+      ...(a.attachments?.length ? { attachments: a.attachments } : {}),
     }]),
   )
 }

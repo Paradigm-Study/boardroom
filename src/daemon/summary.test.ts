@@ -66,4 +66,32 @@ describe('buildSummary — plan', () => {
     const s = buildSummary(card, { d1: { chosen: ['__other__'], custom: 'IndexedDB with a 7-day TTL' } })
     expect(s).toContain('Storage?: Other: IndexedDB with a 7-day TTL')
   })
+
+  it('includes attachment file paths with the relevant answer', () => {
+    const card: Card = {
+      ...resultsCard(), stage: 'clarify',
+      decisions: [
+        { id: 'd1', prompt: 'Which layout?', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+      ],
+    }
+    const s = buildSummary(card, {
+      d1: {
+        chosen: ['a'],
+        note: 'the screenshot shows the broken input',
+        attachments: [{
+          id: 'att-1',
+          name: 'broken-layout.png',
+          mime: 'image/png',
+          size: 42,
+          path: '/tmp/boardroom/attachments/c1/att-1-broken-layout.png',
+          field: 'note',
+          uploadedAt: '2026-06-16T12:00:00.000Z',
+        }],
+      } as any,
+    })
+
+    expect(s).toContain('Attachments:')
+    expect(s).toContain('broken-layout.png')
+    expect(s).toContain('/tmp/boardroom/attachments/c1/att-1-broken-layout.png')
+  })
 })

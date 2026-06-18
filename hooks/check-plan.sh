@@ -1,8 +1,14 @@
 #!/bin/bash
 # PreToolUse hook on ExitPlanMode. When the boardroom daemon is reachable and no
-# plan card was presented for this project recently, ask the model to present the
-# plan on the dashboard first (deny once per session — second attempt passes, so
-# the native gate is never hard-blocked).
+# plan card was presented for this project, ask the model to present the plan on
+# the dashboard first (deny once per session — second attempt passes, so the
+# native gate is never hard-blocked).
+#
+# ADVISORY: the app's native plan approval remains the FINAL human gate. The
+# "sole gate" auto-pass (permissionDecision: allow on an approved plan) is
+# intentionally NOT enabled here — it bypasses a human approval gate, so it needs
+# the user's explicit direct confirmation and a CLAUDE.md update first.
+# Fail-open: if the daemon is unreachable, exit 0 and let the native gate stand.
 input=$(cat)
 sid=$(echo "$input" | jq -r '.session_id // "unknown"')
 cwd=$(echo "$input" | jq -r '.cwd // ""')
@@ -11,12 +17,14 @@ state="${TMPDIR:-/tmp}/boardroom-hooks"
 mkdir -p "$state"
 sentinel="$state/plan-$sid"
 [ -f "$sentinel" ] && exit 0
-cards=$(curl -s --max-time 0.4 http://127.0.0.1:4040/api/cards) || exit 0
+cards=$(curl -s --max-time 2 http://127.0.0.1:4040/api/cards) || exit 0
 [ -z "$cards" ] && exit 0
-match=$(echo "$cards" | jq --arg p "$proj" '
-  [.[] | select(.stage == "plan")
-       | select((.session.project | contains($p)) or ($p | contains(.session.project)))
-  ] | length' 2>/dev/null)
+# Null-safe match: was a plan presented for this project? Bind $sp so the
+# `$p | contains(...)` arm doesn't rebind `.` to the string $p (which would make
+# `.session.project` index a string and throw, aborting the comprehension).
+match=$(printf '%s' "$cards" | jq --arg p "$proj" '
+  [ .[] | select(.stage=="plan")
+        | select((.session.project // "") as $sp | ($sp|contains($p)) or ($p|contains($sp))) ] | length' 2>/dev/null)
 [ "${match:-0}" -gt 0 ] && exit 0
 touch "$sentinel"
 cat <<'EOF'

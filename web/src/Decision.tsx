@@ -1,6 +1,7 @@
 import { AlertCircle, Check, CheckSquare, CopyCheck, PenLine, Square, Star } from 'lucide-react'
 import type { Block } from '../../src/shared/blocks.js'
-import type { Card, Decision } from '../../src/shared/card.js'
+import type { AttachmentRef, Card, Decision } from '../../src/shared/card.js'
+import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
 import { customMissing, noteMissing, OTHER_OPTION_ID, toggleChoice, type DraftAnswer } from './helpers.js'
 
@@ -8,7 +9,7 @@ function offersOther(card: Card, decision: Decision): boolean {
   return card.stage !== 'results' && decision.id !== 'plan_verdict'
 }
 
-export function DecisionSection({ card, decision, index, total, blocks, answer, readonly, onChange }: {
+export function DecisionSection({ card, decision, index, total, blocks, answer, readonly, onChange, onUploadAttachment }: {
   card: Card
   decision: Decision
   index: number
@@ -17,20 +18,68 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
   answer: DraftAnswer
   readonly: boolean
   onChange(a: DraftAnswer): void
+  onUploadAttachment?(decisionId: string, field: string, file: File): Promise<AttachmentRef>
 }) {
   const needsNote = noteMissing(decision, answer)
   const otherOn = answer.chosen.includes(OTHER_OPTION_ID)
   const answered = answer.chosen.length > 0 && !needsNote && !customMissing(answer)
+  const recommended = decision.options.find(o => o.recommended)
+  const recommendedOn = recommended ? answer.chosen.includes(recommended.id) : false
+
+  function chooseRecommended(): void {
+    if (!recommended) return
+    const chosen = decision.multi
+      ? Array.from(new Set([...answer.chosen.filter(id => id !== OTHER_OPTION_ID), recommended.id]))
+      : [recommended.id]
+    onChange({ ...answer, chosen, custom: decision.multi ? answer.custom : '' })
+  }
+
+  function attachmentsFor(field: string): AttachmentRef[] {
+    return answer.attachments?.filter(a => a.field === field) ?? []
+  }
+
+  async function upload(field: string, file: File): Promise<AttachmentRef> {
+    if (!onUploadAttachment) throw new Error('Upload is not available')
+    const attachment = await onUploadAttachment(decision.id, field, file)
+    onChange({ ...answer, attachments: [...(answer.attachments ?? []), attachment] })
+    return attachment
+  }
+
+  function removeAttachment(id: string): void {
+    onChange({ ...answer, attachments: (answer.attachments ?? []).filter(a => a.id !== id) })
+  }
+
   return (
     <section className={`dsec${answered ? ' answered' : ''}`}>
       <div className="dsec-label">
         Decision {index + 1} of {total}
         {answered && <Check size={13} strokeWidth={2.5} className="dsec-check" aria-hidden />}
       </div>
-      <h2 className="dsec-prompt">{decision.prompt}</h2>
+      <div className="dsec-topline">
+        <h2 className="dsec-prompt">{decision.prompt}</h2>
+        {recommended && !recommendedOn && !readonly && (
+          <button
+            className="rec-quick"
+            onClick={chooseRecommended}
+            aria-label={`Use recommended: ${recommended.label}`}
+          >
+            <Star size={12} fill="currentColor" aria-hidden />
+            Use rec
+          </button>
+        )}
+      </div>
       {decision.multi && <p className="multi-hint"><CopyCheck size={12} aria-hidden />Select all that apply</p>}
 
-      {blocks.map(b => <BlockView key={b.id} block={b} />)}
+      {blocks.length > 0 && (
+        <div className="linked-evidence">
+          <span>Evidence</span>
+          {blocks.map(b => (
+            <a key={b.id} href={`#block-${b.id}`}>
+              {b.title ?? b.type.replace('_', ' ')}
+            </a>
+          ))}
+        </div>
+      )}
 
       <div className="opts">
         {decision.options.map(o => {
@@ -64,23 +113,41 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
       </div>
 
       {otherOn && (
-        <input
-          className="other-input"
-          placeholder="Type your own answer…"
-          value={answer.custom}
-          disabled={readonly}
-          autoFocus={!readonly}
-          onChange={e => onChange({ ...answer, custom: e.target.value })}
-        />
+        <>
+          <input
+            className="other-input"
+            placeholder="Type your own answer…"
+            value={answer.custom}
+            disabled={readonly}
+            autoFocus={!readonly}
+            onChange={e => onChange({ ...answer, custom: e.target.value })}
+          />
+          <AttachmentInput
+            label="Attach file to custom answer"
+            attachments={attachmentsFor('custom')}
+            readonly={readonly}
+            onUpload={file => upload('custom', file)}
+            onRemove={removeAttachment}
+          />
+        </>
       )}
       {(answer.chosen.length > 0 || !readonly) && (
-        <textarea
-          className={`note${needsNote ? ' needs' : ''}`}
-          placeholder={needsNote ? 'A note is required for this choice…' : 'Optional note for the agent'}
-          value={answer.note}
-          disabled={readonly}
-          onChange={e => onChange({ ...answer, note: e.target.value })}
-        />
+        <>
+          <textarea
+            className={`note${needsNote ? ' needs' : ''}`}
+            placeholder={needsNote ? 'A note is required for this choice…' : 'Optional note for the agent'}
+            value={answer.note}
+            disabled={readonly}
+            onChange={e => onChange({ ...answer, note: e.target.value })}
+          />
+          <AttachmentInput
+            label="Attach file to note"
+            attachments={attachmentsFor('note')}
+            readonly={readonly}
+            onUpload={file => upload('note', file)}
+            onRemove={removeAttachment}
+          />
+        </>
       )}
       {needsNote && !readonly && (
         <p className="note-hint"><AlertCircle size={12} aria-hidden />This choice goes back to the agent as an instruction — say why.</p>

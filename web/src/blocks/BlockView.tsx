@@ -41,8 +41,30 @@ function Markdown({ text }: { text: string }) {
   )
 }
 
-const NODE_W = 156
-const NODE_H = 40
+const NODE_W = 164
+const NODE_H = 50
+
+function labelLines(label: string): string[] {
+  const words = label.split(/\s+/).filter(Boolean)
+  const lines: string[] = []
+  let current = ''
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word
+    if (next.length > 18 && current) {
+      lines.push(current)
+      current = word
+    } else {
+      current = next
+    }
+    if (lines.length === 2) break
+  }
+  if (current && lines.length < 2) lines.push(current)
+  if (lines.length === 0) lines.push(label)
+  if (words.join(' ').length > lines.join(' ').length) {
+    lines[lines.length - 1] = `${lines[lines.length - 1].replace(/\.+$/, '')}...`
+  }
+  return lines
+}
 
 // Static, on-brand SVG graph: dagre for layout, plain SVG for render. No canvas,
 // no dotted grid, no pan/zoom — and edge labels we actually control the contrast of.
@@ -66,7 +88,8 @@ function Graph({ block }: { block: Extract<Block, { type: 'graph' }> }) {
   }, [block])
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: Math.max(160, height), display: 'block' }} role="img">
+    <div className="graph-scroll">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: Math.max(170, height), minWidth: Math.min(680, Math.max(420, width)), display: 'block' }} role="img">
       <defs>
         <marker id="b-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M0 1 L8 5 L0 9 z" className="g-arrow" />
@@ -89,10 +112,15 @@ function Graph({ block }: { block: Extract<Block, { type: 'graph' }> }) {
       {nodes.map((n, i) => (
         <g key={i}>
           <rect x={n.x - NODE_W / 2} y={n.y - NODE_H / 2} width={NODE_W} height={NODE_H} rx="8" className="g-node" />
-          <text x={n.x} y={n.y} textAnchor="middle" dominantBaseline="central" className="g-node-label">{n.label}</text>
+          <text x={n.x} y={n.y - (labelLines(n.label).length - 1) * 7} textAnchor="middle" dominantBaseline="central" className="g-node-label">
+            {labelLines(n.label).map((line, lineIndex) => (
+              <tspan key={lineIndex} x={n.x} dy={lineIndex === 0 ? 0 : 14}>{line}</tspan>
+            ))}
+          </text>
         </g>
       ))}
-    </svg>
+      </svg>
+    </div>
   )
 }
 
@@ -216,6 +244,7 @@ export function BlockView({ block, highlighted, onClick, forceOpen }: {
   }
   return (
     <div
+      id={`block-${block.id}`}
       className={`block${highlighted ? ' highlight' : ''}`}
       onClick={onClick}
     >

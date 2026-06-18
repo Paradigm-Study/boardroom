@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Block } from './blocks.js'
-import { Card, Decision } from './card.js'
+import { Card, Decision, DecisionAnswer } from './card.js'
 
 const markdown = { id: 'b1', type: 'markdown', text: 'hello' }
 
@@ -75,5 +75,26 @@ describe('Card', () => {
 
   it('rejects a card with zero decisions', () => {
     expect(Card.safeParse({ ...card, decisions: [] }).success).toBe(false)
+  })
+})
+
+describe('DecisionAnswer', () => {
+  it('accepts uploaded attachment references', () => {
+    const parsed = DecisionAnswer.parse({
+      chosen: ['cookie'],
+      note: 'see screenshot',
+      attachments: [{
+        id: 'att-1',
+        name: 'layout.png',
+        mime: 'image/png',
+        size: 12_345,
+        path: '/Users/me/.config/boardroom/attachments/c1/att-1-layout.png',
+        url: '/api/cards/c1/attachments/att-1',
+        field: 'note',
+        uploadedAt: '2026-06-16T12:00:00.000Z',
+      }],
+    })
+
+    expect(parsed.attachments?.[0].name).toBe('layout.png')
   })
 })

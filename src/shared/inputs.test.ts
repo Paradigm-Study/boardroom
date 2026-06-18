@@ -9,6 +9,9 @@ const decision = {
     { id: 'b', label: 'Option B' },
   ],
 }
+const localBlock = { id: 'local', type: 'markdown', text: 'Decision-specific context' }
+const globalBlock = { id: 'global', type: 'markdown', text: 'Whole-card context' }
+const decisionWithContext = { ...decision, blockRefs: ['local'] }
 
 describe('ClarifyInput', () => {
   it('requires at least one decision', () => {
@@ -26,8 +29,32 @@ describe('ClarifyInput', () => {
     if (!r.success) expect(JSON.stringify(r.error.issues[0].path)).toContain('blockRefs')
   })
 
-  it('accepts a minimal valid input', () => {
-    const r = ClarifyInput.safeParse({ project: 'demo', headline: 'h', decisions: [decision] })
+  it('requires each decision to reference local context', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [decision],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0].message).toMatch(/local context/)
+  })
+
+  it('requires one global context block', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock],
+      decisions: [decisionWithContext],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0].message).toMatch(/global context/)
+  })
+
+  it('accepts a valid input with question-local and global context', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [decisionWithContext],
+    })
     expect(r.success).toBe(true)
   })
 })
@@ -46,14 +73,41 @@ describe('PresentPlanInput', () => {
   })
 
   it('requires exactly one recommended option per plan decision', () => {
-    const bad = { ...decision, options: decision.options.map(o => ({ ...o, recommended: true })) }
-    const r = PresentPlanInput.safeParse({ project: 'demo', headline: 'h', blocks: [structural], decisions: [bad] })
+    const bad = { ...decisionWithContext, options: decision.options.map(o => ({ ...o, recommended: true })) }
+    const r = PresentPlanInput.safeParse({ project: 'demo', headline: 'h', blocks: [structural, globalBlock], decisions: [bad] })
     expect(r.success).toBe(false)
     if (!r.success) expect(r.error.issues[0].message).toMatch(/recommended/)
   })
 
   it('accepts a plan with structural block and zero extra decisions', () => {
     const r = PresentPlanInput.safeParse({ project: 'demo', headline: 'h', blocks: [structural], planRef: '/tmp/plan.md' })
+    expect(r.success).toBe(true)
+  })
+
+  it('requires local context for every plan decision and global plan context', () => {
+    const noLocal = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [structural, globalBlock],
+      decisions: [decision],
+    })
+    expect(noLocal.success).toBe(false)
+    if (!noLocal.success) expect(noLocal.error.issues[0].message).toMatch(/local context/)
+
+    const noGlobal = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [structural],
+      decisions: [{ ...decision, blockRefs: ['ph'] }],
+    })
+    expect(noGlobal.success).toBe(false)
+    if (!noGlobal.success) expect(noGlobal.error.issues[0].message).toMatch(/global context/)
+  })
+
+  it('accepts a plan decision with question-local context plus global context', () => {
+    const r = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [structural, globalBlock],
+      decisions: [{ ...decision, blockRefs: ['ph'] }],
+    })
     expect(r.success).toBe(true)
   })
 })

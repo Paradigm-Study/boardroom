@@ -1,4 +1,4 @@
-import type { Card, DecisionAnswer } from '../../src/shared/card.js'
+import type { AttachmentRef, Card, DecisionAnswer } from '../../src/shared/card.js'
 
 async function check<T>(res: globalThis.Response): Promise<T> {
   const text = await res.text()
@@ -26,6 +26,25 @@ export async function decideCard(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers }),
+  })
+  return check(res)
+}
+
+export async function uploadAttachment(
+  cardId: string,
+  answerId: string,
+  field: string,
+  file: File,
+): Promise<AttachmentRef> {
+  const res = await fetch(`/api/cards/${encodeURIComponent(cardId)}/attachments`, {
+    method: 'POST',
+    headers: {
+      'content-type': file.type || 'application/octet-stream',
+      'x-answer-id': answerId,
+      'x-field': field,
+      'x-file-name': file.name || 'upload.bin',
+    },
+    body: file,
   })
   return check(res)
 }

@@ -1,5 +1,5 @@
 import express from 'express'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import request from 'supertest'
@@ -32,7 +32,7 @@ beforeEach(() => {
   queue = new Queue(store)
   app = express()
   app.use(express.json({ limit: '4mb' }))
-  app.use(buildApiRouter(queue, store))
+  app.use(buildApiRouter(queue, store, { attachmentDir: join(dir, 'attachments') }))
 })
 
 afterEach(() => {
@@ -78,6 +78,35 @@ describe('POST /api/cards/:id/decide', () => {
     queue.decide('c1', { d1: { chosen: ['a'] } })
     const res = await request(app).post('/api/cards/c1/decide').send({ answers: { d1: { chosen: ['a'] } } }).expect(409)
     expect(res.body.error).toMatch(/decided/)
+  })
+})
+
+describe('POST /api/cards/:id/attachments', () => {
+  it('stores an uploaded file and returns a durable attachment reference', async () => {
+    queue.submit(card('c1'), noop)
+
+    const res = await request(app)
+      .post('/api/cards/c1/attachments')
+      .set('content-type', 'image/png')
+      .set('x-answer-id', 'd1')
+      .set('x-field', 'note')
+      .set('x-file-name', 'broken layout.png')
+      .send(Buffer.from('fake-image-bytes'))
+      .expect(201)
+
+    expect(res.body).toMatchObject({
+      name: 'broken layout.png',
+      mime: 'image/png',
+      size: 16,
+      field: 'note',
+      url: expect.stringContaining('/api/cards/c1/attachments/'),
+    })
+    expect(res.body.path).toContain(join(dir, 'attachments'))
+    expect(existsSync(res.body.path)).toBe(true)
+    expect(readFileSync(res.body.path, 'utf8')).toBe('fake-image-bytes')
+
+    const downloaded = await request(app).get(res.body.url).expect(200)
+    expect(Buffer.from(downloaded.body).toString('utf8')).toBe('fake-image-bytes')
   })
 })
 

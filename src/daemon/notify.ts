@@ -8,13 +8,26 @@ function cardUrl(port: number, id: string): string {
   return `http://127.0.0.1:${port}/#/card/${id}`
 }
 
+// node-notifier shells out to the vendored terminal-notifier and JSON.parses its
+// stdout (node-notifier/lib/utils.js → fileCommandJson). On modern macOS the
+// daemon's notification is suppressed and terminal-notifier emits output that is
+// not a clean JSON value, so JSON.parse throws a SyntaxError that node-notifier
+// hands back as the callback's error. That parse failure is expected noise on
+// this best-effort surface — the only SyntaxError node-notifier can produce — so
+// we swallow it. Genuine failures (e.g. "Notifier not found") are plain Errors
+// and stderr warnings arrive as strings; both stay loud and diagnosable.
+export function isBenignNotifierNoise(err: unknown): boolean {
+  return err instanceof SyntaxError
+}
+
 // Best-effort OS notification. node-notifier reports success even when macOS
 // suppresses display, so this is unreliable from a launchd daemon — the
-// menu-bar app is the dependable notifier. We at least log real spawn errors
-// (previously swallowed) so failures are diagnosable.
+// menu-bar app is the dependable notifier. We log real spawn errors (previously
+// swallowed) so failures are diagnosable, while ignoring the benign terminal-
+// notifier JSON-parse noise that otherwise floods the daemon log.
 function notify(opts: notifier.Notification & { open?: string; timeout?: number }): void {
   notifier.notify(opts, err => {
-    if (err) console.error('[notify] failed:', err)
+    if (err && !isBenignNotifierNoise(err)) console.error('[notify] failed:', err)
   })
 }
 

@@ -80,7 +80,7 @@ const results = call('review_results', {
   headline: 'CSV export shipped — review the claims',
   claims: [
     { id: 'tests', claim: 'All 18 new tests pass', evidence: [
-      { id: 'run', type: 'evidence', command: 'npm test', exitCode: 0, output: 'Test Files  3 passed (3)\n     Tests  18 passed (18)' },
+      { id: 'run', type: 'evidence', command: "npm test -- --runInBand src/export/csv-streaming.test.ts src/routes/report-export.test.ts", exitCode: 0, output: 'Test Files  3 passed (3)\n     Tests  18 passed (18)' },
     ] },
     { id: 'scope', claim: 'Only export-related files were touched', evidence: [
       { id: 'diff', type: 'diff_stat', files: [

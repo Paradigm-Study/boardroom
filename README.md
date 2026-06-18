@@ -45,6 +45,16 @@ MCP-capable agent connects to `http://127.0.0.1:4040/mcp`. Each client has
 its own global config surface for MCP servers, instructions, and tool
 timeouts; wire those three things once per client.
 
+## Standalone app direction
+
+Boardroom can become a downloaded local app without adding hosted
+infrastructure: the app would bundle the daemon, built dashboard, and menu-bar
+shell, start the local `127.0.0.1` MCP/API endpoint itself, and store data in
+the user's local config directory. First-run setup can detect supported agent
+harnesses and offer to wire them to `http://127.0.0.1:4040/mcp` with explicit
+user consent; clients that do not expose a writable setup surface can fall back
+to copyable commands and config snippets.
+
 ## Try it without an agent
 
 ```bash
@@ -53,6 +63,22 @@ npm run seed   # three demo cards through the real MCP pipeline
 
 Decide them in the dashboard and watch the seed process print each resolved
 summary. Ctrl-C the seed mid-hang to see cards flip to orphaned.
+
+## Author good cards
+
+Boardroom is fastest when agents send visual structure, not prose:
+
+- Put the decision in buttons; keep prompts to one sentence.
+- Put comparisons in `options_compare`, sequences in `phases`, dependencies in
+  `graph`, facts in `table`, file changes in `diff_stat`, and test output in
+  `evidence`.
+- Use markdown only for 1-2 sentence context that changes the decision.
+- Every clarify/plan card must include at least one global context block and at
+  least one question-local block for each decision. Wire `blockRefs` so local
+  blocks render inside the exact question they inform; leave whole-card context
+  unreferenced so it renders separately as global context.
+- For result reviews, claim text should be short; long commands and output live
+  inside expandable evidence.
 
 ## Dev
 

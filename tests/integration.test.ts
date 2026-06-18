@@ -57,10 +57,12 @@ describe('present_plan end-to-end', () => {
         headline: 'Auth refactor plan',
         blocks: [
           { id: 'ph', type: 'phases', phases: [{ title: 'Tokens' }, { title: 'Cutover' }] },
+          { id: 'global', type: 'markdown', text: 'Applies to the whole auth refactor.' },
         ],
         decisions: [{
           id: 'storage',
           prompt: 'Token storage?',
+          blockRefs: ['ph'],
           options: [
             { id: 'cookie', label: 'Cookie + refresh', recommended: true },
             { id: 'local', label: 'LocalStorage' },

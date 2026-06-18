@@ -1,7 +1,8 @@
 import { Check, ChevronDown, ChevronRight, Circle, CircleCheck, CircleX, ListChecks, X } from 'lucide-react'
 import { useState } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
-import type { Card, Decision } from '../../src/shared/card.js'
+import type { AttachmentRef, Card, Decision } from '../../src/shared/card.js'
+import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
 import { evidenceChip } from './evidenceChip.js'
 import { customMissing, noteMissing, type DraftAnswer } from './helpers.js'
@@ -10,12 +11,14 @@ function complete(d: Decision, a: DraftAnswer): boolean {
   return a.chosen.length > 0 && !noteMissing(d, a) && !customMissing(a)
 }
 
-function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
+function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploadAttachment }: {
   decision: Decision
+  index: number
   blocks: Block[]
   answer: DraftAnswer
   readonly: boolean
   onChange(a: DraftAnswer): void
+  onUploadAttachment?(decisionId: string, field: string, file: File): Promise<AttachmentRef>
 }) {
   const [open, setOpen] = useState(false)
   const verdict = answer.chosen[0]
@@ -26,6 +29,18 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
   const chip = evidenceChip(ordered)
   const Icon = verdict === 'approve' ? CircleCheck : denied ? CircleX : Circle
   const iconClass = verdict === 'approve' ? 'ok' : denied ? 'bad' : 'idle'
+  const noteAttachments = answer.attachments?.filter(a => a.field === 'note') ?? []
+
+  async function upload(file: File): Promise<AttachmentRef> {
+    if (!onUploadAttachment) throw new Error('Upload is not available')
+    const attachment = await onUploadAttachment(decision.id, 'note', file)
+    onChange({ ...answer, attachments: [...(answer.attachments ?? []), attachment] })
+    return attachment
+  }
+
+  function removeAttachment(id: string): void {
+    onChange({ ...answer, attachments: (answer.attachments ?? []).filter(a => a.id !== id) })
+  }
 
   return (
     <div className={`claim${verdict ? ' decided' : ''}`}>
@@ -44,13 +59,19 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
             disabled={readonly}
             onClick={() => onChange({ ...answer, chosen: ['approve'] })}
             aria-label="Approve"
-          ><Check size={15} strokeWidth={2.4} aria-hidden /></button>
+          >
+            <Check size={15} strokeWidth={2.4} aria-hidden />
+            <span>Approve</span>
+          </button>
           <button
             className={`vbtn deny${denied ? ' on' : ''}`}
             disabled={readonly}
             onClick={() => onChange({ ...answer, chosen: ['deny'] })}
             aria-label="Deny"
-          ><X size={15} strokeWidth={2.4} aria-hidden /></button>
+          >
+            <X size={15} strokeWidth={2.4} aria-hidden />
+            <span>Deny</span>
+          </button>
         </span>
       </div>
 
@@ -70,16 +91,26 @@ function ClaimRow({ decision, blocks, answer, readonly, onChange }: {
           onChange={e => onChange({ ...answer, note: e.target.value })}
         />
       )}
+      {(!readonly || noteAttachments.length > 0) && (
+        <AttachmentInput
+          label={denied ? 'Attach file to denial note' : `Attach file to claim ${index + 1}`}
+          attachments={noteAttachments}
+          readonly={readonly}
+          onUpload={upload}
+          onRemove={removeAttachment}
+        />
+      )}
     </div>
   )
 }
 
-export function ResultsChecklist({ card, blockById, answers, readonly, onChange }: {
+export function ResultsChecklist({ card, blockById, answers, readonly, onChange, onUploadAttachment }: {
   card: Card
   blockById: Map<string, Block>
   answers: Record<string, DraftAnswer>
   readonly: boolean
   onChange(id: string, a: DraftAnswer): void
+  onUploadAttachment?(decisionId: string, field: string, file: File): Promise<AttachmentRef>
 }) {
   const reviewed = card.decisions.filter(d => {
     const a = answers[d.id]
@@ -104,14 +135,16 @@ export function ResultsChecklist({ card, blockById, answers, readonly, onChange 
         )}
       </div>
 
-      {card.decisions.map(d => (
+      {card.decisions.map((d, index) => (
         <ClaimRow
           key={d.id}
           decision={d}
+          index={index}
           blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
           answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
           readonly={readonly}
           onChange={a => onChange(d.id, a)}
+          onUploadAttachment={onUploadAttachment}
         />
       ))}
     </div>

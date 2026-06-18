@@ -10,6 +10,56 @@ function age(iso: string): string {
   return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
 }
 
+function sessionLabel(card: Card): string {
+  return card.session.title?.trim() || 'Untitled session'
+}
+
+function projectKey(card: Card): string {
+  return card.session.project
+}
+
+function sessionKey(card: Card): string {
+  return `${projectKey(card)}\u0000${sessionLabel(card)}\u0000${card.session.agent}`
+}
+
+interface SidebarSessionGroup {
+  key: string
+  label: string
+  agent: string
+  cards: Card[]
+}
+
+interface SidebarProjectGroup {
+  key: string
+  label: string
+  cards: Card[]
+  sessions: SidebarSessionGroup[]
+}
+
+export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGroup[] {
+  const projects = new Map<string, SidebarProjectGroup>()
+
+  for (const card of [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+    const pKey = projectKey(card)
+    let project = projects.get(pKey)
+    if (!project) {
+      project = { key: pKey, label: card.session.project, cards: [], sessions: [] }
+      projects.set(pKey, project)
+    }
+    project.cards.push(card)
+
+    const sKey = sessionKey(card)
+    let session = project.sessions.find(s => s.key === sKey)
+    if (!session) {
+      session = { key: sKey, label: sessionLabel(card), agent: card.session.agent, cards: [] }
+      project.sessions.push(session)
+    }
+    session.cards.push(card)
+  }
+
+  return [...projects.values()]
+}
+
 function Item({ card, selected }: { card: Card; selected: boolean }) {
   return (
     <a
@@ -22,7 +72,7 @@ function Item({ card, selected }: { card: Card; selected: boolean }) {
         <p className="t-title">{card.headline}</p>
         <span className="t-meta">
           <span className="stage-dot" style={{ background: STAGE[card.stage].color }} />
-          <span className="proj">{card.session.project}</span>
+          <span>{STAGE[card.stage].label}</span>
           <span>·</span>
           <span>{card.status === 'pending' ? 'needs you' : card.status}</span>
           <span>·</span>
@@ -30,6 +80,38 @@ function Item({ card, selected }: { card: Card; selected: boolean }) {
         </span>
       </span>
     </a>
+  )
+}
+
+function GroupedCards({ cards, selectedId }: { cards: Card[]; selectedId: string | null }) {
+  return (
+    <>
+      {groupCardsByProjectAndSession(cards).map((project, projectIndex) => {
+        const projectHeadingId = `project-${projectIndex}`
+        return (
+          <section key={project.key} className="side-project" role="group" aria-labelledby={projectHeadingId}>
+            <div className="side-project-head">
+              <h3 id={projectHeadingId}>{project.label}</h3>
+              <span>{project.cards.length} card{project.cards.length === 1 ? '' : 's'}</span>
+            </div>
+
+            {project.sessions.map((session, sessionIndex) => {
+              const sessionHeadingId = `session-${projectIndex}-${sessionIndex}`
+              return (
+                <section key={session.key} className="side-session" role="group" aria-labelledby={sessionHeadingId}>
+                  <div className="side-session-head">
+                    <h4 id={sessionHeadingId}>{session.label}</h4>
+                    <span className="side-session-agent">{session.agent}</span>
+                    <span>{session.cards.length} card{session.cards.length === 1 ? '' : 's'}</span>
+                  </div>
+                  {session.cards.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+                </section>
+              )
+            })}
+          </section>
+        )
+      })}
+    </>
   )
 }
 
@@ -50,12 +132,12 @@ export function TaskSidebar({ cards, selectedId }: { cards: Card[]; selectedId: 
 
       <div className="side-group"><Inbox size={12} aria-hidden />Needs you <span className="n">{pending.length}</span></div>
       {pending.length === 0 && <p className="side-empty">Nothing waiting on you.</p>}
-      {pending.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+      <GroupedCards cards={pending} selectedId={selectedId} />
 
       {rest.length > 0 && (
         <div className="side-group"><Archive size={12} aria-hidden />History <span className="n">{rest.length}</span></div>
       )}
-      {rest.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+      <GroupedCards cards={rest} selectedId={selectedId} />
     </aside>
   )
 }

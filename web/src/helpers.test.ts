@@ -49,4 +49,26 @@ describe('toApiAnswers', () => {
     expect(api.d1).toEqual({ chosen: [OTHER_OPTION_ID], custom: 'hybrid approach' })
     expect(api.d2).toEqual({ chosen: ['a'], note: 'fine' })
   })
+
+  it('preserves attachment references when submitting answers', () => {
+    const api = toApiAnswers({
+      d1: {
+        chosen: ['a'],
+        note: 'see attached',
+        custom: '',
+        attachments: [{
+          id: 'att-1',
+          name: 'screenshot.png',
+          mime: 'image/png',
+          size: 100,
+          path: '/tmp/screenshot.png',
+          url: '/api/cards/c1/attachments/att-1',
+          field: 'note',
+          uploadedAt: '2026-06-16T12:00:00.000Z',
+        }],
+      },
+    })
+
+    expect(api.d1.attachments?.[0].path).toBe('/tmp/screenshot.png')
+  })
 })
