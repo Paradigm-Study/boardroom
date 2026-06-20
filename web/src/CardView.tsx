@@ -1,19 +1,23 @@
-import { ArrowRight, Bot, ClipboardCopy, FileText, FolderGit2, Layers3, Moon, PanelRight, Workflow } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, ClipboardCopy } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
-import type { AttachmentRef, Card } from '../../src/shared/card.js'
+import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type AttachmentRef, type Card, type PlanVerdict, type ResultsVerdict } from '../../src/shared/card.js'
 import { decideCard, uploadAttachment } from './api.js'
 import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
+import { CardHeader } from './CardHeader.js'
 import { prepareCardWorkspace } from './cardWorkspace.js'
 import { DecisionSection } from './Decision.js'
-import { clearDrafts, loadDrafts, saveDrafts } from './drafts.js'
-import { answersComplete, customMissing, noteMissing, toApiAnswers, type DraftAnswer } from './helpers.js'
+import { clearDrafts } from './drafts.js'
+import { answersComplete, attachmentsForField, claimNotesValid, decisionAnswered, emptyDraft, toApiAnswers, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
 import { ResultsChecklist } from './ResultsChecklist.js'
+import { SendBackForm } from './SendBackForm.js'
 import { STAGE } from './stage.js'
+import { useCardAnswers } from './useCardAnswers.js'
 
-function QuestionContext({ index, blocks }: {
+function QuestionContext({ index, decisionId, blocks }: {
   index: number
+  decisionId: string
   blocks: Block[]
 }) {
   return (
@@ -27,9 +31,97 @@ function QuestionContext({ index, blocks }: {
       </div>
 
       {blocks.length > 0
-        ? blocks.map(b => <BlockView key={b.id} block={b} highlighted />)
+        ? blocks.map(b => <BlockView key={b.id} block={b} anchorScope={decisionId} highlighted />)
         : <p className="context-empty">No question-local context.</p>}
     </aside>
+  )
+}
+
+// The one submit bar behind all three flows (clarify / plan / results): a progress
+// label and the primary action, with an optional leading slot (the plan's "Send
+// back…" button) and a variant class.
+function SubmitBar({ state, label, ready, busy, onSubmit, className, leading }: {
+  state: string
+  label: string
+  ready: boolean
+  busy: boolean
+  onSubmit(): void
+  className?: string
+  leading?: ReactNode
+}) {
+  return (
+    <div className={className ? `submit-bar ${className}` : 'submit-bar'}>
+      {leading}
+      <span className="submit-state">{state}</span>
+      <button className="submit" disabled={!ready || busy} onClick={onSubmit}>
+        {label}
+        <ArrowRight size={16} aria-hidden />
+      </button>
+    </div>
+  )
+}
+
+// The results gate's footer. Unlike the binary clarify/plan submit, the human
+// always gets a free-text add-on (rides on the verdict's own note/attachments)
+// and an EXPLICIT completion choice: "Mark complete" (gated on every claim being
+// reviewed) or "Keep going" (the send-back analog — the agent acts on the notes
+// and re-submits). Either way the per-claim votes and the add-on are sent.
+function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, completeReady, continueReady, onNoteChange, onUpload, onRemoveAttachment, onComplete, onContinue }: {
+  note: string
+  attachments: AttachmentRef[]
+  reviewed: number
+  total: number
+  orphaned: boolean
+  busy: boolean
+  completeReady: boolean
+  continueReady: boolean
+  onNoteChange(note: string): void
+  onUpload(file: File): Promise<AttachmentRef>
+  onRemoveAttachment(id: string): void
+  onComplete(): void
+  onContinue(): void
+}) {
+  return (
+    <div className="results-finish">
+      <textarea
+        className="note addon"
+        aria-label="Add instructions for the agent"
+        placeholder="Add anything for the agent (optional) — sent whether or not you mark complete"
+        value={note}
+        disabled={busy}
+        onChange={e => onNoteChange(e.target.value)}
+      />
+      <AttachmentInput
+        label="Attach file to your add-on"
+        attachments={attachments}
+        readonly={busy}
+        onUpload={onUpload}
+        onRemove={onRemoveAttachment}
+      />
+      <div className="submit-bar results-submit">
+        <span className="submit-state">{reviewed}/{total} reviewed</span>
+        <button className="submit ghost" disabled={!continueReady || busy} onClick={onContinue}>Keep going</button>
+        <button className="submit" disabled={!completeReady || busy} onClick={onComplete}>
+          {orphaned ? 'Mark complete (agent offline)' : 'Mark complete'}
+          <ArrowRight size={16} aria-hidden />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Shown when a decision was recorded while the agent was offline: the summary is
+// claimed automatically on reconnect, or the human can copy it to paste by hand.
+function OfflinePickup({ summary }: { summary: string }) {
+  return (
+    <div className="offline-out">
+      <p id="offline-pickup-label" style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:</p>
+      <textarea readOnly aria-labelledby="offline-pickup-label" value={summary} />
+      <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(summary)}>
+        <ClipboardCopy size={14} aria-hidden />
+        Copy to clipboard
+      </button>
+    </div>
   )
 }
 
@@ -37,29 +129,15 @@ export function CardView({ card }: { card: Card }) {
   const meta = STAGE[card.stage]
   const orphaned = card.status === 'orphaned'
   const readonly = card.status === 'decided'
-  const sessionTitle = card.session.title?.trim() || 'Untitled session'
 
-  const [answers, setAnswers] = useState<Record<string, DraftAnswer>>(() => {
-    const saved = !readonly ? loadDrafts(card.id) : null
-    return Object.fromEntries(
-      card.decisions.map(d => {
-        const draft = saved?.[d.id]
-        const final = card.answers?.[d.id]
-        return [d.id, {
-          chosen: draft?.chosen ?? final?.chosen ?? [],
-          note: draft?.note ?? final?.note ?? '',
-          custom: draft?.custom ?? final?.custom ?? '',
-          attachments: draft?.attachments ?? final?.attachments ?? [],
-        }]
-      }),
-    )
-  })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [pickupSummary, setPickupSummary] = useState<string | null>(null)
   const [sendingBack, setSendingBack] = useState(false)
   const [sendBackNote, setSendBackNote] = useState('')
   const [sendBackAttachments, setSendBackAttachments] = useState<AttachmentRef[]>([])
+
+  const [answers, setAnswers] = useCardAnswers(card, readonly, pickupSummary)
 
   // Plan approval is NOT a separate gate — it's the act of submitting your
   // agreement to the plan's decisions. The auto-appended verdict is driven by
@@ -68,33 +146,16 @@ export function CardView({ card }: { card: Card }) {
   const resultsMode = card.stage === 'results'
   const workspace = useMemo(() => prepareCardWorkspace(card), [card])
   const choiceDecisions = workspace.choiceDecisions
-
-  // Persist every keystroke/click so an arriving card, a status change, or a
-  // page reload never loses in-progress work. Skip once the card is settled.
-  useEffect(() => {
-    if (!readonly && !pickupSummary) saveDrafts(card.id, answers)
-  }, [card.id, answers, readonly, pickupSummary])
-
   const blockById = workspace.blockById
+  const globalBlocks = workspace.globalBlocks
 
   async function uploadFor(answerId: string, field: string, file: File): Promise<AttachmentRef> {
     return uploadAttachment(card.id, answerId, field, file)
   }
 
-  async function submit(planVerdict?: 'approve' | 'revise'): Promise<void> {
+  async function commit(payload: Record<string, DraftAnswer>): Promise<void> {
     setBusy(true)
     setError(null)
-    const payload = planVerdict
-      ? {
-          ...answers,
-          plan_verdict: {
-            chosen: [planVerdict],
-            note: planVerdict === 'revise' ? sendBackNote : '',
-            custom: '',
-            ...(sendBackAttachments.length ? { attachments: sendBackAttachments } : {}),
-          },
-        }
-      : answers
     try {
       const { delivered, summary } = await decideCard(card.id, toApiAnswers(payload))
       clearDrafts(card.id)
@@ -106,65 +167,39 @@ export function CardView({ card }: { card: Card }) {
     }
   }
 
+  async function submit(planVerdict?: PlanVerdict): Promise<void> {
+    await commit(planVerdict
+      ? {
+          ...answers,
+          [PLAN_VERDICT_ID]: {
+            chosen: [planVerdict],
+            note: planVerdict === 'revise' ? sendBackNote : '',
+            custom: '',
+            ...(sendBackAttachments.length ? { attachments: sendBackAttachments } : {}),
+          },
+        }
+      : answers)
+  }
+
+  // Results gate: the verdict's note/attachments are the card-level add-on, kept
+  // in the answers map like any other draft; we only stamp the chosen verdict here.
+  async function submitResults(verdict: ResultsVerdict): Promise<void> {
+    await commit({ ...answers, [RESULTS_VERDICT_ID]: { ...verdictDraft, chosen: [verdict] } })
+  }
+
   const ready = answersComplete(choiceDecisions, answers)
-  const answeredCount = choiceDecisions.filter(d => {
-    const a = answers[d.id]
-    return a && a.chosen.length > 0 && !noteMissing(d, a) && !customMissing(a)
-  }).length
-  const globalBlocks = workspace.globalBlocks
+  const answeredCount = choiceDecisions.filter(d => decisionAnswered(d, answers[d.id])).length
+
+  // The results verdict's own draft carries the card-level add-on note/attachments;
+  // read it once and route every edit through patchVerdict instead of re-deriving
+  // `answers[RESULTS_VERDICT_ID] ?? emptyDraft()` at each call site.
+  const verdictDraft = answers[RESULTS_VERDICT_ID] ?? emptyDraft()
+  const patchVerdict = (fn: (d: DraftAnswer) => DraftAnswer): void =>
+    setAnswers(prev => ({ ...prev, [RESULTS_VERDICT_ID]: fn(prev[RESULTS_VERDICT_ID] ?? emptyDraft()) }))
 
   return (
     <div className="card-col" style={meta.vars}>
-      <div className="card-head">
-        <div className="head-kicker">
-          <span className="stage-tag">{meta.label}</span>
-          {card.status !== 'pending' && <span className={`status-chip ${card.status}`}>{card.status}</span>}
-        </div>
-        <h1 className="card-headline">{card.headline}</h1>
-        <div className="source-strip" aria-label="Decision source">
-          <span>
-            <span className="source-label">Session</span>
-            <strong>{sessionTitle}</strong>
-          </span>
-          <span>
-            <FolderGit2 size={14} aria-hidden />
-            <span className="source-label">Project</span>
-            <strong>{card.session.project}</strong>
-          </span>
-          <span>
-            <Bot size={14} aria-hidden />
-            <span className="source-label">Agent</span>
-            <strong>{card.session.agent}</strong>
-          </span>
-          {card.planRef && (
-            <span>
-              <FileText size={14} aria-hidden />
-              <span className="source-label">Plan</span>
-              <code>{card.planRef}</code>
-            </span>
-          )}
-        </div>
-        {orphaned && !pickupSummary && (
-          <div className="banner">
-            <Moon size={16} aria-hidden />
-            <span>The agent's connection dropped (often the Mac sleeping). Decide anyway — it's delivered automatically when the agent reconnects, or copy the summary to paste in by hand.</span>
-          </div>
-        )}
-        {!readonly && (
-          <>
-            <div className="cockpit-stats">
-              <span><PanelRight size={13} aria-hidden />{choiceDecisions.length} decision{choiceDecisions.length === 1 ? '' : 's'}</span>
-              <span><Workflow size={13} aria-hidden />{workspace.visualSummary.linkedBlocks} linked visual{workspace.visualSummary.linkedBlocks === 1 ? '' : 's'}</span>
-              <span><Layers3 size={13} aria-hidden />{workspace.visualSummary.totalBlocks} block{workspace.visualSummary.totalBlocks === 1 ? '' : 's'}</span>
-            </div>
-            <p className="stage-role">{meta.role}</p>
-            <details className="stage-guide">
-              <summary>How to decide here</summary>
-              <ul>{meta.guide.map((g, i) => <li key={i}>{g}</li>)}</ul>
-            </details>
-          </>
-        )}
-      </div>
+      <CardHeader card={card} workspace={workspace} readonly={readonly} pickupSummary={pickupSummary} />
 
       {resultsMode
         ? (
@@ -178,13 +213,25 @@ export function CardView({ card }: { card: Card }) {
               onUploadAttachment={uploadFor}
             />
             {!readonly && !pickupSummary && (
-              <div className="submit-bar results-submit">
-                <span className="submit-state">{answeredCount}/{choiceDecisions.length} reviewed</span>
-                <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
-                  {orphaned ? 'Submit review (agent offline)' : 'Submit review'}
-                  <ArrowRight size={16} aria-hidden />
-                </button>
-              </div>
+              <ResultsFinish
+                note={verdictDraft.note}
+                attachments={attachmentsForField(verdictDraft, 'note')}
+                reviewed={answeredCount}
+                total={choiceDecisions.length}
+                orphaned={orphaned}
+                busy={busy}
+                completeReady={answersComplete(choiceDecisions, answers)}
+                continueReady={claimNotesValid(choiceDecisions, answers)}
+                onNoteChange={note => patchVerdict(d => ({ ...d, note }))}
+                onUpload={async file => {
+                  const attachment = await uploadFor(RESULTS_VERDICT_ID, 'note', file)
+                  patchVerdict(d => withAttachment(d, attachment))
+                  return attachment
+                }}
+                onRemoveAttachment={id => patchVerdict(d => withoutAttachment(d, id))}
+                onComplete={() => void submitResults('complete')}
+                onContinue={() => void submitResults('continue')}
+              />
             )}
           </>
         )
@@ -194,7 +241,7 @@ export function CardView({ card }: { card: Card }) {
               <div>
                 <span className="canvas-label">Decision sheet</span>
                 <h2>{ready ? 'Ready to submit' : `${answeredCount}/${choiceDecisions.length} done`}</h2>
-                <p className="sheet-source">{sessionTitle}</p>
+                <p className="sheet-source">{card.session.title?.trim() || 'Untitled session'}</p>
               </div>
               <span className="dock-status">{card.status}</span>
             </div>
@@ -209,12 +256,12 @@ export function CardView({ card }: { card: Card }) {
                     index={i}
                     total={choiceDecisions.length}
                     blocks={questionBlocks}
-                    answer={answers[d.id] ?? { chosen: [], note: '', custom: '' }}
+                    answer={answers[d.id] ?? emptyDraft()}
                     readonly={readonly || busy}
                     onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
                     onUploadAttachment={uploadFor}
                   />
-                  <QuestionContext index={i} blocks={questionBlocks} />
+                  <QuestionContext index={i} decisionId={d.id} blocks={questionBlocks} />
                 </div>
               )
             })}
@@ -230,71 +277,52 @@ export function CardView({ card }: { card: Card }) {
             )}
 
             {!readonly && !pickupSummary && planMode && (
-              <div className="submit-bar">
-                {sendingBack ? (
-                  <div className="sendback">
-                    <textarea
-                      className="note needs"
-                      placeholder="What should change before you'd approve? (sent back to the agent)"
-                      value={sendBackNote}
-                      autoFocus
-                      onChange={e => setSendBackNote(e.target.value)}
-                    />
-                    <AttachmentInput
-                      label="Attach file to send-back note"
+              sendingBack
+                ? (
+                  <div className="submit-bar">
+                    <SendBackForm
+                      note={sendBackNote}
                       attachments={sendBackAttachments}
-                      readonly={busy}
+                      busy={busy}
+                      onNoteChange={setSendBackNote}
                       onUpload={async file => {
-                        const attachment = await uploadFor('plan_verdict', 'note', file)
+                        const attachment = await uploadFor(PLAN_VERDICT_ID, 'note', file)
                         setSendBackAttachments(prev => [...prev, attachment])
                         return attachment
                       }}
-                      onRemove={id => setSendBackAttachments(prev => prev.filter(a => a.id !== id))}
+                      onRemoveAttachment={id => setSendBackAttachments(prev => prev.filter(a => a.id !== id))}
+                      onCancel={() => setSendingBack(false)}
+                      onSend={() => void submit('revise')}
                     />
-                    <div className="sendback-actions">
-                      <button className="submit ghost" onClick={() => setSendingBack(false)}>Cancel</button>
-                      <button className="submit bad" disabled={!sendBackNote.trim() || busy} onClick={() => void submit('revise')}>
-                        Send back
-                      </button>
-                    </div>
                   </div>
-                ) : (
-                  <>
-                    <button className="submit ghost" onClick={() => setSendingBack(true)}>Send back…</button>
-                    <span className="submit-state">{ready ? 'agreed on all' : `${answeredCount}/${choiceDecisions.length} agreed`}</span>
-                    <button className="submit" disabled={!ready || busy} onClick={() => void submit('approve')}>
-                      {orphaned ? 'Approve (agent offline)' : 'Approve plan & proceed'}
-                      <ArrowRight size={16} aria-hidden />
-                    </button>
-                  </>
-                )}
-              </div>
+                )
+                : (
+                  <SubmitBar
+                    leading={<button className="submit ghost" onClick={() => setSendingBack(true)}>Send back…</button>}
+                    state={ready ? 'agreed on all' : `${answeredCount}/${choiceDecisions.length} agreed`}
+                    label={orphaned ? 'Approve (agent offline)' : 'Approve plan & proceed'}
+                    ready={ready}
+                    busy={busy}
+                    onSubmit={() => void submit('approve')}
+                  />
+                )
             )}
 
             {!readonly && !pickupSummary && !planMode && (
-              <div className="submit-bar">
-                <span className="submit-state">{answeredCount}/{choiceDecisions.length} answered</span>
-                <button className="submit" disabled={!ready || busy} onClick={() => void submit()}>
-                  {orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
-                  <ArrowRight size={16} aria-hidden />
-                </button>
-              </div>
+              <SubmitBar
+                state={`${answeredCount}/${choiceDecisions.length} answered`}
+                label={orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
+                ready={ready}
+                busy={busy}
+                onSubmit={() => void submit()}
+              />
             )}
           </section>
         )}
 
       {error && <p className="error-text">{error}</p>}
 
-      {pickupSummary && (
-        <div className="offline-out">
-          <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:</p>
-          <textarea readOnly value={pickupSummary} />
-          <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(pickupSummary)}>
-            <ClipboardCopy size={14} aria-hidden />
-            Copy to clipboard
-          </button>
-        </div>
-      )}
+      {pickupSummary && <OfflinePickup summary={pickupSummary} />}
     </div>
   )
 }

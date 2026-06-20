@@ -1,12 +1,12 @@
 import { AlertCircle, Check, CheckSquare, CopyCheck, PenLine, Square, Star } from 'lucide-react'
 import type { Block } from '../../src/shared/blocks.js'
-import type { AttachmentRef, Card, Decision } from '../../src/shared/card.js'
+import { PLAN_VERDICT_ID, type AttachmentRef, type Card, type Decision } from '../../src/shared/card.js'
 import { AttachmentInput } from './AttachmentInput.js'
-import { BlockView } from './blocks/BlockView.js'
-import { customMissing, noteMissing, OTHER_OPTION_ID, toggleChoice, type DraftAnswer } from './helpers.js'
+import { blockAnchorId } from './blocks/BlockView.js'
+import { attachmentsForField, customMissing, decisionAnswered, noteMissing, OTHER_OPTION_ID, toggleChoice, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
 
 function offersOther(card: Card, decision: Decision): boolean {
-  return card.stage !== 'results' && decision.id !== 'plan_verdict'
+  return card.stage !== 'results' && decision.id !== PLAN_VERDICT_ID
 }
 
 export function DecisionSection({ card, decision, index, total, blocks, answer, readonly, onChange, onUploadAttachment }: {
@@ -22,7 +22,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
 }) {
   const needsNote = noteMissing(decision, answer)
   const otherOn = answer.chosen.includes(OTHER_OPTION_ID)
-  const answered = answer.chosen.length > 0 && !needsNote && !customMissing(answer)
+  const answered = decisionAnswered(decision, answer)
   const recommended = decision.options.find(o => o.recommended)
   const recommendedOn = recommended ? answer.chosen.includes(recommended.id) : false
 
@@ -34,19 +34,15 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
     onChange({ ...answer, chosen, custom: decision.multi ? answer.custom : '' })
   }
 
-  function attachmentsFor(field: string): AttachmentRef[] {
-    return answer.attachments?.filter(a => a.field === field) ?? []
-  }
-
   async function upload(field: string, file: File): Promise<AttachmentRef> {
     if (!onUploadAttachment) throw new Error('Upload is not available')
     const attachment = await onUploadAttachment(decision.id, field, file)
-    onChange({ ...answer, attachments: [...(answer.attachments ?? []), attachment] })
+    onChange(withAttachment(answer, attachment))
     return attachment
   }
 
   function removeAttachment(id: string): void {
-    onChange({ ...answer, attachments: (answer.attachments ?? []).filter(a => a.id !== id) })
+    onChange(withoutAttachment(answer, id))
   }
 
   return (
@@ -74,7 +70,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
         <div className="linked-evidence">
           <span>Evidence</span>
           {blocks.map(b => (
-            <a key={b.id} href={`#block-${b.id}`}>
+            <a key={b.id} href={`#${blockAnchorId(b.id, decision.id)}`}>
               {b.title ?? b.type.replace('_', ' ')}
             </a>
           ))}
@@ -116,6 +112,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
         <>
           <input
             className="other-input"
+            aria-label="Your own answer"
             placeholder="Type your own answer…"
             value={answer.custom}
             disabled={readonly}
@@ -124,7 +121,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
           />
           <AttachmentInput
             label="Attach file to custom answer"
-            attachments={attachmentsFor('custom')}
+            attachments={attachmentsForField(answer, 'custom')}
             readonly={readonly}
             onUpload={file => upload('custom', file)}
             onRemove={removeAttachment}
@@ -135,6 +132,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
         <>
           <textarea
             className={`note${needsNote ? ' needs' : ''}`}
+            aria-label="Note for the agent"
             placeholder={needsNote ? 'A note is required for this choice…' : 'Optional note for the agent'}
             value={answer.note}
             disabled={readonly}
@@ -142,7 +140,7 @@ export function DecisionSection({ card, decision, index, total, blocks, answer, 
           />
           <AttachmentInput
             label="Attach file to note"
-            attachments={attachmentsFor('note')}
+            attachments={attachmentsForField(answer, 'note')}
             readonly={readonly}
             onUpload={file => upload('note', file)}
             onRemove={removeAttachment}

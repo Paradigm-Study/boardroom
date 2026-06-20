@@ -1,56 +1,42 @@
 import type { Block } from '../../src/shared/blocks.js'
-import type { Card, Decision, DecisionOption } from '../../src/shared/card.js'
+import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type Card, type Decision } from '../../src/shared/card.js'
 
 export interface VisualSummary {
   totalBlocks: number
   linkedBlocks: number
-  backgroundBlocks: number
 }
 
 export interface CardWorkspace {
   blockById: Map<string, Block>
   choiceDecisions: Decision[]
-  planVerdict?: Decision
-  visualBlocks: Block[]
   globalBlocks: Block[]
-  backgroundBlocks: Block[]
-  recommendedByDecision: Map<string, DecisionOption>
   visualSummary: VisualSummary
   linkedBlocksFor(decisionId: string): Block[]
 }
 
-function visibleDecisions(card: Card): { choiceDecisions: Decision[]; planVerdict?: Decision } {
-  if (card.stage !== 'plan') return { choiceDecisions: card.decisions }
-  return {
-    choiceDecisions: card.decisions.filter(d => d.id !== 'plan_verdict'),
-    planVerdict: card.decisions.find(d => d.id === 'plan_verdict'),
-  }
+// The synthetic verdict decisions (plan_verdict / results_verdict) are driven by
+// the submit bar, never rendered as a row to answer, so they are filtered out of
+// the decisions the card actually shows.
+function visibleDecisions(card: Card): Decision[] {
+  if (card.stage === 'plan') return card.decisions.filter(d => d.id !== PLAN_VERDICT_ID)
+  if (card.stage === 'results') return card.decisions.filter(d => d.id !== RESULTS_VERDICT_ID)
+  return card.decisions
 }
 
 export function prepareCardWorkspace(card: Card): CardWorkspace {
   const blockById = new Map(card.blocks.map(b => [b.id, b]))
-  const { choiceDecisions, planVerdict } = visibleDecisions(card)
+  const choiceDecisions = visibleDecisions(card)
   const linkedBlockIds = new Set(choiceDecisions.flatMap(d => d.blockRefs ?? []))
   const linkedBlocks = card.blocks.filter(b => linkedBlockIds.has(b.id))
-  const backgroundBlocks = card.blocks.filter(b => !linkedBlockIds.has(b.id))
-  const recommendedByDecision = new Map(
-    choiceDecisions
-      .map(d => [d.id, d.options.find(o => o.recommended)] as const)
-      .filter((entry): entry is readonly [string, DecisionOption] => entry[1] !== undefined),
-  )
+  const globalBlocks = card.blocks.filter(b => !linkedBlockIds.has(b.id))
 
   return {
     blockById,
     choiceDecisions,
-    planVerdict,
-    visualBlocks: [...linkedBlocks, ...backgroundBlocks],
-    globalBlocks: backgroundBlocks,
-    backgroundBlocks,
-    recommendedByDecision,
+    globalBlocks,
     visualSummary: {
       totalBlocks: card.blocks.length,
       linkedBlocks: linkedBlocks.length,
-      backgroundBlocks: backgroundBlocks.length,
     },
     linkedBlocksFor(decisionId: string): Block[] {
       const decision = choiceDecisions.find(d => d.id === decisionId)

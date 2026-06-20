@@ -1,9 +1,26 @@
 import dagre from 'dagre'
 import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Block } from '../../../src/shared/blocks.js'
+import { basename, fileHash, viewableHref } from '../fileView.js'
+
+// Links inside agent prose: a file we can show (image/pdf/html/text or an
+// attachment url) opens in the in-app viewer so the window is never stranded;
+// anything else is a normal external link in a new tab.
+function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  if (href && viewableHref(href)) {
+    const name = basename(href)
+    const target = fileHash({ url: href, name })
+    return (
+      <a href={target} onClick={e => { e.preventDefault(); window.location.hash = target }}>
+        {children}
+      </a>
+    )
+  }
+  return <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>
+}
 
 const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
   markdown: { label: 'Context', Icon: FileText },
@@ -30,7 +47,7 @@ function Markdown({ text }: { text: string }) {
   return (
     <div>
       <div ref={ref} className={`prose${expanded ? '' : ' clamped'}`}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>{text}</ReactMarkdown>
       </div>
       {(overflows || expanded) && (
         <button className="clamp-toggle" onClick={() => setExpanded(e => !e)}>
@@ -41,10 +58,17 @@ function Markdown({ text }: { text: string }) {
   )
 }
 
+// The DOM anchor id for a block, optionally namespaced to a decision. Shared by
+// BlockView (which stamps the id) and Decision's Evidence links (which target it)
+// so the two can never drift apart.
+export function blockAnchorId(blockId: string, scope?: string): string {
+  return scope ? `block-${scope}-${blockId}` : `block-${blockId}`
+}
+
 const NODE_W = 164
 const NODE_H = 50
 
-function labelLines(label: string): string[] {
+export function labelLines(label: string): string[] {
   const words = label.split(/\s+/).filter(Boolean)
   const lines: string[] = []
   let current = ''
@@ -224,14 +248,18 @@ function Mermaid({ block }: { block: Extract<Block, { type: 'mermaid' }> }) {
   return <div dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
-export function BlockView({ block, highlighted, onClick, forceOpen }: {
+// `anchorScope` (a decision id) namespaces the DOM anchor so the same block can be
+// shown under two decisions without their ids colliding — an unscoped `block-<id>`
+// would appear twice and an Evidence link would jump to the wrong row. The
+// matching href is built in Decision.tsx.
+export function BlockView({ block, highlighted, forceOpen, anchorScope }: {
   block: Block
   highlighted?: boolean
-  onClick?: () => void
   forceOpen?: boolean
+  anchorScope?: string
 }) {
   const kind = KIND[block.type]
-  let body: React.ReactNode
+  let body: ReactNode
   switch (block.type) {
     case 'markdown': body = <Markdown text={block.text} />; break
     case 'graph': body = <Graph block={block} />; break
@@ -244,9 +272,8 @@ export function BlockView({ block, highlighted, onClick, forceOpen }: {
   }
   return (
     <div
-      id={`block-${block.id}`}
+      id={blockAnchorId(block.id, anchorScope)}
       className={`block${highlighted ? ' highlight' : ''}`}
-      onClick={onClick}
     >
       <div className="block-kind">
         <kind.Icon size={13} strokeWidth={2} aria-hidden />

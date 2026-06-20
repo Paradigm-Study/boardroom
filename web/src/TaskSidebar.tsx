@@ -3,7 +3,7 @@ import type { Card } from '../../src/shared/card.js'
 import { STAGE } from './stage.js'
 
 function age(iso: string): string {
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000)
   if (mins < 1) return 'now'
   if (mins < 60) return `${mins}m`
   const hours = Math.round(mins / 60)
