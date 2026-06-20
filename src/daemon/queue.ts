@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { OTHER_OPTION_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type Card, type CardResponse, type DecideResponse, type DecisionAnswer, type PlanVerdict, type ResultsVerdict } from '../shared/card.js'
+import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
 
@@ -90,13 +90,13 @@ export class Queue extends EventEmitter {
   // claim is left unreviewed.
   private validationScope(card: Card, answers: Record<string, DecisionAnswer>): Card {
     if (card.stage === 'plan') {
-      const v = answers[PLAN_VERDICT_ID]?.chosen[0] as PlanVerdict | undefined
+      const v = PLAN_VERDICTS.find(o => o === answers[PLAN_VERDICT_ID]?.chosen[0])
       if (v === 'revise' || v === 'reject') {
         return { ...card, decisions: card.decisions.filter(d => d.id === PLAN_VERDICT_ID) }
       }
     }
     if (card.stage === 'results') {
-      const v = answers[RESULTS_VERDICT_ID]?.chosen[0] as ResultsVerdict | undefined
+      const v = RESULTS_VERDICTS.find(o => o === answers[RESULTS_VERDICT_ID]?.chosen[0])
       if (v === 'continue') {
         return {
           ...card,

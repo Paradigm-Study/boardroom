@@ -53,9 +53,12 @@ export async function uploadAttachment(
 
 export function subscribeCards(
   onCard: (card: Card) => void,
-  onError?: (e: Event) => void,
+  onStatus?: (online: boolean) => void,
 ): () => void {
   const es = new EventSource('/events')
+  // 'open' fires on the initial connect and every auto-reconnect, so the caller's
+  // offline indicator self-clears on recovery.
+  es.addEventListener('open', () => onStatus?.(true))
   es.addEventListener('card', e => {
     // A malformed frame must not throw into the EventSource dispatcher (where it
     // would be swallowed and that card silently lost) — log and skip it.
@@ -69,7 +72,7 @@ export function subscribeCards(
   // load or out for a while leaves it failed with no UI signal — surface it.
   es.addEventListener('error', e => {
     console.warn('[boardroom] card stream error', e)
-    onError?.(e)
+    onStatus?.(false)
   })
   return () => es.close()
 }

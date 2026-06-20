@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AttachmentRef } from '../../src/shared/card.js'
-import { decideCard, fetchCards, uploadAttachment } from './api.js'
+import type { AttachmentRef, Card } from '../../src/shared/card.js'
+import { decideCard, fetchCards, subscribeCards, uploadAttachment } from './api.js'
 
 function jsonResponse(body: unknown, status = 200): globalThis.Response {
   return {
@@ -120,5 +120,56 @@ describe('uploadAttachment', () => {
     const file = new File(['data'], 'shot.png', { type: 'image/png' })
 
     await expect(uploadAttachment('c1', 'ans-1', 'note', file)).rejects.toThrow('too big')
+  })
+
+  it('percent-encodes a non-ASCII file name (survives the latin1 header)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: 'a', name: 'x', size: 1, path: '/x', uploadedAt: 'now' }))
+    const file = new File(['data'], 'café 文档.png', { type: 'image/png' })
+
+    await uploadAttachment('c1', 'ans-1', 'note', file)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect((init.headers as Record<string, string>)['x-file-name']).toBe(encodeURIComponent('café 文档.png'))
+  })
+})
+
+class MockEventSource {
+  static instances: MockEventSource[] = []
+  listeners: Record<string, ((e: unknown) => void)[]> = {}
+  closed = false
+  constructor(public url: string) { MockEventSource.instances.push(this) }
+  addEventListener(type: string, cb: (e: unknown) => void): void { (this.listeners[type] ??= []).push(cb) }
+  close(): void { this.closed = true }
+  emit(type: string, e: unknown = {}): void { (this.listeners[type] ?? []).forEach(cb => cb(e)) }
+}
+
+describe('subscribeCards', () => {
+  beforeEach(() => {
+    MockEventSource.instances = []
+    vi.stubGlobal('EventSource', MockEventSource)
+  })
+
+  it('reports connection status: offline on stream error, online on (re)open', () => {
+    const statuses: boolean[] = []
+    subscribeCards(() => {}, online => statuses.push(online))
+    const es = MockEventSource.instances[0]
+    es.emit('error')
+    es.emit('open')
+    expect(statuses).toEqual([false, true])
+  })
+
+  it('delivers parsed cards and skips a malformed frame without throwing', () => {
+    const got: Card[] = []
+    subscribeCards(c => got.push(c))
+    const es = MockEventSource.instances[0]
+    es.emit('card', { data: JSON.stringify({ id: 'c1' }) })
+    expect(() => es.emit('card', { data: 'not-json{' })).not.toThrow()
+    expect(got.map(c => c.id)).toEqual(['c1'])
+  })
+
+  it('closes the stream on unsubscribe', () => {
+    const stop = subscribeCards(() => {})
+    stop()
+    expect(MockEventSource.instances[0].closed).toBe(true)
   })
 })

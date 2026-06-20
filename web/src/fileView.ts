@@ -56,7 +56,16 @@ export function fileKind({ mime, name }: { mime?: string; name?: string }): File
 // classifying it as a trusted same-origin attachment and fetching it in-app.
 const ATTACHMENT_URL = /^\/api\/cards\/[^/]+\/attachments\/[^/]+$/
 
+// A relative href resolves against the dashboard's own origin; an absolute one
+// (any scheme, or a protocol-relative //host) is cross-origin. Agent prose is
+// untrusted, so only relative links may open in the in-app viewer (which fetches
+// text/md and embeds html/images) — an absolute URL opens in a new tab instead.
+function isRelativeHref(href: string): boolean {
+  return !/^[a-zA-Z][a-zA-Z0-9+.-]*:|^\/\//.test(href)
+}
+
 export function viewableHref(href: string): boolean {
+  if (!isRelativeHref(href)) return false
   if (ATTACHMENT_URL.test(href)) return true
   return fileKind({ name: href }) !== 'other'
 }

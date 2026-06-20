@@ -67,6 +67,19 @@ describe('viewableHref', () => {
     expect(viewableHref('https://example.com/page')).toBe(false)
     expect(viewableHref('https://example.com')).toBe(false)
   })
+
+  it('never treats an absolute cross-origin URL as in-app viewable — not by extension, not by an attachment-shaped path', () => {
+    // Agent prose is untrusted: an absolute/external link must open in a new tab,
+    // never be fetched or embedded inside the dashboard chrome (SSRF/beacon).
+    expect(viewableHref('https://evil.com/report.html')).toBe(false)
+    expect(viewableHref('https://evil.com/shot.png')).toBe(false)
+    expect(viewableHref('https://evil.com/api/cards/c1/attachments/a1')).toBe(false)
+    expect(viewableHref('//evil.com/notes.md')).toBe(false)
+    expect(viewableHref('data:text/html,<b>x</b>')).toBe(false)
+    // …but legitimate relative/same-origin links stay viewable.
+    expect(viewableHref('/api/cards/c1/attachments/a1')).toBe(true)
+    expect(viewableHref('./out/report.html')).toBe(true)
+  })
 })
 
 describe('parseHash / fileHash', () => {

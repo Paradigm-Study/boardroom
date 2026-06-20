@@ -49,18 +49,22 @@ export function App() {
       setLoadError(err instanceof Error ? err.message : String(err))
       seenPending.current ??= new Set()
     })
-    return subscribeCards(card => {
-      setCards(prev => new Map(prev).set(card.id, card))
-      setLoadError(null) // a live event means the stream is connected
-      const seen = seenPending.current
-      if (!seen) return
-      if (card.status === 'pending' && !seen.has(card.id)) {
-        seen.add(card.id)
-        notifyCard(card)
-      } else if (card.status !== 'pending') {
-        seen.delete(card.id)
-      }
-    })
+    return subscribeCards(
+      card => {
+        setCards(prev => new Map(prev).set(card.id, card))
+        setLoadError(null) // a live event means the stream is connected
+        const seen = seenPending.current
+        if (!seen) return
+        if (card.status === 'pending' && !seen.has(card.id)) {
+          seen.add(card.id)
+          notifyCard(card)
+        } else if (card.status !== 'pending') {
+          seen.delete(card.id)
+        }
+      },
+      // Stream connectivity drives the same banner; it clears on reconnect ('open').
+      online => setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…'),
+    )
   }, [])
 
   const all = [...cards.values()]
