@@ -10,6 +10,11 @@ import { attachmentsForField, decisionAnswered, emptyDraft, noteMissing, withAtt
 // Per-verdict copy for the always-on claim note. Approve carries an optional
 // add-on note; revise/reject carry the (required) instruction. Distinct aria
 // labels keep each textarea announced correctly for assistive tech.
+// Cards decided before the deny→reject / changes→revise rename stored the old
+// option ids. Map them so a historical card still renders its verdict + note
+// instead of falling through to the idle (unreviewed) branch.
+const LEGACY_VERDICT: Record<string, PlanVerdict> = { deny: 'reject', changes: 'revise' }
+
 const NOTE_COPY: Record<PlanVerdict, { aria: string; placeholder: string }> = {
   approve: { aria: 'Note for this claim', placeholder: 'Add a note (optional) — sent to the agent' },
   revise: { aria: 'What to revise', placeholder: "What should change? — you're on the right track, the agent will apply this" },
@@ -26,9 +31,11 @@ function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploa
   onUploadAttachment?(decisionId: string, field: string, file: File): Promise<AttachmentRef>
 }) {
   const [open, setOpen] = useState(false)
-  // Narrow honestly: an unknown/legacy value (e.g. a pre-rename 'deny') resolves
-  // to undefined → idle row, rather than an `as` cast asserting it's a valid verdict.
-  const verdict = PLAN_VERDICTS.find(v => v === answer.chosen[0])
+  // Narrow honestly (no `as` cast): map any legacy id, then match the union; an
+  // unknown value still resolves to undefined → idle row.
+  const raw = answer.chosen[0]
+  const mapped = raw ? (LEGACY_VERDICT[raw] ?? raw) : undefined
+  const verdict = PLAN_VERDICTS.find(v => v === mapped)
   const rejected = verdict === 'reject'
   const revised = verdict === 'revise'
   // Proof first (tests/diff/graph), the agent's prose explanation last — so the

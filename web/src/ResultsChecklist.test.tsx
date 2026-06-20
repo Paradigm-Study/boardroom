@@ -142,4 +142,20 @@ describe('ResultsChecklist', () => {
 
     expect(screen.getByLabelText('Reason for rejection')).toBeTruthy()
   })
+
+  it('still surfaces the note on a legacy "deny" verdict (cards decided before the deny→reject rename)', () => {
+    render(
+      <ResultsChecklist
+        card={card}
+        blockById={new Map()}
+        answers={{ 'claim-1': { chosen: ['deny'], note: 'this was the wrong direction', custom: '' } }}
+        readonly
+        onChange={vi.fn()}
+      />,
+    )
+
+    // A historical card stored chosen:['deny']; it must still show its note rather
+    // than silently falling through to the idle/unreviewed branch and hiding it.
+    expect(screen.getByDisplayValue('this was the wrong direction')).toBeTruthy()
+  })
 })
