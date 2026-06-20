@@ -2,38 +2,101 @@ import { describe, expect, it } from 'vitest'
 import type { Card } from '../shared/card.js'
 import { buildSummary } from './summary.js'
 
+const claim = (id: string, prompt: string): Card['decisions'][number] => ({
+  id, prompt,
+  options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
+  noteRequiredOn: ['revise', 'reject'],
+})
+
 function resultsCard(): Card {
   return {
     id: 'c1', stage: 'results',
     session: { agent: 'claude-code', project: 'demo' },
     headline: 'done', blocks: [],
     decisions: [
-      { id: 'claim:c1', prompt: 'tests pass', options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }], noteRequiredOn: ['deny'] },
-      { id: 'claim:c2', prompt: 'docs updated', options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }], noteRequiredOn: ['deny'] },
+      claim('claim:c1', 'tests pass'),
+      claim('claim:c2', 'docs updated'),
+      claim('claim:c3', 'lint is clean'),
+      { id: 'results_verdict', prompt: 'Is the session complete?', options: [{ id: 'complete', label: 'Mark complete' }, { id: 'continue', label: 'Keep going' }] },
     ],
     status: 'pending', createdAt: '2026-06-11T00:00:00.000Z',
   }
 }
 
 describe('buildSummary — results', () => {
-  it('leads with denied claims and their notes', () => {
+  it('"keep going" leads with NOT complete and groups rejected / revise / add-on as next steps', () => {
     const s = buildSummary(resultsCard(), {
-      'claim:c1': { chosen: ['deny'], note: 'tests are flaky, rerun and pin the seed' },
-      'claim:c2': { chosen: ['approve'] },
+      'claim:c1': { chosen: ['reject'], note: 'tests are flaky, pin the seed' },
+      'claim:c2': { chosen: ['revise'], note: 'also add a DB index' },
+      'claim:c3': { chosen: ['approve'] },
+      results_verdict: { chosen: ['continue'], note: 'and write a CHANGELOG entry' },
     })
-    const lines = s.split('\n')
-    expect(lines[0]).toMatch(/DENIED/)
-    expect(lines[1]).toContain('tests pass')
-    expect(lines[1]).toContain('rerun and pin the seed')
-    expect(s.indexOf('DENIED')).toBeLessThan(s.indexOf('Approved'))
+
+    expect(s.split('\n')[0]).toMatch(/NOT complete/)
+    // rejected claims are flagged as drop/redo work, with their notes
+    expect(s).toMatch(/Reject/)
+    expect(s).toContain('tests pass')
+    expect(s).toContain('tests are flaky, pin the seed')
+    // revise claims (on the right track) are a separate group
+    expect(s).toMatch(/Revise/)
+    expect(s).toContain('also add a DB index')
+    // the verdict's own note is the card-level add-on
+    expect(s).toContain('write a CHANGELOG entry')
+    // approved claims listed last, as context
+    expect(s).toContain('lint is clean')
+    // Reject group precedes the Approved group. Guard both indices are present
+    // first — search() returns -1 for a missing section, which is < any real index
+    // and would let the ordering assertion false-pass if a group vanished.
+    const rejectIdx = s.search(/Reject/)
+    const approvedIdx = s.search(/Approved as-is/)
+    expect(rejectIdx).toBeGreaterThanOrEqual(0)
+    expect(approvedIdx).toBeGreaterThanOrEqual(0)
+    expect(rejectIdx).toBeLessThan(approvedIdx)
   })
 
-  it('says all approved when nothing is denied', () => {
+  it('"mark complete" leads with COMPLETE and omits reject/revise when all approved', () => {
     const s = buildSummary(resultsCard(), {
       'claim:c1': { chosen: ['approve'] },
       'claim:c2': { chosen: ['approve'] },
+      'claim:c3': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
     })
-    expect(s).toMatch(/All claims approved/)
+
+    expect(s.split('\n')[0]).toMatch(/COMPLETE/)
+    expect(s).not.toMatch(/NOT complete/)
+    expect(s).not.toMatch(/Reject|Revise|Added instructions/)
+    expect(s).toContain('tests pass')
+  })
+
+  it('completion is independent of the votes: still leads COMPLETE while listing a rejected claim', () => {
+    const s = buildSummary(resultsCard(), {
+      'claim:c1': { chosen: ['reject'], note: 'this one was wrong but I am done anyway' },
+      'claim:c2': { chosen: ['approve'] },
+      'claim:c3': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
+    })
+
+    expect(s.split('\n')[0]).toMatch(/COMPLETE/)
+    expect(s).not.toMatch(/NOT complete/)
+    expect(s).toMatch(/Reject/)
+    expect(s).toContain('this one was wrong but I am done anyway')
+  })
+
+  it('surfaces add-on attachments on the verdict', () => {
+    const s = buildSummary(resultsCard(), {
+      'claim:c1': { chosen: ['approve'] },
+      'claim:c2': { chosen: ['approve'] },
+      'claim:c3': { chosen: ['approve'] },
+      results_verdict: {
+        chosen: ['continue'],
+        note: 'see the mockup',
+        attachments: [{ id: 'a1', name: 'mockup.png', size: 10, path: '/tmp/mockup.png', field: 'note', uploadedAt: '2026-06-11T00:00:00.000Z' }],
+      },
+    })
+
+    expect(s).toContain('Added instructions')
+    expect(s).toContain('mockup.png')
+    expect(s).toContain('/tmp/mockup.png')
   })
 })
 
@@ -87,7 +150,7 @@ describe('buildSummary — plan', () => {
           field: 'note',
           uploadedAt: '2026-06-16T12:00:00.000Z',
         }],
-      } as any,
+      },
     })
 
     expect(s).toContain('Attachments:')

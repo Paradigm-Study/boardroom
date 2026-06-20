@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from '../../src/shared/card.js'
-import { answersComplete, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
+import { answersComplete, claimNotesValid, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
 
 const decision: Decision = {
   id: 'd1', prompt: 'p',
@@ -37,6 +37,22 @@ describe('answersComplete', () => {
   it('requires custom text when "other" is chosen', () => {
     expect(answersComplete([decision], { d1: { chosen: [OTHER_OPTION_ID], note: '', custom: '' } })).toBe(false)
     expect(answersComplete([decision], { d1: { chosen: [OTHER_OPTION_ID], note: '', custom: 'my own take' } })).toBe(true)
+  })
+})
+
+describe('claimNotesValid', () => {
+  const claim: Decision = {
+    id: 'claim:a', prompt: 'A',
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
+    noteRequiredOn: ['revise', 'reject'],
+  }
+
+  it('ignores unreviewed claims but requires a note on any voted revise/reject', () => {
+    // "Keep going" should not be blocked by claims the human chose not to touch.
+    expect(claimNotesValid([claim], {})).toBe(true)
+    expect(claimNotesValid([claim], { 'claim:a': { chosen: ['approve'], note: '', custom: '' } })).toBe(true)
+    expect(claimNotesValid([claim], { 'claim:a': { chosen: ['reject'], note: '', custom: '' } })).toBe(false)
+    expect(claimNotesValid([claim], { 'claim:a': { chosen: ['revise'], note: 'do x', custom: '' } })).toBe(true)
   })
 })
 

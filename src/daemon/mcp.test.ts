@@ -30,6 +30,27 @@ const CLARIFY_ARGS = {
   ],
 }
 
+// A minimal, schema-valid present_plan payload (structural block + one decision).
+const PLAN_ARGS = {
+  project: 'keepalive-test',
+  headline: 'ship it?',
+  blocks: [
+    { id: 'g', type: 'phases', phases: [{ title: 'Phase 1' }] },
+    { id: 'q', type: 'markdown', text: 'question context' },
+  ],
+  decisions: [
+    {
+      id: 'pick',
+      prompt: 'Pick one?',
+      blockRefs: ['q'],
+      options: [
+        { id: 'a', label: 'A', recommended: true },
+        { id: 'b', label: 'B' },
+      ],
+    },
+  ],
+}
+
 const delay = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 let dir: string
@@ -66,6 +87,9 @@ afterEach(async () => {
   await delay(60)
   store.close()
   rmSync(dir, { recursive: true, force: true })
+  // Don't leak a tiny block window into the keepalive tests (which expect the
+  // call to keep hanging through their collection window).
+  delete process.env.BOARDROOM_BLOCK_MS
 })
 
 function post(body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Response> {
@@ -220,6 +244,58 @@ describe('hanging tool calls keep their SSE stream warm', () => {
 
     const beats = messages.filter(m => m.method === 'notifications/message')
     expect(beats.length).toBeGreaterThanOrEqual(2)
+  }, 15_000)
+
+  it('PARKS a clarify call after the bounded window: returns a STOP sentinel and leaves the card reattachable', async () => {
+    process.env.BOARDROOM_BLOCK_MS = '200'
+    process.env.BOARDROOM_KEEPALIVE_MS = '50'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    // No decision; let the 200ms window elapse and collect the resolved result.
+    const messages = await collectMessages(callRes.body, 1200)
+    ac.abort()
+
+    const result = messages.find(m => m.id === 8 && 'result' in m) as
+      | { result?: { content?: { type: string; text?: string }[] } }
+      | undefined
+    expect(result).toBeDefined() // the call RETURNED (parked), not hung forever
+    const texts = (result?.result?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
+    expect(texts).toMatch(/parked|STOP|re-issue/i)
+
+    // Parked == orphaned: reattachable, decidable, no live waiter.
+    expect(store.list('orphaned').length).toBe(1)
+    expect(store.list('pending').length).toBe(0)
+  }, 15_000)
+
+  it('does NOT park present_plan — its approval gate keeps blocking past the window', async () => {
+    process.env.BOARDROOM_BLOCK_MS = '200'
+    process.env.BOARDROOM_KEEPALIVE_MS = '50'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'present_plan', arguments: PLAN_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    // Collect well past the 200ms window — it must still be hanging, card still pending.
+    const messages = await collectMessages(callRes.body, 800)
+    ac.abort()
+
+    const result = messages.find(m => m.id === 9 && 'result' in m)
+    expect(result).toBeUndefined()             // never returned — present_plan never parks
+    expect(store.list('pending').length).toBe(1)
+    expect(store.list('orphaned').length).toBe(0)
   }, 15_000)
 
   it('still resolves the call with the human decision', async () => {

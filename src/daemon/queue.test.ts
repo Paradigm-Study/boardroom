@@ -21,6 +21,26 @@ function card(id: string, fingerprint = `fp-${id}`): Card {
   }
 }
 
+function resultsCard(id: string, fingerprint = `fp-${id}`): Card {
+  const claim = (cid: string, prompt: string): Card['decisions'][number] => ({
+    id: cid, prompt,
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
+    noteRequiredOn: ['revise', 'reject'],
+  })
+  return {
+    id, stage: 'results',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h', blocks: [],
+    decisions: [
+      claim('claim:a', 'A'),
+      claim('claim:b', 'B'),
+      { id: 'results_verdict', prompt: 'Is the session complete?', options: [{ id: 'complete', label: 'Mark complete' }, { id: 'continue', label: 'Keep going' }] },
+    ],
+    status: 'pending', createdAt: new Date().toISOString(),
+    fingerprint,
+  }
+}
+
 const noop = { resolve: () => {}, reject: () => {} }
 
 let dir: string
@@ -92,6 +112,45 @@ describe('Queue.decide', () => {
     expect(updated.status).toBe('decided')
   })
 
+  it('results "keep going" needs only the verdict, not every claim reviewed', () => {
+    queue.submit(resultsCard('r1'), noop)
+    // No claim votes at all — "keep going" is the send-back analog: verdict only.
+    const { card: updated } = queue.decide('r1', { results_verdict: { chosen: ['continue'] } })
+    expect(updated.status).toBe('decided')
+  })
+
+  it('results "keep going" still requires a note on any claim voted revise/reject', () => {
+    queue.submit(resultsCard('r1'), noop)
+    expect(() => queue.decide('r1', {
+      'claim:a': { chosen: ['reject'] },
+      results_verdict: { chosen: ['continue'] },
+    })).toThrow(/requires a note/)
+  })
+
+  it('results "mark complete" requires every claim reviewed', () => {
+    queue.submit(resultsCard('r1'), noop)
+    // claim:b is unreviewed — completing the session is not allowed.
+    expect(() => queue.decide('r1', {
+      'claim:a': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
+    })).toThrow(ValidationError)
+
+    const { card: updated } = queue.decide('r1', {
+      'claim:a': { chosen: ['approve'] },
+      'claim:b': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
+    })
+    expect(updated.status).toBe('decided')
+  })
+
+  it('results decisions always require the session verdict', () => {
+    queue.submit(resultsCard('r1'), noop)
+    expect(() => queue.decide('r1', {
+      'claim:a': { chosen: ['approve'] },
+      'claim:b': { chosen: ['approve'] },
+    })).toThrow(/results_verdict/)
+  })
+
   it('decides an orphaned card with no live waiter as undelivered (claimable later)', () => {
     const { cardId, gen } = queue.submit(card('c1'), noop)
     queue.disconnect(cardId, gen)
@@ -120,6 +179,55 @@ describe('Queue.disconnect', () => {
     queue.disconnect(cardId, gen)             // stale close from the first connection
     expect(store.get('c1')?.status).toBe('pending')
     expect(second.gen).toBeGreaterThan(gen)
+  })
+})
+
+describe('Queue.park', () => {
+  it('parks a pending card as orphaned WITHOUT rejecting its waiter (graceful, not an error)', () => {
+    const resolve = vi.fn()
+    const reject = vi.fn()
+    const { cardId, gen } = queue.submit(card('c1'), { resolve, reject })
+    expect(queue.park(cardId, gen)).toBe(true)
+    expect(store.get('c1')?.status).toBe('orphaned')   // reattachable, unlike a stranded 'pending'
+    expect(reject).not.toHaveBeenCalled()              // the handler resolves a STOP sentinel itself
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op on a stale generation (a newer connection already took over)', () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)                  // orphan
+    const second = queue.submit(card('c1'), noop)  // revive → pending, new gen
+    expect(queue.park(cardId, gen)).toBe(false)    // stale gen from the first connection
+    expect(store.get('c1')?.status).toBe('pending')
+    expect(second.gen).toBeGreaterThan(gen)
+  })
+
+  it('is a no-op when the card is not pending (already decided/orphaned)', () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.decide('c1', { d1: { chosen: ['a'] } })
+    expect(queue.park(cardId, gen)).toBe(false)
+    expect(store.get('c1')?.status).toBe('decided')
+  })
+
+  it('a parked card is claimable: decide-then-reissue returns the stored answer, no duplicate', () => {
+    const first = queue.submit(card('c1', 'shared-fp'), noop)
+    expect(queue.park(first.cardId, first.gen)).toBe(true)
+    queue.decide('c1', { d1: { chosen: ['a'] } })            // human decides the parked card → undelivered
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+
+    const resolve = vi.fn()
+    const retry = queue.submit(card('c2', 'shared-fp'), { resolve, reject: vi.fn() })
+    expect(retry.gen).toBe(-1)                                // claimed immediately
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ cardId: 'c1' }))
+    expect(store.get('c1')?.deliveredAt).toBeTruthy()
+    expect(store.get('c2')).toBeUndefined()                   // no duplicate
+  })
+
+  it('a stale close after park does not double-process (waiter already detached)', () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    expect(queue.park(cardId, gen)).toBe(true)
+    queue.disconnect(cardId, gen)                  // the later res.on('close') fires this
+    expect(store.get('c1')?.status).toBe('orphaned')  // unchanged, no throw
   })
 })
 

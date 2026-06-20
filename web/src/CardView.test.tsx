@@ -80,14 +80,36 @@ const pendingClarify: Card = {
   ],
 }
 
+// One block referenced by two decisions — the duplicate-anchor case: an unscoped
+// `block-<id>` would appear twice and an Evidence link would jump to the wrong row.
+const sharedBlockCard: Card = {
+  ...pendingClarify,
+  id: 'shared-1',
+  blocks: [
+    { id: 'shared', type: 'markdown', title: 'Shared evidence', text: 'Referenced by both decisions.' },
+    { id: 'global', type: 'markdown', title: 'Global', text: 'whole-card context' },
+  ],
+  decisions: [
+    { id: 'first', prompt: 'First?', blockRefs: ['shared'], options: [{ id: 'a', label: 'A1', recommended: true }, { id: 'b', label: 'B1' }] },
+    { id: 'second', prompt: 'Second?', blockRefs: ['shared'], options: [{ id: 'a', label: 'A2', recommended: true }, { id: 'b', label: 'B2' }] },
+  ],
+}
+
+const resultsClaim = (id: string, prompt: string): Card['decisions'][number] => ({
+  id, prompt,
+  options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
+  noteRequiredOn: ['revise', 'reject'],
+})
+
 const pendingResults: Card = {
   ...pendingPlan,
   id: 'results-1',
   stage: 'results',
   headline: 'Review completed work',
   decisions: [
-    { id: 'claim-1', prompt: 'Claim one', options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }], noteRequiredOn: ['deny'] },
-    { id: 'claim-2', prompt: 'Claim two', options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }], noteRequiredOn: ['deny'] },
+    resultsClaim('claim-1', 'Claim one'),
+    resultsClaim('claim-2', 'Claim two'),
+    { id: 'results_verdict', prompt: 'Is the session complete?', options: [{ id: 'complete', label: 'Mark complete' }, { id: 'continue', label: 'Keep going' }] },
   ],
 }
 
@@ -151,23 +173,44 @@ describe('CardView pending plan actions', () => {
     }))
   })
 
-  it('approve all enables and submits the results review', async () => {
+  it('renders the always-on add-on box and both finish actions for a results card', () => {
+    render(<CardView card={pendingResults} />)
+
+    expect(screen.getByLabelText('Add instructions for the agent')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Mark complete' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Keep going' })).toBeTruthy()
+  })
+
+  it('"Mark complete" is gated on every claim being reviewed, then submits a complete verdict', async () => {
     vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
     render(<CardView card={pendingResults} />)
 
-    const submit = screen.getByRole('button', { name: 'Submit review' })
-    expect((submit as HTMLButtonElement).disabled).toBe(true)
+    const complete = screen.getByRole('button', { name: 'Mark complete' })
+    expect((complete as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
 
-    expect(screen.getByText('2 of 2 reviewed')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Approve all' })).toBeNull()
-    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
-    fireEvent.click(submit)
+    await waitFor(() => expect((complete as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(complete)
 
     await waitFor(() => expect(decideCard).toHaveBeenCalledWith('results-1', {
       'claim-1': { chosen: ['approve'] },
       'claim-2': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
     }))
+  })
+
+  it('"Keep going" submits a continue verdict carrying the add-on note, even with claims unreviewed', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingResults} />)
+
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'also bump the version' } })
+    const keepGoing = screen.getByRole('button', { name: 'Keep going' })
+    await waitFor(() => expect((keepGoing as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(keepGoing)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('results-1', expect.objectContaining({
+      results_verdict: { chosen: ['continue'], note: 'also bump the version' },
+    })))
   })
 
   it('offers file upload on the plan send-back note', () => {
@@ -176,6 +219,27 @@ describe('CardView pending plan actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send back…' }))
 
     expect(screen.getByRole('button', { name: 'Attach file to send-back note' })).toBeTruthy()
+  })
+
+  it('labels the send-back note textarea for assistive tech', () => {
+    render(<CardView card={pendingPlan} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send back…' }))
+
+    expect(screen.getByLabelText('Send-back note')).toBeTruthy()
+  })
+
+  it('labels the offline-pickup textarea once a decision is recorded for offline pickup', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingClarify, status: 'decided' }, summary: 'paste me', delivered: false })
+    render(<CardView card={pendingClarify} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detail A' }))
+    const submit = screen.getByRole('button', { name: 'Submit decisions' })
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(submit)
+
+    const textarea = await screen.findByLabelText(/paste it in by hand/)
+    expect((textarea as HTMLTextAreaElement).value).toBe('paste me')
   })
 
   it('keeps compact submit-bar overrides after the base submit button rule', () => {
@@ -194,6 +258,22 @@ describe('CardView pending plan actions', () => {
 
     expect(css).toContain('.submit-state { font-size: 12.5px;')
     expect(css).not.toContain('.decision-dock .submit-state { display: none; }')
+  })
+
+  it('scopes duplicate-block anchors per decision so evidence links never cross rows', () => {
+    const { container } = render(<CardView card={sharedBlockCard} />)
+
+    // The shared block is stamped once per referencing decision, with distinct ids.
+    expect(container.querySelector('#block-first-shared')).toBeTruthy()
+    expect(container.querySelector('#block-second-shared')).toBeTruthy()
+    // The old unscoped (colliding) id is gone.
+    expect(container.querySelector('#block-shared')).toBeNull()
+
+    // Each decision's Evidence link targets its own scoped anchor.
+    const hrefs = Array.from(container.querySelectorAll<HTMLAnchorElement>('.linked-evidence a'))
+      .map(a => a.getAttribute('href'))
+    expect(hrefs).toContain('#block-first-shared')
+    expect(hrefs).toContain('#block-second-shared')
   })
 
   it('wraps each flowing decision row with a border', () => {

@@ -99,7 +99,7 @@ describe('present_plan end-to-end', () => {
 
   it('rejects an invalid payload with the offending field named', async () => {
     const client = await connect()
-    let message = ''
+    let message: string
     try {
       const result = await client.callTool({
         name: 'present_plan',

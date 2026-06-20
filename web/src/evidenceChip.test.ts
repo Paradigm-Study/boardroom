@@ -34,4 +34,41 @@ describe('evidenceChip', () => {
     expect(chip).toContain('grep')
     expect(chip).toContain('exit 0')
   })
+
+  it('counts a table by rows', () => {
+    const b: Block = { id: 't', type: 'table', columns: ['file', 'lines'], rows: [
+      ['a.ts', '10'],
+      ['b.ts', '20'],
+      ['c.ts', '30'],
+    ] }
+    expect(evidenceChip([b])).toBe('3-row table')
+  })
+
+  it('counts phases', () => {
+    const b: Block = { id: 'p', type: 'phases', phases: [
+      { title: 'scaffold' },
+      { title: 'wire up' },
+    ] }
+    expect(evidenceChip([b])).toBe('2 phases')
+  })
+
+  it('counts compared options', () => {
+    const b: Block = { id: 'o', type: 'options_compare', options: [
+      { label: 'sqlite', pros: ['simple'], cons: [] },
+      { label: 'postgres', pros: ['scales'], cons: ['heavier'] },
+    ] }
+    expect(evidenceChip([b])).toBe('2 options')
+  })
+
+  it('falls back to output when an evidence block has no command', () => {
+    const b: Block = { id: 'e', type: 'evidence', output: 'all green' }
+    expect(evidenceChip([b]).startsWith('output')).toBe(true)
+  })
+
+  it('uses the singular for a single-file diff_stat', () => {
+    const b: Block = { id: 'd', type: 'diff_stat', files: [
+      { path: 'a.ts', additions: 5, deletions: 1 },
+    ] }
+    expect(evidenceChip([b])).toBe('1 file +5 −1')
+  })
 })

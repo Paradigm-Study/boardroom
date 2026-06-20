@@ -36,25 +36,32 @@ const card: Card = {
 }
 
 describe('prepareCardWorkspace', () => {
-  it('separates plan verdict from visible decisions and preserves visual block order', () => {
+  it('drops the plan verdict from the visible decisions and links each decision to its blocks', () => {
     const workspace = prepareCardWorkspace(card)
 
     expect(workspace.choiceDecisions.map(d => d.id)).toEqual(['shape'])
-    expect(workspace.planVerdict?.id).toBe('plan_verdict')
-    expect(workspace.visualBlocks.map(b => b.id)).toEqual(['graph', 'risk', 'intro'])
     expect(workspace.globalBlocks.map(b => b.id)).toEqual(['intro'])
-    expect(workspace.backgroundBlocks.map(b => b.id)).toEqual(['intro'])
     expect(workspace.linkedBlocksFor('shape').map(b => b.id)).toEqual(['graph', 'risk'])
   })
 
-  it('exposes the recommended choice for quick decision paths', () => {
+  it('summarizes the block counts', () => {
     const workspace = prepareCardWorkspace(card)
 
-    expect(workspace.recommendedByDecision.get('shape')?.id).toBe('cockpit')
     expect(workspace.visualSummary).toEqual({
       totalBlocks: 3,
       linkedBlocks: 2,
-      backgroundBlocks: 1,
     })
+  })
+
+  it('drops the results verdict from the visible decisions (it is driven by the submit bar)', () => {
+    const results: Card = {
+      ...card, id: 'r1', stage: 'results',
+      blocks: [],
+      decisions: [
+        { id: 'claim:a', prompt: 'A', options: [{ id: 'approve', label: 'Approve' }, { id: 'reject', label: 'Reject' }] },
+        { id: 'results_verdict', prompt: 'Is the session complete?', options: [{ id: 'complete', label: 'Mark complete' }, { id: 'continue', label: 'Keep going' }] },
+      ],
+    }
+    expect(prepareCardWorkspace(results).choiceDecisions.map(d => d.id)).toEqual(['claim:a'])
   })
 })

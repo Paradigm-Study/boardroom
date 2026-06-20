@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Card } from '../shared/card.js'
+import { Card, RESULTS_VERDICT_ID } from '../shared/card.js'
 import { compileClarify, compilePlan, compileResults, PLAN_VERDICT } from './compile.js'
 
 const decision = {
@@ -49,7 +49,7 @@ describe('compilePlan', () => {
 })
 
 describe('compileResults', () => {
-  it('turns claims into approve/deny decisions wired to prefixed evidence blocks', () => {
+  it('turns claims into approve/changes/deny decisions wired to prefixed evidence blocks', () => {
     const card = compileResults({
       project: 'demo', headline: 'done',
       claims: [
@@ -63,8 +63,28 @@ describe('compileResults', () => {
     const d1 = card.decisions[0]
     expect(d1.id).toBe('claim:c1')
     expect(d1.prompt).toBe('tests pass')
-    expect(d1.options.map(o => o.id)).toEqual(['approve', 'deny'])
-    expect(d1.noteRequiredOn).toEqual(['deny'])
+    // A middle "revise" verdict sits between approve and reject so the human can
+    // say "on the right track, just revise" instead of only accept/drop.
+    expect(d1.options.map(o => o.id)).toEqual(['approve', 'revise', 'reject'])
+    // Both the revise note and the reject note become the agent's instructions, so
+    // both are required; a plain approval needs no note.
+    expect(d1.noteRequiredOn).toEqual(['revise', 'reject'])
     expect(d1.blockRefs).toEqual(['c1/e1'])
+  })
+
+  it('appends a complete/continue session verdict the human sets explicitly', () => {
+    const card = compileResults({
+      project: 'demo', headline: 'done',
+      claims: [{ id: 'c1', claim: 'tests pass', evidence: [{ id: 'e1', type: 'markdown' as const, text: 'x' }] }],
+    }, 'claude-code')
+
+    // One claim decision + the appended verdict.
+    expect(card.decisions.map(d => d.id)).toEqual(['claim:c1', RESULTS_VERDICT_ID])
+    const verdict = card.decisions.find(d => d.id === RESULTS_VERDICT_ID)!
+    expect(verdict.options.map(o => o.id)).toEqual(['complete', 'continue'])
+    // The verdict's own note is the optional card-level add-on, so it is NOT required.
+    expect(verdict.noteRequiredOn ?? []).toEqual([])
+    // The verdict carries no evidence blocks of its own.
+    expect(verdict.blockRefs ?? []).toEqual([])
   })
 })

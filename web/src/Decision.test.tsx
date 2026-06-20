@@ -82,4 +82,22 @@ describe('DecisionSection', () => {
 
     expect(screen.getByRole('button', { name: 'Attach file to custom answer' })).toBeTruthy()
   })
+
+  it('labels the note and custom inputs for assistive tech (no placeholder-only labeling)', () => {
+    render(
+      <DecisionSection
+        card={card}
+        decision={decision}
+        index={0}
+        total={1}
+        blocks={[]}
+        answer={{ chosen: ['__other__'], note: '', custom: '' }}
+        readonly={false}
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByLabelText('Your own answer')).toBeTruthy()
+    expect(screen.getByLabelText('Note for the agent')).toBeTruthy()
+  })
 })
