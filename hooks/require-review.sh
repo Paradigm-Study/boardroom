@@ -21,7 +21,10 @@ edited=$(grep -cE '"name": ?"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript"
 [ "${edited:-0}" -eq 0 ] && exit 0
 
 # Daemon reachable? If not, fail open — never trap the session while offline.
-cards=$(curl -s --max-time 2 http://127.0.0.1:4040/api/cards) || exit 0
+# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040);
+# hardcoding it would silently fail-open if the daemon was relocated.
+port="${BOARDROOM_PORT:-4040}"
+cards=$(curl -s --max-time 2 "http://127.0.0.1:${port}/api/cards") || exit 0
 [ -z "$cards" ] && exit 0
 
 # Session start = timestamp of the first transcript line (scopes "this session").

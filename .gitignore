@@ -3,6 +3,7 @@ web/dist/
 *.sqlite
 *.sqlite-*
 .DS_Store
+.playwright-mcp/
 menubar/iconTemplate*.png
 menubar/build/
 menubar/release/

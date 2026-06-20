@@ -2,7 +2,23 @@
 # SessionStart hook. When the boardroom daemon is reachable, (re)inject the
 # boardroom protocol so it is active every session regardless of CLAUDE.md load
 # order. Fail-open: if the daemon is down, emit nothing and never block startup.
-curl -s -o /dev/null --max-time 2 http://127.0.0.1:4040/api/cards || exit 0
+# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040).
+port="${BOARDROOM_PORT:-4040}"
+input=$(cat)
+curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${port}/api/cards" || exit 0
+
+# Register this session so the daemon can `claude --resume` it from the correct
+# absolute cwd when a parked card for this project is later decided (Phase 2
+# auto-wake). project = basename(cwd), matching the card project the protocol
+# below asks agents to use. Fail-open; never block startup.
+session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+if [ -n "$session_id" ] && [ -n "$cwd" ]; then
+  body=$(jq -nc --arg s "$session_id" --arg c "$cwd" --arg p "$(basename "$cwd")" \
+    '{sessionId:$s,cwd:$c,project:$p}')
+  curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
+    -H 'content-type: application/json' -d "$body" || true
+fi
 
 read -r -d '' PROTOCOL <<'EOF'
 ## Boardroom — the session workflow (daemon connected)
@@ -33,9 +49,12 @@ behalf — their approval lives in the cards.
   structured blocks, markdown 1–2 sentences, ≥1 global block + ≥1 question-local
   block per decision (wire blockRefs). Set the card project to your working
   directory's name.
-- These calls block until the human decides, possibly for hours — never time them
-  out. If a call fails because the server is unreachable, fall back to chat; do
-  not retry in a loop.
+- clarify and review_results block while the human decides; if they take longer
+  than the block window you get a PARKED result instead of an answer — that means
+  STOP: end your turn, do NOT guess, infer, or proceed; the decision is saved and
+  re-issuing the identical call later claims it (re-runs nothing). present_plan
+  never parks — wait for a real verdict, never infer approval. If a call fails
+  because the server is unreachable, fall back to chat; do not retry in a loop.
 EOF
 
 jq -nc --arg ctx "$PROTOCOL" \

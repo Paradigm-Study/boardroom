@@ -1,7 +1,7 @@
 // boardroom menu-bar app — a thin Electron tray shell around the dashboard the
 // daemon already serves. The daemon (LaunchAgent) owns all state; this only
 // renders it and shows a pending-count badge in the menu bar.
-const { app, Menu, nativeImage, Notification, shell, Tray } = require('electron')
+const { app, Menu, nativeImage, Notification, shell } = require('electron')
 const { menubar } = require('menubar')
 const path = require('node:path')
 
@@ -72,10 +72,31 @@ async function refreshBadge() {
 
 const reload = () => mb.window?.webContents.reloadIgnoringCache()
 
+// The dashboard is a single hash-routed SPA, so it should never make a top-level
+// navigation. If one happens anyway (a stray link, a `_blank` from prose or the
+// viewer's "Open in new tab"), keep the window planted on the dashboard and hand
+// the URL to the real browser — otherwise the frameless window strands itself on
+// a page with no way back. Files open in-app via the dashboard's own viewer.
+function guardNavigation(contents) {
+  if (!contents) return
+  contents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(BASE)) {
+      event.preventDefault()
+      void shell.openExternal(url)
+    }
+  })
+}
+
 mb.on('ready', () => {
   mb.tray.setTitle('')
   void refreshBadge()
   setInterval(() => void refreshBadge(), 4000)
+
+  guardNavigation(mb.window?.webContents)
 
   // Cmd/Ctrl+R reloads the embedded dashboard (a frameless window has no menu
   // bar, so wire it by hand) — the escape hatch for a stale cached bundle.
