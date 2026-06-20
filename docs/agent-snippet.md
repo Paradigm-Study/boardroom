@@ -17,6 +17,10 @@ auto-accept anything on the human's behalf — approval lives in the cards.
   blocks (graph / phases / options_compare), each decision with exactly one
   recommended option. Once the human finalizes on the dashboard, just start
   working — do not re-ask in chat.
+- For UI change requests, include lightweight wireframes or layout sketches in
+  the option context so each option is visually understandable. Let each
+  wireframe use its natural dimensions; do not force all options into one fixed
+  card size unless readability requires it.
 - Confirm mid-way: anything that needs a human call goes back to boardroom, never
   to chat.
 - Finish: call `review_results` with screenshots or claim-by-claim bullet

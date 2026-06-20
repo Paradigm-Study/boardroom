@@ -72,6 +72,9 @@ Boardroom is fastest when agents send visual structure, not prose:
 - Put comparisons in `options_compare`, sequences in `phases`, dependencies in
   `graph`, facts in `table`, file changes in `diff_stat`, and test output in
   `evidence`.
+- For UI change requests, include lightweight wireframes or layout sketches in
+  the option context. Let each wireframe use its natural dimensions; do not force
+  all options into one fixed card size unless readability requires it.
 - Use markdown only for 1-2 sentence context that changes the decision.
 - Every clarify/plan card must include at least one global context block and at
   least one question-local block for each decision. Wire `blockRefs` so local

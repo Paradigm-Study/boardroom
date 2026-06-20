@@ -39,6 +39,10 @@ behalf — their approval lives in the cards.
   is formed, call present_plan (structural blocks + decisions, exactly one
   recommended each). Once the human finalizes the decisions on the dashboard,
   just start working — do not re-ask in chat.
+- UI CHANGE REQUESTS: include lightweight wireframes or layout sketches in the
+  option context so each option is visually understandable. Let each wireframe
+  use its natural dimensions; do not force all options into one fixed card size
+  unless readability requires it.
 - CONFIRM mid-way: if something comes up that needs a human call, go back to
   boardroom (clarify) — never ask in chat.
 - FINISH: when the work is done, call review_results — screenshots or tight
