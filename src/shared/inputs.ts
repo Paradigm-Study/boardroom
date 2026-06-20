@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
-import { Decision } from './card.js'
+import { Decision, PLAN_VERDICT_ID } from './card.js'
 
 const sessionFields = {
   project: z.string().min(1).describe('Project name or working directory — shown in the inbox'),
@@ -33,7 +33,7 @@ function checkQuestionAndGlobalContext(
   const referenced = new Set<string>()
 
   ;(input.decisions ?? []).forEach((d, i) => {
-    if (d.id === 'plan_verdict') return
+    if (d.id === PLAN_VERDICT_ID) return
     if ((d.blockRefs ?? []).length === 0) {
       ctx.addIssue({
         code: 'custom',
@@ -82,7 +82,7 @@ export const PresentPlanInput = z.object({
     })
   }
   input.decisions.forEach((d, i) => {
-    if (d.id === 'plan_verdict') return
+    if (d.id === PLAN_VERDICT_ID) return
     if (d.options.filter(o => o.recommended).length !== 1) {
       ctx.addIssue({
         code: 'custom',
@@ -104,5 +104,13 @@ export const ReviewResultsInput = z.object({
     claim: z.string().min(1).describe('One outcome you are claiming, e.g. "all 42 tests pass"'),
     evidence: z.array(Block).min(1).describe('At least one block backing this claim'),
   })).min(1),
+}).superRefine((input, ctx) => {
+  // Claim ids become decision ids (`claim:<id>`) and evidence-block id prefixes in
+  // compileResults; duplicates would collide and silently drop a claim. Reject them
+  // at the boundary, mirroring the duplicate-option-id check on Decision.
+  const ids = input.claims.map(c => c.id)
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: 'custom', message: 'duplicate claim ids', path: ['claims'] })
+  }
 })
 export type ReviewResultsInput = z.infer<typeof ReviewResultsInput>

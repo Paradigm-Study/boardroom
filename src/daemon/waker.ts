@@ -1,0 +1,84 @@
+import { spawn } from 'node:child_process'
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import type { Card } from '../shared/card.js'
+import { buildSummary } from './summary.js'
+import type { Store } from './store.js'
+
+export type SpawnFn = (bin: string, args: string[], cwd: string) => void
+
+interface WakerOpts {
+  spawn?: SpawnFn
+  claudeBin?: string
+  permissionMode?: string
+}
+
+// Resumes the agent's Claude Code session when a card it left behind (parked, or
+// otherwise orphaned) gets decided. The daemon is an MCP server and cannot push
+// the agent, so this spawns an EXTERNAL `claude --resume` from the session's
+// absolute cwd — the only legitimate "wake". Guarded reuse of the SAME session:
+// one-shot per card, and only for decided-but-undelivered cards (deliveredAt
+// unset ⇒ the agent's connection had dropped, so we're not racing a live turn
+// that already received the answer). Injecting `spawn` keeps the gating logic
+// unit-testable without launching a real CLI.
+export class Waker {
+  private woken = new Set<string>()
+  private spawnFn: SpawnFn
+  private claudeBin: string
+  private permissionMode: string
+
+  constructor(private store: Store, opts: WakerOpts = {}) {
+    this.spawnFn = opts.spawn ?? defaultSpawn
+    this.claudeBin = opts.claudeBin ?? process.env.BOARDROOM_CLAUDE_BIN ?? '/opt/homebrew/bin/claude'
+    this.permissionMode = opts.permissionMode ?? process.env.BOARDROOM_RESUME_PERMISSION ?? 'acceptEdits'
+  }
+
+  // Wire via queue.on('card', card => waker.onCard(card)).
+  onCard(card: Card): void {
+    if (card.status !== 'decided' || card.deliveredAt) return // live delivery already reached the agent
+    if (!card.answers) return
+    if (this.woken.has(card.id)) return
+    const session = this.store.getSession(card.session.project)
+    if (!session) return
+    // The registry is a trusted-but-unauthenticated write surface, and cwd is the
+    // dir we launch `claude --resume` from. Refuse anything that isn't an existing
+    // absolute directory rather than spawning into an unpredictable location.
+    if (!isAbsolute(session.cwd) || !isExistingDir(session.cwd)) {
+      console.warn(`[waker] skip card ${card.id}: session cwd is not an existing absolute directory (${session.cwd})`)
+      return
+    }
+    this.woken.add(card.id)
+    const args = ['-p', '--resume', session.sessionId, resumeMessage(card), '--permission-mode', this.permissionMode]
+    this.spawnFn(this.claudeBin, args, session.cwd)
+  }
+}
+
+function resumeMessage(card: Card): string {
+  const summary = buildSummary(card, card.answers ?? {})
+  return (
+    `The human decided on the boardroom (card ${card.id}, "${card.headline}"). ` +
+    'Continue the work you paused, using this decision. Do NOT re-call the boardroom tool for it — the decision is below.\n\n' +
+    summary
+  )
+}
+
+function isExistingDir(p: string): boolean {
+  try {
+    return statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function defaultSpawn(bin: string, args: string[], cwd: string): void {
+  // Detached & stdio-ignored: the resumed turn outlives this request and must
+  // never block or crash the daemon (e.g. if the claude binary isn't found).
+  const child = spawn(bin, args, { cwd, stdio: 'ignore', detached: true })
+  child.on('error', err => console.warn(`[waker] could not spawn ${bin}: ${err.message}`))
+  // Auto-wake is a convenience over the dashboard's copy-paste fallback; a failed
+  // resume is otherwise invisible (stdio ignored, one-shot), so at least log it.
+  child.on('exit', code => {
+    if (code) console.warn(`[waker] ${bin} exited ${code} — the resumed session may not have started`)
+  })
+  child.unref()
+}

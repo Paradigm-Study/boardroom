@@ -7,6 +7,7 @@ import type { Config } from './config.js'
 import { buildMcpRouter } from './mcp.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
+import { Waker } from './waker.js'
 
 export interface Daemon {
   app: Express
@@ -19,6 +20,12 @@ export function createDaemon(config: Config): Daemon {
   const store = new Store(config.dbPath)
   const orphanedOnBoot = store.orphanAllPending()
   const queue = new Queue(store)
+
+  // Phase 2 auto-wake: when a parked/orphaned card is decided, resume the
+  // agent's Claude Code session (claude --resume) so the work continues. No-ops
+  // unless the SessionStart hook has registered that project's session.
+  const waker = new Waker(store)
+  queue.on('card', card => waker.onCard(card))
 
   const app = express()
   app.use(express.json({ limit: '4mb' }))

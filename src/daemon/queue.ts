@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { OTHER_OPTION_ID, type Card, type CardResponse, type DecisionAnswer } from '../shared/card.js'
+import { OTHER_OPTION_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type Card, type CardResponse, type DecideResponse, type DecisionAnswer, type PlanVerdict, type ResultsVerdict } from '../shared/card.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
 
@@ -28,7 +28,7 @@ export class Queue extends EventEmitter {
   }
 
   private now(): number {
-    return Date.parse(new Date().toISOString())
+    return Date.now()
   }
 
   private attach(id: string, waiter: Waiter): number {
@@ -79,6 +79,36 @@ export class Queue extends EventEmitter {
     return card
   }
 
+  // Which decisions a submission must satisfy. Most stages: all of them. But a
+  // "send-back" verdict is a judgement on the whole card, so the human needn't
+  // have answered every sub-decision:
+  //   - plan revise/reject  → validate only the plan verdict.
+  //   - results "keep going" → validate the verdict plus only the claims actually
+  //     voted on (an unreviewed claim shouldn't block continuing, but a
+  //     deny/changes vote still needs its note).
+  // "mark complete" stays strict: you cannot declare the session done while a
+  // claim is left unreviewed.
+  private validationScope(card: Card, answers: Record<string, DecisionAnswer>): Card {
+    if (card.stage === 'plan') {
+      const v = answers[PLAN_VERDICT_ID]?.chosen[0] as PlanVerdict | undefined
+      if (v === 'revise' || v === 'reject') {
+        return { ...card, decisions: card.decisions.filter(d => d.id === PLAN_VERDICT_ID) }
+      }
+    }
+    if (card.stage === 'results') {
+      const v = answers[RESULTS_VERDICT_ID]?.chosen[0] as ResultsVerdict | undefined
+      if (v === 'continue') {
+        return {
+          ...card,
+          decisions: card.decisions.filter(
+            d => d.id === RESULTS_VERDICT_ID || (answers[d.id]?.chosen.length ?? 0) > 0,
+          ),
+        }
+      }
+    }
+    return card
+  }
+
   private validateAnswers(card: Card, answers: Record<string, DecisionAnswer>): void {
     for (const d of card.decisions) {
       const a = answers[d.id]
@@ -108,18 +138,10 @@ export class Queue extends EventEmitter {
   // is delivered through it now (delivered=true). If not, the decision is stored
   // and waits to be claimed when the agent reconnects (delivered=false) — the
   // dashboard offers the copy-paste summary as a manual fallback.
-  decide(id: string, answers: Record<string, DecisionAnswer>): { card: Card; summary: string; delivered: boolean } {
+  decide(id: string, answers: Record<string, DecisionAnswer>): DecideResponse {
     const card = this.getOrThrow(id)
     if (card.status === 'decided') throw new ConflictError('card is already decided')
-    // Plan send-back: rejecting/revising a plan is a verdict on the whole thing,
-    // so the human needn't have answered every sub-decision — validate only the
-    // verdict. Approval still requires agreeing to all the plan's decisions.
-    const verdict = answers['plan_verdict']?.chosen[0]
-    const planSendBack = card.stage === 'plan' && (verdict === 'revise' || verdict === 'reject')
-    this.validateAnswers(
-      planSendBack ? { ...card, decisions: card.decisions.filter(d => d.id === 'plan_verdict') } : card,
-      answers,
-    )
+    this.validateAnswers(this.validationScope(card, answers), answers)
     const summary = buildSummary(card, answers)
     const entry = this.waiters.get(id)
     const delivered = entry !== undefined
@@ -155,6 +177,26 @@ export class Queue extends EventEmitter {
     this.store.update(updated)
     entry.waiter.reject(new Error('caller disconnected before a decision was made'))
     this.emit('card', updated)
+  }
+
+  // The bounded block window elapsed with no decision. Detach the waiter and
+  // orphan the card — the GRACEFUL counterpart to disconnect(): the card is left
+  // exactly as a dropped connection would (orphaned, so a re-issued identical
+  // call reattaches via findReattachable — a 'pending' card would instead be
+  // duplicated), but we do NOT reject the waiter. The hanging handler resolves
+  // its own promise with a "parked, re-issue to claim" sentinel instead of
+  // surfacing an error. Returns false if a decision already landed or a newer
+  // connection took over (gen guard), so the handler keeps the real result.
+  park(id: string, gen: number): boolean {
+    const entry = this.waiters.get(id)
+    if (!entry || entry.gen !== gen) return false
+    const card = this.store.get(id)
+    if (!card || card.status !== 'pending') return false
+    this.waiters.delete(id)
+    const updated: Card = { ...card, status: 'orphaned' }
+    this.store.update(updated)
+    this.emit('card', updated)
+    return true
   }
 
   pendingCount(): number {

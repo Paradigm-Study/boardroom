@@ -1,8 +1,8 @@
 import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import type { AttachmentRef, Card, CardStatus, DecisionAnswer } from '../shared/card.js'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import type { Store } from './store.js'
 
@@ -12,13 +12,31 @@ interface ApiOptions {
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
 
-function safeSegment(value: string): string {
+// Exported for direct unit testing — the attachment routes' only traversal guard
+// for URL-derived path segments, so it must be provably correct in isolation.
+export function safeSegment(value: string): string {
   const cleaned = value.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '')
-  return cleaned || 'file'
+  // A dot-only segment ('.', '..') survives the cleaning above but would let
+  // path.join climb out of the attachment root — collapse it to a literal name
+  // so every segment stays a real in-tree filename.
+  if (cleaned === '' || /^\.+$/.test(cleaned)) return 'file'
+  return cleaned
 }
 
 function safeFileName(value: string): string {
   return safeSegment(basename(value).slice(0, 180))
+}
+
+// The uploaded file name arrives percent-encoded (the client encodes it so a
+// non-ASCII name survives the latin1 header). Decode, falling back to the raw
+// value if it isn't valid encoding, then to a default.
+function decodeFileName(header: string | undefined): string {
+  const raw = header ?? 'upload.bin'
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
 }
 
 function cardAttachmentDir(root: string, cardId: string): string {
@@ -32,7 +50,26 @@ function attachmentMetaPath(root: string, cardId: string, attachmentId: string):
 function readAttachmentRef(root: string, cardId: string, attachmentId: string): AttachmentRef | undefined {
   const metaPath = attachmentMetaPath(root, cardId, attachmentId)
   if (!existsSync(metaPath)) return undefined
-  return JSON.parse(readFileSync(metaPath, 'utf8')) as AttachmentRef
+  // The meta file is daemon-written, but a corrupt/hand-edited one must not 500
+  // the route or hand a partially-attacker-shaped ref downstream. Parse + schema-
+  // validate defensively (mirrors store.ts's parseRow), 404-ing on any failure.
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(metaPath, 'utf8'))
+  } catch {
+    return undefined
+  }
+  const ref = AttachmentRef.safeParse(parsed)
+  return ref.success ? ref.data : undefined
+}
+
+// Defense in depth for the file-serving path: even though safeSegment blocks
+// traversal at the URL level, a corrupt/hand-edited metadata file could carry a
+// `path` pointing outside the attachment root. Refuse to serve anything that
+// resolves out of tree. Exported for direct unit testing alongside safeSegment.
+export function isWithinRoot(root: string, target: string): boolean {
+  const rel = relative(resolve(root), resolve(target))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 function sendError(res: Response, err: unknown): void {
@@ -43,23 +80,49 @@ function sendError(res: Response, err: unknown): void {
 }
 
 function answersFrom(req: Request): Record<string, DecisionAnswer> {
-  const body = req.body as { answers?: Record<string, DecisionAnswer> }
-  if (!body?.answers || typeof body.answers !== 'object') throw new ValidationError('body must be { answers: {...} }')
-  return body.answers
+  const body = (req.body ?? {}) as { answers?: unknown }
+  const parsed = DecisionAnswers.safeParse(body.answers)
+  if (!parsed.success) {
+    throw new ValidationError('body must be { answers: { <decisionId>: { chosen: string[], note?, custom?, attachments? } } }')
+  }
+  return parsed.data
 }
 
 export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions): Router {
   const router = Router()
 
   router.get('/api/cards', (req, res) => {
-    const status = req.query.status as CardStatus | undefined
-    res.json(store.list(status))
+    try {
+      const status = req.query.status as CardStatus | undefined
+      res.json(store.list(status))
+    } catch (err) { sendError(res, err) }
   })
 
   router.get('/api/cards/:id', (req, res) => {
-    const card = store.get(req.params.id)
-    if (!card) { res.status(404).json({ error: 'not found' }); return }
-    res.json(card)
+    try {
+      const card = store.get(req.params.id)
+      if (!card) throw new NotFoundError(`no card "${req.params.id}"`)
+      res.json(card)
+    } catch (err) { sendError(res, err) }
+  })
+
+  // The SessionStart hook reports the live Claude Code session so the Phase 2
+  // waker can `claude --resume` it from the correct absolute cwd when a parked
+  // card for this project is decided. Pure write to the session registry.
+  router.post('/api/session', (req, res) => {
+    try {
+      const { sessionId, cwd, project } = (req.body ?? {}) as { sessionId?: unknown; cwd?: unknown; project?: unknown }
+      if (typeof sessionId !== 'string' || !sessionId || typeof cwd !== 'string' || !cwd || typeof project !== 'string' || !project) {
+        throw new ValidationError('body must be { sessionId, cwd, project } (all non-empty strings)')
+      }
+      // cwd becomes the spawn dir for the Waker's `claude --resume`; a relative
+      // path would resume from an unpredictable directory, so require absolute.
+      if (!isAbsolute(cwd)) {
+        throw new ValidationError('cwd must be an absolute path')
+      }
+      store.recordSession(project, sessionId, cwd)
+      res.json({ ok: true })
+    } catch (err) { sendError(res, err) }
   })
 
   router.post(
@@ -79,7 +142,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         }
 
         const id = randomUUID()
-        const originalName = String(req.header('x-file-name') ?? 'upload.bin')
+        // HTTP header values are latin1, so the client percent-encodes the file
+        // name to survive non-ASCII characters (e.g. "café.png", "文档.pdf").
+        const originalName = decodeFileName(req.header('x-file-name'))
         const name = originalName.trim() || 'upload.bin'
         const fileName = `${id}-${safeFileName(name)}`
         const dir = cardAttachmentDir(options.attachmentDir, card.id)
@@ -106,7 +171,12 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   router.get('/api/cards/:id/attachments/:attachmentId', (req, res) => {
     try {
       const ref = readAttachmentRef(options.attachmentDir, req.params.id, req.params.attachmentId)
-      if (!ref) throw new NotFoundError(`no attachment "${req.params.attachmentId}"`)
+      if (!ref || !isWithinRoot(options.attachmentDir, ref.path)) {
+        throw new NotFoundError(`no attachment "${req.params.attachmentId}"`)
+      }
+      // The stored mime is the uploader-supplied Content-Type; nosniff stops the
+      // browser from re-interpreting bytes as a more dangerous type (e.g. HTML).
+      res.setHeader('X-Content-Type-Options', 'nosniff')
       if (ref.mime) res.type(ref.mime)
       res.sendFile(ref.path)
     } catch (err) { sendError(res, err) }

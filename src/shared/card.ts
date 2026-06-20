@@ -44,6 +44,31 @@ export type CardStatus = z.infer<typeof CardStatus>
 
 export const OTHER_OPTION_ID = '__other__'
 
+// The synthetic decision id for a plan's approve/revise/reject verdict. Shared so
+// the daemon (compile/queue/summary), the schema refinements, and the web client
+// all reference one symbol instead of re-typing the literal in ~8 places.
+export const PLAN_VERDICT_ID = 'plan_verdict'
+
+// The synthetic decision id for a results card's complete/continue verdict — the
+// explicit "is the session done?" toggle the human sets directly (not inferred
+// from the per-claim votes). Its `note`/`attachments` double as the always-on
+// card-level add-on: anything the human wants to send the agent that isn't tied
+// to a single claim. Same plumbing as PLAN_VERDICT_ID, referenced everywhere by
+// this one symbol.
+export const RESULTS_VERDICT_ID = 'results_verdict'
+
+// The verdict option ids the human actually picks, as shared closed unions.
+// compile.ts builds the verdict option lists from these, and every consumer
+// (queue, summary, CardView, ResultsChecklist) types its comparisons against
+// them — so renaming a verdict is a compile error at every read site instead of
+// a silently-dead branch. Same intent as the *_VERDICT_ID constants above, one
+// level down: the ids vs the values.
+export const PLAN_VERDICTS = ['approve', 'revise', 'reject'] as const
+export type PlanVerdict = (typeof PLAN_VERDICTS)[number]
+
+export const RESULTS_VERDICTS = ['complete', 'continue'] as const
+export type ResultsVerdict = (typeof RESULTS_VERDICTS)[number]
+
 export const AttachmentRef = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -57,12 +82,22 @@ export const AttachmentRef = z.object({
 export type AttachmentRef = z.infer<typeof AttachmentRef>
 
 export const DecisionAnswer = z.object({
-  chosen: z.array(z.string()).min(1),
+  // `chosen` may be empty for a decision the human left unanswered — e.g. the
+  // sub-decisions of a plan that was sent back ("revise"). The "you must pick
+  // something" rule is contextual and enforced in Queue.validateAnswers, not here,
+  // so the persisted/wire shape must allow the empty case; otherwise a stored
+  // send-back card fails Card.parse on the next read and 500s the whole inbox.
+  chosen: z.array(z.string()),
   note: z.string().optional(),
   custom: z.string().optional(),
   attachments: z.array(AttachmentRef).optional(),
 })
 export type DecisionAnswer = z.infer<typeof DecisionAnswer>
+
+// The decide-endpoint request payload: a map of decision id -> answer. Validated
+// at the HTTP boundary so malformed input becomes a clean 400, never a junk row.
+export const DecisionAnswers = z.record(z.string(), DecisionAnswer)
+export type DecisionAnswers = z.infer<typeof DecisionAnswers>
 
 export const Card = z.object({
   id: z.string().min(1),
@@ -85,4 +120,12 @@ export interface CardResponse {
   cardId: string
   decisions: Record<string, DecisionAnswer>
   summary: string
+}
+
+// The decide HTTP endpoint's response, shared so the daemon (Queue.decide) and the
+// web client (decideCard) agree on one shape the type checker enforces on both sides.
+export interface DecideResponse {
+  card: Card
+  summary: string
+  delivered: boolean
 }

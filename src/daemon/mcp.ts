@@ -15,17 +15,43 @@ interface RequestCtx {
 const requestCtx = new AsyncLocalStorage<RequestCtx>()
 
 const KEEPALIVE_MS = 30_000
+const STREAM_HEARTBEAT_MS = 120_000
+// Bounded-block window. Hold the live (token-free) connection up to this long;
+// if the human hasn't decided by then, PARK rather than keep clinging to a
+// connection Claude Code drops on the long tail (~22% orphan rate vs Codex's
+// ~5%). Decisions land in ~5.5 min on average, so 10 min keeps the vast
+// majority in-band and only sheds the fragile tail. present_plan is exempt
+// (its approval gate must never auto-resolve to a guessed verdict).
+const BLOCK_MS = 600_000
+// Returned to the agent when the window elapses undecided. It MUST read as a
+// hard stop: a coding agent that asked a gating question is otherwise biased to
+// guess and proceed, which would defeat the human-in-the-loop guarantee.
+const PARKED_TEXT =
+  '⏸ Boardroom: no decision yet — your turn is over. STOP here. Do NOT guess, infer, or proceed on an assumption about what the human would choose. The human will decide on the dashboard; the decision is not lost. To receive it, re-issue this EXACT same call (identical project + headline) on a later turn — reattachment is automatic and re-runs no work.'
+
+interface ParkedMarker {
+  parked: true
+  cardId: string
+}
+
+// Positive-duration env override, falling back to the default for a missing,
+// non-numeric, or non-positive value. (`Number(x) || default` reads as a footgun
+// — it also swallows a legit 0 — so use an explicit finite-and-positive guard.)
+function envMs(name: string, fallback: number): number {
+  const raw = Number(process.env[name])
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback
+}
 
 const GLANCEABLE =
   ' AUTHORING RULES (the human reads like a CEO — keep it glanceable): every clarify/plan card must include at least one unreferenced global block plus at least one question-local block for each decision. Put question-local context in blocks and wire that decision\'s blockRefs to those block ids; leave only whole-card context unreferenced. Omit context that does not change the answer. Put anything tabular/comparative/quantitative/sequential in a structured block (table, options_compare, phases, graph, diff_stat), NOT in prose. Keep markdown to 1–2 sentences — never multi-paragraph essays; long prose gets clamped behind "show more" and just wastes the reader.'
 
 const DESCRIPTIONS = {
   clarify:
-    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human answers in the boardroom dashboard — that is expected, do not time it out.' + GLANCEABLE,
+    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks while the human decides. If they take longer than the block window you receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. The call blocks until the human decides." + GLANCEABLE,
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides and never parks — wait for a real verdict; never infer or guess approval. Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
   review_results:
-    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). The human approves or denies each claim; denial notes are your next instructions. Call this before declaring work done. The call blocks until the human decides.' + GLANCEABLE,
+    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks while the human reviews. If they take longer than the block window you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
 } as const
 
 interface ToolResult {
@@ -37,6 +63,7 @@ function makeHangingHandler<I>(
   server: McpServer,
   queue: Queue,
   compile: (input: I, agent: string) => Card,
+  bounded: boolean,
 ): (input: I, ctx: ServerContext) => Promise<ToolResult> {
   return async (input, ctx) => {
     const agent = server.server.getClientVersion()?.name ?? 'unknown'
@@ -56,7 +83,7 @@ function makeHangingHandler<I>(
     // sending them an unsolicited progressToken would instead trip a per-beat
     // "unknown progress token" error in their client.
     const clientToken = ctx.mcpReq._meta?.progressToken
-    const keepaliveMs = Number(process.env.BOARDROOM_KEEPALIVE_MS) || KEEPALIVE_MS
+    const keepaliveMs = envMs('BOARDROOM_KEEPALIVE_MS', KEEPALIVE_MS)
     let beat = 0
     const keepalive = setInterval(() => {
       beat++
@@ -73,13 +100,33 @@ function makeHangingHandler<I>(
       }
     }, keepaliveMs)
 
+    let parkTimer: ReturnType<typeof setTimeout> | undefined
     try {
-      const response = await new Promise<CardResponse>((resolve, reject) => {
-        const { cardId, gen } = queue.submit(card, { resolve, reject })
+      const response = await new Promise<CardResponse | ParkedMarker>((resolve, reject) => {
+        const { cardId, gen } = queue.submit(card, { resolve: resolve as (r: CardResponse) => void, reject })
         const drop = (): void => queue.disconnect(cardId, gen)
         requestCtx.getStore()?.onAbort(drop)
         ctx.mcpReq.signal.addEventListener('abort', drop, { once: true })
+        // Bounded block: if no decision lands within the window, PARK the card
+        // (orphan it gracefully) and resolve a STOP sentinel instead of holding a
+        // connection Claude Code will drop on the long tail. queue.park no-ops if
+        // a decision already arrived or a newer connection took over, so the real
+        // result always wins the race.
+        if (bounded) {
+          const blockMs = envMs('BOARDROOM_BLOCK_MS', BLOCK_MS)
+          parkTimer = setTimeout(() => {
+            if (queue.park(cardId, gen)) resolve({ parked: true, cardId })
+          }, blockMs)
+        }
       })
+      if ('parked' in response) {
+        return {
+          content: [
+            { type: 'text' as const, text: PARKED_TEXT },
+            { type: 'text' as const, text: JSON.stringify({ status: 'parked', cardId: response.cardId }) },
+          ],
+        }
+      }
       return {
         content: [
           { type: 'text' as const, text: response.summary },
@@ -88,6 +135,7 @@ function makeHangingHandler<I>(
       }
     } finally {
       clearInterval(keepalive)
+      if (parkTimer) clearTimeout(parkTimer)
     }
   }
 }
@@ -100,17 +148,19 @@ function buildServer(queue: Queue): McpServer {
   server.registerTool(
     'clarify',
     { description: DESCRIPTIONS.clarify, inputSchema: ClarifyInput },
-    makeHangingHandler(server, queue, compileClarify),
+    makeHangingHandler(server, queue, compileClarify, true),
   )
+  // present_plan is exempt from bounded-block: a guessed "approve" green-lights
+  // work, so its gate must never auto-resolve. It keeps blocking until decided.
   server.registerTool(
     'present_plan',
     { description: DESCRIPTIONS.present_plan, inputSchema: PresentPlanInput },
-    makeHangingHandler(server, queue, compilePlan),
+    makeHangingHandler(server, queue, compilePlan, false),
   )
   server.registerTool(
     'review_results',
     { description: DESCRIPTIONS.review_results, inputSchema: ReviewResultsInput },
-    makeHangingHandler(server, queue, compileResults),
+    makeHangingHandler(server, queue, compileResults, true),
   )
   return server
 }
@@ -127,7 +177,7 @@ export function buildMcpRouter(queue: Queue): Router {
   // killing any in-flight hanging call. Sending a notification with no
   // relatedRequestId routes to that standalone stream and resets the client's
   // idle timer. Interval must stay well under the client's ~300s timeout.
-  const streamHeartbeatMs = Number(process.env.BOARDROOM_STREAM_HEARTBEAT_MS) || 120_000
+  const streamHeartbeatMs = envMs('BOARDROOM_STREAM_HEARTBEAT_MS', STREAM_HEARTBEAT_MS)
   const heartbeat = setInterval(() => {
     for (const transport of transports.values()) {
       void transport.send({
