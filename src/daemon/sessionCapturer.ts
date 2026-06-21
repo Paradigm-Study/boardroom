@@ -95,6 +95,9 @@ export class SessionCapturer {
   private findTranscript(sessionId: string): string | undefined {
     try {
       for (const slug of readdirSync(this.projectsDir)) {
+        try {
+          if (!statSync(join(this.projectsDir, slug)).isDirectory()) continue
+        } catch { continue }
         const p = join(this.projectsDir, slug, `${sessionId}.jsonl`)
         if (existsSync(p)) return p
       }
