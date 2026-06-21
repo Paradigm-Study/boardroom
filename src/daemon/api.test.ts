@@ -1,5 +1,5 @@
 import express from 'express'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import request from 'supertest'
@@ -270,6 +270,21 @@ describe('POST /api/cards/:id/decide — delivery flag', () => {
       .expect(200)
     expect(res.body.summary).toContain('quotes " backticks')
     expect(res.body.card.status).toBe('decided')
+  })
+})
+
+describe('attachment storage perms', () => {
+  it('locks the attachment dir to 0700 and files to 0600', async () => {
+    queue.submit(card('att1'), noop)
+    const res = await request(app)
+      .post('/api/cards/att1/attachments')
+      .set('x-answer-id', 'd1')
+      .set('content-type', 'application/octet-stream')
+      .set('x-file-name', 'note.txt')
+      .send(Buffer.from('hello'))
+    expect(res.status).toBe(201)
+    expect(statSync(join(dir, 'attachments', 'att1')).mode & 0o777).toBe(0o700)
+    expect(statSync(res.body.path).mode & 0o777).toBe(0o600)
   })
 })
 

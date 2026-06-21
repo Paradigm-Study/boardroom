@@ -2,6 +2,7 @@ import { createDaemon } from './app.js'
 import { loadConfig } from './config.js'
 import { startAutoOpen, startNotifications } from './notify.js'
 
+process.umask(0o077)
 const config = loadConfig()
 const { app, queue, orphanedOnBoot } = createDaemon(config)
 

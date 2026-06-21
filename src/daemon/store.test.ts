@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -239,5 +239,42 @@ describe('captured_sessions', () => {
     expect(row.capturedAt).toBe('T0')
     expect(row.lastSeenAt).toBe('T1')
     expect(row.status).toBe('ended')
+  })
+})
+
+describe('safe storage perms', () => {
+  it('locks the sqlite file to 0600 on open', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'br-store-'))
+    const dbPath = join(dir, 'boardroom.sqlite')
+    new Store(dbPath)
+    expect(statSync(dbPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('keeps the WAL sibling 0600 under the production umask', () => {
+    const prev = process.umask(0o077)
+    try {
+      const dbPath = join(mkdtempSync(join(tmpdir(), 'br-wal-')), 'db.sqlite')
+      const store = new Store(dbPath)
+      store.insert(card('w1'))                 // forces -wal creation
+      expect(statSync(dbPath + '-wal').mode & 0o777).toBe(0o600)
+      store.close()
+    } finally {
+      process.umask(prev)
+    }
+  })
+
+  it('boots against a DB that still has the old project-keyed sessions table', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'br-mig-')), 'db.sqlite')
+    const old = new Database(dbPath)
+    old.exec('CREATE TABLE sessions (project TEXT PRIMARY KEY, session_id TEXT NOT NULL, cwd TEXT NOT NULL, updated_at TEXT NOT NULL)')
+    old.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('proj', 'sid', '/cwd', 'T')
+    old.close()
+    const store = new Store(dbPath)   // must not throw
+    store.upsertCaptured(CapturedSession.parse({
+      sessionId: 'm1', machineId: 'x', pid: 1, cwd: '/c', project: 'p',
+      status: 'alive', capturedAt: 'T', lastSeenAt: 'T',
+    }))
+    expect(store.getCaptured('m1')?.cwd).toBe('/c')
+    expect(store.getSession('proj')).toEqual({ sessionId: 'sid', cwd: '/cwd' }) // old data untouched
   })
 })

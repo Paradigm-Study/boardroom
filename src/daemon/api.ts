@@ -1,6 +1,6 @@
 import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
@@ -149,8 +149,10 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         const fileName = `${id}-${safeFileName(name)}`
         const dir = cardAttachmentDir(options.attachmentDir, card.id)
         mkdirSync(dir, { recursive: true })
+        try { chmodSync(dir, 0o700) } catch { /* best-effort */ }
         const path = join(dir, fileName)
         writeFileSync(path, req.body)
+        try { chmodSync(path, 0o600) } catch { /* best-effort */ }
 
         const ref: AttachmentRef = {
           id,
@@ -162,7 +164,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
           field: req.header('x-field') ?? undefined,
           uploadedAt: new Date().toISOString(),
         }
-        writeFileSync(attachmentMetaPath(options.attachmentDir, card.id, id), JSON.stringify(ref, null, 2))
+        const metaPath = attachmentMetaPath(options.attachmentDir, card.id, id)
+        writeFileSync(metaPath, JSON.stringify(ref, null, 2))
+        try { chmodSync(metaPath, 0o600) } catch { /* best-effort */ }
         res.status(201).json(ref)
       } catch (err) { sendError(res, err) }
     },
