@@ -8,6 +8,7 @@ export class Store {
 
   constructor(path: string) {
     this.db = new Database(path)
+    this.db.pragma('journal_mode = WAL')
     // Lock the DB (and WAL/SHM siblings, if present) so other local users can't
     // read captured paths / card contents. :memory: has no file. Production also
     // sets a 0077 umask (index.ts) so lazily-created WAL/SHM are born locked.
@@ -17,7 +18,6 @@ export class Store {
         for (const ext of ['-wal', '-shm']) if (existsSync(path + ext)) chmodSync(path + ext, 0o600)
       } catch { /* best-effort */ }
     }
-    this.db.pragma('journal_mode = WAL')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS cards (
         id TEXT PRIMARY KEY,

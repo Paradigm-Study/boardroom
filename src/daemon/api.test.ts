@@ -285,6 +285,7 @@ describe('attachment storage perms', () => {
     expect(res.status).toBe(201)
     expect(statSync(join(dir, 'attachments', 'att1')).mode & 0o777).toBe(0o700)
     expect(statSync(res.body.path).mode & 0o777).toBe(0o600)
+    expect(statSync(join(dir, 'attachments', 'att1', `${res.body.id}.json`)).mode & 0o777).toBe(0o600)
   })
 })
 
