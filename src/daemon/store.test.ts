@@ -7,6 +7,7 @@ import type { Card } from '../shared/card.js'
 import { compilePlan } from './compile.js'
 import { loadConfig } from './config.js'
 import { Queue } from './queue.js'
+import { CapturedSession } from '../shared/session.js'
 import { Store } from './store.js'
 
 function card(id: string): Card {
@@ -207,5 +208,36 @@ describe('Store session registry (Phase 2 auto-wake)', () => {
 
   it('returns undefined for an unknown project', () => {
     expect(store.getSession('never-seen')).toBeUndefined()
+  })
+})
+
+describe('captured_sessions', () => {
+  const make = (over: Partial<CapturedSession> = {}): CapturedSession => CapturedSession.parse({
+    sessionId: 's1', machineId: 'm1', pid: 100, cwd: '/Users/x/proj', project: 'proj',
+    status: 'alive', capturedAt: '2026-06-21T00:00:00.000Z', lastSeenAt: '2026-06-21T00:00:00.000Z',
+    ...over,
+  })
+
+  it('upserts and reads back a captured session', () => {
+    const store = new Store(':memory:')
+    store.upsertCaptured(make())
+    expect(store.getCaptured('s1')?.cwd).toBe('/Users/x/proj')
+  })
+
+  it('does NOT collide on same project basename (the bug being fixed)', () => {
+    const store = new Store(':memory:')
+    store.upsertCaptured(make({ sessionId: 's1', cwd: '/a/proj' }))
+    store.upsertCaptured(make({ sessionId: 's2', cwd: '/b/proj' }))
+    expect(store.listCaptured()).toHaveLength(2)
+  })
+
+  it('preserves capturedAt across upserts but updates lastSeenAt/status', () => {
+    const store = new Store(':memory:')
+    store.upsertCaptured(make({ capturedAt: 'T0', lastSeenAt: 'T0' }))
+    store.upsertCaptured(make({ capturedAt: 'T9', lastSeenAt: 'T1', status: 'ended' }))
+    const row = store.getCaptured('s1')!
+    expect(row.capturedAt).toBe('T0')
+    expect(row.lastSeenAt).toBe('T1')
+    expect(row.status).toBe('ended')
   })
 })

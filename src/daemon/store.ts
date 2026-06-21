@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { Card, type CardStatus } from '../shared/card.js'
+import { CapturedSession } from '../shared/session.js'
 
 export class Store {
   private db: Database.Database
@@ -24,6 +25,13 @@ export class Store {
         project TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         cwd TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS captured_sessions (
+        session_id TEXT PRIMARY KEY,
+        json       TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     `)
@@ -107,6 +115,38 @@ export class Store {
       (c.status === 'orphaned' && nowMs - Date.parse(c.createdAt) < windowMs),
     )
     return eligible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  }
+
+  // Observe-all session capture (separate from the hook-fed `sessions` table the
+  // waker reads — registry capture must never influence `claude --resume`).
+  upsertCaptured(session: CapturedSession): void {
+    const valid = CapturedSession.parse(session)
+    const existing = this.getCaptured(valid.sessionId)
+    const toStore: CapturedSession = existing
+      ? { ...valid, capturedAt: existing.capturedAt } // first-capture time is sticky
+      : valid
+    this.db.prepare(
+      `INSERT INTO captured_sessions (session_id, json, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+    ).run(toStore.sessionId, JSON.stringify(toStore), new Date().toISOString())
+  }
+
+  getCaptured(sessionId: string): CapturedSession | undefined {
+    const row = this.db.prepare('SELECT json FROM captured_sessions WHERE session_id = ?').get(sessionId) as
+      | { json: string } | undefined
+    if (!row) return undefined
+    const parsed = CapturedSession.safeParse(JSON.parse(row.json))
+    return parsed.success ? parsed.data : undefined
+  }
+
+  listCaptured(): CapturedSession[] {
+    const rows = this.db.prepare(
+      'SELECT json FROM captured_sessions ORDER BY updated_at DESC, session_id ASC',
+    ).all() as { json: string }[]
+    return rows
+      .map(r => CapturedSession.safeParse(JSON.parse(r.json)))
+      .filter((p): p is { success: true; data: CapturedSession } => p.success)
+      .map(p => p.data)
   }
 
   close(): void {
