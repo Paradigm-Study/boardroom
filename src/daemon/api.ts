@@ -4,10 +4,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
+import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
 
 interface ApiOptions {
   attachmentDir: string
+  configDir: string
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
@@ -90,6 +92,24 @@ function answersFrom(req: Request): Record<string, DecisionAnswer> {
 
 export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions): Router {
   const router = Router()
+
+  router.get('/api/sessions', (_req, res) => {
+    try { res.json(store.listCaptured()) } catch (err) { sendError(res, err) }
+  })
+
+  router.get('/api/device', (_req, res) => {
+    try { res.json(loadMachineIdentity(options.configDir)) } catch (err) { sendError(res, err) }
+  })
+
+  router.put('/api/device', (req, res) => {
+    try {
+      const { deviceLabel } = (req.body ?? {}) as { deviceLabel?: unknown }
+      if (typeof deviceLabel !== 'string' || !deviceLabel.trim()) {
+        throw new ValidationError('body must be { deviceLabel: <non-empty string> }')
+      }
+      res.json(setDeviceLabel(options.configDir, deviceLabel.trim()))
+    } catch (err) { sendError(res, err) }
+  })
 
   router.get('/api/cards', (req, res) => {
     try {
