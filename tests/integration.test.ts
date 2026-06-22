@@ -125,6 +125,7 @@ describe('session capture', () => {
     const probe = new SessionCapturer(daemon.store, 'm-int', { claudeDir, isAlive: () => true })
     probe.reconcile()
     probe.stop()
+    rmSync(claudeDir, { recursive: true, force: true })
     expect(daemon.store.listCaptured().map(s => s.sessionId)).toContain('int-1')
   })
 })

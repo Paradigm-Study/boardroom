@@ -3,7 +3,7 @@ import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createDaemon } from './app.js'
+import { createDaemon, type Daemon } from './app.js'
 import type { Config } from './config.js'
 import type { Queue } from './queue.js'
 import type { Store } from './store.js'
@@ -54,6 +54,7 @@ const PLAN_ARGS = {
 const delay = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 let dir: string
+let daemon: Daemon
 let store: Store
 let queue: Queue
 let server: Server
@@ -70,7 +71,7 @@ beforeEach(async () => {
     dbPath: join(dir, 'test.sqlite'),
     configDir: dir,
   }
-  const daemon = createDaemon(config)
+  daemon = createDaemon(config)
   store = daemon.store
   queue = daemon.queue
   server = await new Promise<Server>(resolve => {
@@ -80,6 +81,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  daemon.capturer.stop()
   // Force-drop any lingering sockets so the server's res 'close' handlers (which
   // call queue.disconnect -> store.get) run now, while the DB is still open.
   server.closeAllConnections?.()
@@ -246,6 +248,35 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     expect(beats.length).toBeGreaterThanOrEqual(2)
   }, 15_000)
 
+  it('announces the opened gate with a transcript-friendly info notification', async () => {
+    process.env.BOARDROOM_KEEPALIVE_MS = '1000'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    const messages = await collectMessages(callRes.body, 250)
+    ac.abort()
+
+    const notice = messages.find(m => {
+      if (m.method !== 'notifications/message') return false
+      const params = m.params as { level?: string; logger?: string; data?: unknown } | undefined
+      return params?.level === 'info' && params.logger === 'boardroom'
+    }) as { params?: { data?: unknown } } | undefined
+
+    expect(notice).toBeDefined()
+    const text = String(notice?.params?.data)
+    expect(text).toContain('Boardroom gate opened: clarify')
+    expect(text).toContain('does the stream stay warm?')
+    expect(text).toContain('Pick one?')
+    expect(text).toContain('A')
+  }, 15_000)
+
   it('PARKS a clarify call after the bounded window: returns a STOP sentinel and leaves the card reattachable', async () => {
     process.env.BOARDROOM_BLOCK_MS = '200'
     process.env.BOARDROOM_KEEPALIVE_MS = '50'
@@ -323,6 +354,10 @@ describe('hanging tool calls keep their SSE stream warm', () => {
       | undefined
     expect(result).toBeDefined()
     const texts = (result?.result?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
+    expect(texts).toContain('Boardroom gate resolved: clarify')
+    expect(texts).toContain('does the stream stay warm?')
+    expect(texts).toContain('Pick one?')
+    expect(texts).toContain('Human response:')
     expect(texts).toContain('pick')
   }, 15_000)
 })
