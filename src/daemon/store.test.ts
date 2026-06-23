@@ -267,6 +267,14 @@ describe('Store session registry — cwd-keyed (worktree-safe)', () => {
     expect(store.getSessionByProject('demo')?.sessionId).toBe('sid-A2') // still unique
   })
 
+  it('preserves a stored Claude session id when a later re-register of the same cwd omits it', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
+    store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo') // re-register, no claude id
+    expect(store.getSessionById('cc-A')).toEqual(
+      expect.objectContaining({ sessionId: 'sid-A2', cwd: '/abs/wt-a/demo' }),
+    )
+  })
+
   it('backfills legacy project-keyed rows into sessions_v2 on boot (auto-wake survives the upgrade)', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'br-backfill-')), 'db.sqlite')
     const old = new Database(dbPath)

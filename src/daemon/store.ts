@@ -85,7 +85,7 @@ export class Store {
       this.db.prepare(
         `INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(cwd) DO UPDATE SET session_id = excluded.session_id, project = excluded.project,
-           claude_session_id = excluded.claude_session_id, updated_at = excluded.updated_at`,
+           claude_session_id = COALESCE(excluded.claude_session_id, claude_session_id), updated_at = excluded.updated_at`,
       ).run(cwd, sessionId, project, claudeSessionId ?? null, ts)
     })()
   }
