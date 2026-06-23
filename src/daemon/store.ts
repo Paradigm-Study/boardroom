@@ -42,7 +42,10 @@ export class Store {
     // checkouts of one repo share `basename(cwd)` but never a cwd, so they get
     // distinct rows here — where the legacy `sessions` table (project PK) would
     // clobber one with the other and let the waker resume into the wrong tree.
-    // `claude_session_id` is the stable id the waker prefers when present.
+    // `claude_session_id` is RESERVED for Part 2 (exact-session disambiguation):
+    // no producer populates it yet — the SessionStart hook posts only
+    // sessionId/cwd/project — so it is currently always NULL and the waker
+    // resolves by project. See docs/superpowers/specs (session-capture design).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions_v2 (
         cwd TEXT PRIMARY KEY,
@@ -103,10 +106,14 @@ export class Store {
     )
   }
 
+  // FAIL-CLOSED like getSessionByProject: a claude session id that maps to more
+  // than one row is ambiguous (resuming either could be the wrong tree), so return
+  // undefined rather than a nondeterministic .get() row.
   getSessionById(claudeSessionId: string): SessionRow | undefined {
-    return toSessionRow(
-      this.db.prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE claude_session_id = ?').get(claudeSessionId),
-    )
+    const rows = this.db
+      .prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE claude_session_id = ?')
+      .all(claudeSessionId)
+    return rows.length === 1 ? toSessionRow(rows[0]) : undefined
   }
 
   // FAIL-CLOSED resolve-by-basename: returns a row only when EXACTLY ONE session
@@ -202,12 +209,26 @@ export class Store {
     ).run(toStore.sessionId, JSON.stringify(toStore), new Date().toISOString())
   }
 
+  // Mirror parseRow for captured rows: a corrupt/hand-edited JSON row (partial
+  // write on SQLITE_FULL/IOERR, disk corruption) must be skipped, never thrown —
+  // a SyntaxError here would otherwise 500 GET /api/sessions and block
+  // upsertCaptured's overwrite-to-self-heal.
+  private parseCapturedRow(json: string): CapturedSession | undefined {
+    let raw: unknown
+    try {
+      raw = JSON.parse(json)
+    } catch {
+      console.warn('[store] skipping a captured_sessions row with invalid JSON')
+      return undefined
+    }
+    const result = CapturedSession.safeParse(raw)
+    return result.success ? result.data : undefined
+  }
+
   getCaptured(sessionId: string): CapturedSession | undefined {
     const row = this.db.prepare('SELECT json FROM captured_sessions WHERE session_id = ?').get(sessionId) as
       | { json: string } | undefined
-    if (!row) return undefined
-    const parsed = CapturedSession.safeParse(JSON.parse(row.json))
-    return parsed.success ? parsed.data : undefined
+    return row ? this.parseCapturedRow(row.json) : undefined
   }
 
   listCaptured(): CapturedSession[] {
@@ -215,9 +236,8 @@ export class Store {
       'SELECT json FROM captured_sessions ORDER BY updated_at DESC, session_id ASC',
     ).all() as { json: string }[]
     return rows
-      .map(r => CapturedSession.safeParse(JSON.parse(r.json)))
-      .filter((p): p is { success: true; data: CapturedSession } => p.success)
-      .map(p => p.data)
+      .map(r => this.parseCapturedRow(r.json))
+      .filter((c): c is CapturedSession => c !== undefined)
   }
 
   close(): void {

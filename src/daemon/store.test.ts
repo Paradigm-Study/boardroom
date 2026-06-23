@@ -260,6 +260,14 @@ describe('Store session registry — cwd-keyed (worktree-safe)', () => {
     )
   })
 
+  it('getSessionById is fail-closed when a Claude session id maps to more than one row', () => {
+    // Two distinct worktrees somehow carrying the same claude id → resuming either
+    // could be the wrong tree, so resolve to undefined (mirrors getSessionByProject).
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-X')
+    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-X')
+    expect(store.getSessionById('cc-X')).toBeUndefined()
+  })
+
   it('re-registering the same cwd updates in place (no duplicate row)', () => {
     store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
     store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo')
@@ -273,6 +281,20 @@ describe('Store session registry — cwd-keyed (worktree-safe)', () => {
     expect(store.getSessionById('cc-A')).toEqual(
       expect.objectContaining({ sessionId: 'sid-A2', cwd: '/abs/wt-a/demo' }),
     )
+  })
+
+  it('backfill never clobbers an existing sessions_v2 row and is idempotent across reboots', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'br-backfill2-')), 'db.sqlite')
+    const s1 = new Store(dbPath)
+    s1.recordSession('demo', 'sid-new', '/abs/demo') // writes BOTH sessions + sessions_v2
+    // Simulate a STALE legacy row for the same cwd (older session id) drifting in.
+    const raw = new Database(dbPath)
+    raw.prepare("UPDATE sessions SET session_id = 'sid-stale' WHERE cwd = '/abs/demo'").run()
+    raw.close()
+    s1.close()
+    const s2 = new Store(dbPath) // reboot re-runs the backfill (ON CONFLICT DO NOTHING)
+    expect(s2.getSessionByCwd('/abs/demo')?.sessionId).toBe('sid-new') // authoritative v2 row wins
+    s2.close()
   })
 
   it('backfills legacy project-keyed rows into sessions_v2 on boot (auto-wake survives the upgrade)', () => {
@@ -317,6 +339,30 @@ describe('captured_sessions', () => {
     expect(row.capturedAt).toBe('T0')
     expect(row.lastSeenAt).toBe('T1')
     expect(row.status).toBe('ended')
+  })
+})
+
+describe('captured_sessions read robustness', () => {
+  // Mirror the card path's read robustness: a corrupt captured row (partial write,
+  // disk corruption, hand-edit) must be skipped, never thrown, so one bad row can't
+  // take down GET /api/sessions or block upsert's self-heal.
+  function poisonCaptured(sessionId: string, json: string): void {
+    const raw = new Database(join(dir, 'test.sqlite'))
+    raw.prepare('INSERT INTO captured_sessions (session_id, json, updated_at) VALUES (?, ?, ?)')
+      .run(sessionId, json, new Date().toISOString())
+    raw.close()
+  }
+
+  it('skips a captured row with malformed JSON without throwing', () => {
+    store.upsertCaptured(CapturedSession.parse({
+      sessionId: 'ok', machineId: 'm', pid: 1, cwd: '/c', project: 'p',
+      status: 'alive', capturedAt: 'T', lastSeenAt: 'T',
+    }))
+    poisonCaptured('bad', '{not json')
+    expect(() => store.listCaptured()).not.toThrow()
+    expect(store.listCaptured().map(s => s.sessionId)).toEqual(['ok'])
+    expect(() => store.getCaptured('bad')).not.toThrow()
+    expect(store.getCaptured('bad')).toBeUndefined()
   })
 })
 
