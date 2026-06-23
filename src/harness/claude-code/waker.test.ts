@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { Card } from '../shared/card.js'
-import { Queue } from './queue.js'
-import { Store } from './store.js'
+import type { Card } from '../../shared/card.js'
+import { Queue } from '../../daemon/queue.js'
+import { Store } from '../../daemon/store.js'
 import { Waker } from './waker.js'
 
 function decided(over: Partial<Card> = {}): Card {
@@ -69,20 +69,42 @@ describe('Waker', () => {
   })
 
   it('does NOT wake when the registered cwd is not absolute', () => {
-    store.recordSession('demo', 'sid-1', 'relative/dir')
-    waker.onCard(decided())
+    store.recordSession('relproj', 'sid-1', 'relative/dir')
+    waker.onCard(decided({ session: { agent: 'claude-code', project: 'relproj' } }))
     expect(calls).toHaveLength(0)
   })
 
   it('does NOT wake when the registered cwd does not exist', () => {
-    store.recordSession('demo', 'sid-1', join(dir, 'gone'))
-    waker.onCard(decided())
+    store.recordSession('goneproj', 'sid-1', join(dir, 'gone'))
+    waker.onCard(decided({ session: { agent: 'claude-code', project: 'goneproj' } }))
     expect(calls).toHaveLength(0)
+  })
+
+  it('fail-closed: does NOT wake when two same-basename worktrees are registered (ambiguous, no Claude id)', () => {
+    const dir2 = mkdtempSync(join(tmpdir(), 'boardroom-waker-2-'))
+    try {
+      // beforeEach already registered ('demo', 'sid-1', dir); add a second 'demo' worktree.
+      store.recordSession('demo', 'sid-2', dir2)
+      waker.onCard(decided()) // project 'demo' is now ambiguous → resolve must fail closed
+      expect(calls).toHaveLength(0)
+    } finally {
+      rmSync(dir2, { recursive: true, force: true })
+    }
   })
 
   it('is one-shot: never wakes the same card twice', () => {
     waker.onCard(decided())
     waker.onCard(decided())
+    expect(calls).toHaveLength(1)
+  })
+
+  it('does NOT auto-wake a plan card — its verdict is claimed by re-issuing present_plan, never auto-resumed', () => {
+    waker.onCard(decided({ stage: 'plan' }))
+    expect(calls).toHaveLength(0)
+  })
+
+  it('DOES wake a non-plan (clarify) card — contrast with the plan-stage guard', () => {
+    waker.onCard(decided({ stage: 'clarify' }))
     expect(calls).toHaveLength(1)
   })
 

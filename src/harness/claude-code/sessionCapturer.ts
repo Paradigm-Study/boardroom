@@ -1,9 +1,9 @@
-// src/daemon/sessionCapturer.ts
+// src/harness/claude-code/sessionCapturer.ts
 import { existsSync, readFileSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CapturedSession } from '../shared/session.js'
-import type { Store } from './store.js'
+import type { CapturedSession } from '../../shared/session.js'
+import type { Store } from '../../daemon/store.js'
 
 export interface CapturerOpts {
   claudeDir?: string

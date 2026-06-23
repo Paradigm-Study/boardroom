@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import type { Card } from '../shared/card.js'
-import { buildSummary } from './summary.js'
-import type { Store } from './store.js'
+import type { Card } from '../../shared/card.js'
+import { buildSummary } from '../../daemon/summary.js'
+import type { Store } from '../../daemon/store.js'
 
 export type SpawnFn = (bin: string, args: string[], cwd: string) => void
 
@@ -38,7 +38,18 @@ export class Waker {
     if (card.status !== 'decided' || card.deliveredAt) return // live delivery already reached the agent
     if (!card.answers) return
     if (this.woken.has(card.id)) return
-    const session = this.store.getSession(card.session.project)
+    // A plan card is an approval GATE: its verdict must be claimed by the agent
+    // re-issuing present_plan (which re-surfaces the app-native approval), never
+    // pushed via an unsolicited `claude --resume` — that would auto-resume the
+    // agent into building on a late "approve", the exact auto-green-light the gate
+    // exists to prevent. (present_plan now parks like clarify/review_results.)
+    if (card.stage === 'plan') return
+    // Resolve the resume target FAIL-CLOSED: getSessionByProject returns a row only
+    // when exactly one worktree maps to this basename. Two same-basename worktrees →
+    // undefined → we decline to resume (dashboard copy-paste fallback) rather than
+    // risk `claude --resume` editing the wrong tree under acceptEdits. (Part 2 will
+    // prefer an exact match on the Claude session id when the card carries one.)
+    const session = this.store.getSessionByProject(card.session.project)
     if (!session) return
     // The registry is a trusted-but-unauthenticated write surface, and cwd is the
     // dir we launch `claude --resume` from. Refuse anything that isn't an existing
