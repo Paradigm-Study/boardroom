@@ -95,6 +95,19 @@ model-echoed string** — a rejected alternative keyed on `card.session.cwd`, wh
 the MCP path and would *never* wake the exact multi-worktree case it targets. No change to fingerprint,
 queue, env knobs, or keepalive.
 
+**Status (as merged) — Part (2) is DEFERRED.** Part (1) is implemented and shipped: `sessions_v2`
+(cwd-keyed), fail-closed `getSessionByProject` **and** `getSessionById` (both `undefined` on >1 match),
+the legacy→v2 backfill, and the waker resolving by project. Part (2) (session-id correlation) is
+intentionally **unwired**: the plumbing exists (`claude_session_id` column, the
+`recordSession(..., claudeSessionId?)` arg, `getSessionById`, and the `COALESCE` preserve-on-re-register
+guard) but **no producer populates it**, so it is always `NULL` and the waker resolves by project today.
+The assumed producer — capturing the agent's Claude `session_id` server-side from the MCP `initialize`
+`clientInfo` or a header (bullet above) — is **unverified and likely unavailable**: MCP `clientInfo`
+carries only `{name, version}`, and Claude Code does not send its session id to the boardroom server.
+Wiring it against that assumption would be speculative and probably non-functional, so it is deferred
+until a reliable server-side source for the agent's session id exists. `card.ts`/`mcp.ts`/`compile.ts`
+were therefore **not** changed for Part (2).
+
 **TDD (red first).** `store.test.ts`: two same-basename worktrees both survive distinctly; ambiguous
 basename → `undefined`; resolves by claude session id. `waker.test.ts`: resumes the correct worktree by
 claude session id; fail-closed (ambiguous + no id → no spawn). `tests/integration.test.ts`: two
