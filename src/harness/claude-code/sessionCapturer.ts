@@ -132,7 +132,13 @@ export class SessionCapturer {
 }
 
 function toIso(value: unknown): string | undefined {
-  if (typeof value === 'number') return new Date(value).toISOString()
+  if (typeof value === 'number') {
+    // An out-of-range/NaN number (clock glitch, unit confusion, format drift from
+    // the external CLI) makes Date invalid; .toISOString() would THROW. Drop it
+    // rather than crash the tick — startedAt is optional.
+    const d = new Date(value)
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+  }
   if (typeof value === 'string') return value
   return undefined
 }

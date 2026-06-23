@@ -96,4 +96,41 @@ describe('SessionCapturer.reconcile', () => {
     expect(row.capturedAt).toBe(times[0])               // first-capture time is sticky
     expect(row.lastSeenAt).toBe(times[2])               // advances every tick
   })
+
+  it('does not crash on an out-of-range numeric startedAt (toIso must be total)', () => {
+    // raw.startedAt comes from the untrusted registry; a number outside Date range
+    // would make new Date(n).toISOString() throw RangeError out of the tick.
+    writeRegistry(claudeDir, 700, { pid: 700, sessionId: 'sBadTs', cwd: '/x/proj', startedAt: 1e21 })
+    expect(() => cap().reconcile()).not.toThrow()
+    expect(store.getCaptured('sBadTs')).toBeDefined()
+    expect(store.getCaptured('sBadTs')?.startedAt).toBeUndefined() // dropped, session still captured
+  })
+
+  it('contains a per-session upsert error and still captures later sessions in the same tick', () => {
+    // Exercises the try/catch around upsertCaptured: one throwing session must not
+    // abort the loop (fails both ways without the catch — throws out, or drops sAfter).
+    const captured: string[] = []
+    const stub = {
+      getCaptured: () => undefined,
+      upsertCaptured: (s: { sessionId: string }) => {
+        if (s.sessionId === 'sBoom') throw new Error('SQLITE_FULL')
+        captured.push(s.sessionId)
+      },
+    } as unknown as Store
+    writeRegistry(claudeDir, 600, { pid: 600, sessionId: 'sBoom', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 601, { pid: 601, sessionId: 'sAfter', cwd: '/y/proj' })
+    const c = new SessionCapturer(stub, 'm-1', { claudeDir, isAlive: () => true, now: () => 'T' })
+    expect(() => c.reconcile()).not.toThrow()
+    expect(captured).toContain('sAfter')
+  })
+
+  it('never feeds a non-positive pid to the liveness probe (guard runs before process.kill)', () => {
+    const seen: number[] = []
+    writeRegistry(claudeDir, 1, { pid: 0, sessionId: 'sZero', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 2, { pid: -3, sessionId: 'sNeg', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 3, { pid: 700, sessionId: 'sOk', cwd: '/x/proj' })
+    cap({ isAlive: (p: number) => { seen.push(p); return true } }).reconcile()
+    expect(seen.every(p => p > 0)).toBe(true)
+    expect(seen).toContain(700)
+  })
 })
