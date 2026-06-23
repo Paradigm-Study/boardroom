@@ -60,4 +60,40 @@ describe('SessionCapturer.reconcile', () => {
   it('is idle (no throw) when the sessions dir is absent', () => {
     expect(() => new SessionCapturer(store, 'm-1', { claudeDir: '/does/not/exist' }).reconcile()).not.toThrow()
   })
+
+  it('skips a session whose cwd has no basename (cwd "/") instead of crashing the tick', () => {
+    // basename('/') === '' fails CapturedSession.parse (project.min(1)); a session
+    // launched from the filesystem root must be skipped, never throw out of reconcile.
+    writeRegistry(claudeDir, 300, { pid: 300, sessionId: 'sRoot', cwd: '/' })
+    writeRegistry(claudeDir, 301, { pid: 301, sessionId: 'sOk', cwd: '/x/proj' })
+    expect(() => cap().reconcile()).not.toThrow()
+    expect(store.listCaptured().map(s => s.sessionId)).toEqual(['sOk'])
+  })
+
+  it('skips rows with a non-positive pid or empty sessionId/cwd, without throwing', () => {
+    writeRegistry(claudeDir, 1, { pid: 0, sessionId: 'sZeroPid', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 2, { pid: -5, sessionId: 'sNegPid', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 3, { pid: 400, sessionId: '', cwd: '/x/proj' })
+    writeRegistry(claudeDir, 4, { pid: 401, sessionId: 'sEmptyCwd', cwd: '' })
+    writeRegistry(claudeDir, 5, { pid: 402, sessionId: 'sGood', cwd: '/x/proj' })
+    expect(() => cap().reconcile()).not.toThrow()
+    expect(store.listCaptured().map(s => s.sessionId)).toEqual(['sGood'])
+  })
+
+  it('advances status alive->ended->alive across ticks while keeping capturedAt sticky', () => {
+    const times = ['2026-06-21T00:00:00.000Z', '2026-06-21T00:01:00.000Z', '2026-06-21T00:02:00.000Z']
+    let i = 0
+    let alive = true
+    writeRegistry(claudeDir, 500, { pid: 500, sessionId: 'sLive', cwd: '/x/proj' })
+    const c = new SessionCapturer(store, 'm-1', { claudeDir, isAlive: () => alive, now: () => times[i] })
+    c.reconcile()                                       // tick 0: alive
+    expect(store.getCaptured('sLive')?.status).toBe('alive')
+    i = 1; alive = false; c.reconcile()                 // tick 1: process gone
+    expect(store.getCaptured('sLive')?.status).toBe('ended')
+    i = 2; alive = true; c.reconcile()                  // tick 2: alive again
+    const row = store.getCaptured('sLive')!
+    expect(row.status).toBe('alive')
+    expect(row.capturedAt).toBe(times[0])               // first-capture time is sticky
+    expect(row.lastSeenAt).toBe(times[2])               // advances every tick
+  })
 })

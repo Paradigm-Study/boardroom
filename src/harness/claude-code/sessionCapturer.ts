@@ -67,7 +67,19 @@ export class SessionCapturer {
       } catch {
         continue // malformed/foreign file — skip, never fatal
       }
-      if (typeof raw.sessionId !== 'string' || typeof raw.cwd !== 'string' || typeof raw.pid !== 'number') continue
+      // Validate VALUES, not just types. A non-positive pid breaks the liveness
+      // probe (process.kill(0,...)/(neg,...) target the current/other process
+      // GROUPS, not "does pid exist"), and an empty sessionId/cwd would fail the
+      // CapturedSession schema. Skip the row rather than feed an invalid record on.
+      if (
+        typeof raw.sessionId !== 'string' || !raw.sessionId ||
+        typeof raw.cwd !== 'string' || !raw.cwd ||
+        typeof raw.pid !== 'number' || !Number.isInteger(raw.pid) || raw.pid <= 0
+      ) continue
+      // A cwd with no basename (e.g. "/") yields an empty project, which violates
+      // project.min(1) — skip so it can't throw out of the tick.
+      const project = basename(raw.cwd)
+      if (!project) continue
       const ts = this.now()
       const session: CapturedSession = {
         sessionId: raw.sessionId,
@@ -75,7 +87,7 @@ export class SessionCapturer {
         pid: raw.pid,
         procStart: typeof raw.procStart === 'string' ? raw.procStart : undefined,
         cwd: raw.cwd,
-        project: basename(raw.cwd),
+        project,
         claudeVersion: typeof raw.version === 'string' ? raw.version : undefined,
         entrypoint: typeof raw.entrypoint === 'string' ? raw.entrypoint : undefined,
         kind: typeof raw.kind === 'string' ? raw.kind : undefined,
@@ -86,7 +98,14 @@ export class SessionCapturer {
         transcriptPath: this.findTranscript(raw.sessionId),
         tasksDir: this.findTasksDir(raw.sessionId),
       }
-      this.store.upsertCaptured(session)
+      // Belt-and-suspenders: reconcile() runs on a setInterval with no global
+      // uncaughtException handler, so a schema/SQLITE error on ONE session must
+      // be contained here, never fatal to the daemon (the file's contract).
+      try {
+        this.store.upsertCaptured(session)
+      } catch (err) {
+        console.warn(`[capturer] skipping session ${raw.sessionId}: ${(err as Error).message}`)
+      }
     }
   }
 

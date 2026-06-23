@@ -7,7 +7,7 @@ import { z } from 'zod'
 export const CapturedSession = z.object({
   sessionId: z.string().min(1),
   machineId: z.string().min(1),
-  pid: z.number().int(),
+  pid: z.number().int().positive(),
   procStart: z.string().optional(),
   cwd: z.string().min(1),
   project: z.string().min(1),
