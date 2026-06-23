@@ -55,6 +55,34 @@ describe('ResultsChecklist', () => {
     expect(screen.getAllByRole('button', { name: 'Reject' })).toHaveLength(2)
   })
 
+  it('renders verdict buttons from the card\'s OWN options — a legacy approve/deny card shows Approve/Deny, never Revise/Reject', () => {
+    // Guards the web/daemon version-skew gap: a stale daemon compiles claims with
+    // only approve/deny; the UI must never offer a button (Revise/Reject) the
+    // daemon would reject on submit. Buttons come from decision.options.
+    const legacy: Card = {
+      ...card,
+      decisions: [{
+        id: 'claim-1', prompt: 'old-scheme claim',
+        options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+        noteRequiredOn: ['deny'],
+      }],
+    }
+    render(
+      <ResultsChecklist
+        card={legacy}
+        blockById={new Map()}
+        answers={{}}
+        readonly={false}
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Revise' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull()
+  })
+
   it('does not render the session verdict as a claim row', () => {
     render(
       <ResultsChecklist
