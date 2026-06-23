@@ -13,6 +13,10 @@ interface ApiOptions {
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
+// Bound the device nickname: it is persisted to machine.json and echoed into every
+// /api/device and /api/sessions payload, so cap it rather than accept a multi-MB
+// label (the only other limit is express's 4mb body cap).
+const MAX_DEVICE_LABEL = 200
 
 // Exported for direct unit testing — the attachment routes' only traversal guard
 // for URL-derived path segments, so it must be provably correct in isolation.
@@ -104,10 +108,14 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   router.put('/api/device', (req, res) => {
     try {
       const { deviceLabel } = (req.body ?? {}) as { deviceLabel?: unknown }
-      if (typeof deviceLabel !== 'string' || !deviceLabel.trim()) {
+      const trimmed = typeof deviceLabel === 'string' ? deviceLabel.trim() : ''
+      if (!trimmed) {
         throw new ValidationError('body must be { deviceLabel: <non-empty string> }')
       }
-      res.json(setDeviceLabel(options.configDir, deviceLabel.trim()))
+      if (trimmed.length > MAX_DEVICE_LABEL) {
+        throw new ValidationError(`deviceLabel must be at most ${MAX_DEVICE_LABEL} characters`)
+      }
+      res.json(setDeviceLabel(options.configDir, trimmed))
     } catch (err) { sendError(res, err) }
   })
 

@@ -350,4 +350,8 @@ describe('device identity', () => {
   it('rejects an empty nickname', async () => {
     await request(app).put('/api/device').send({ deviceLabel: '  ' }).expect(400)
   })
+
+  it('rejects an over-long nickname (bounded write)', async () => {
+    await request(app).put('/api/device').send({ deviceLabel: 'x'.repeat(201) }).expect(400)
+  })
 })
