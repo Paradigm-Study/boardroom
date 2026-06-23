@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -37,5 +37,18 @@ describe('machine identity', () => {
     writeFileSync(join(dir, 'machine.json'), '{not valid json', 'utf8')
     expect(() => loadMachineIdentity(dir)).not.toThrow()
     expect(loadMachineIdentity(dir).machineId.length).toBeGreaterThan(0)
+  })
+
+  it('writes machine.json locked to 0600 (it carries device identity)', () => {
+    if (process.platform === 'win32') return // chmod semantics differ on Windows
+    loadMachineIdentity(dir)
+    expect(statSync(join(dir, 'machine.json')).mode & 0o777).toBe(0o600)
+  })
+
+  it('keeps machine.json locked to 0600 after a label change', () => {
+    if (process.platform === 'win32') return
+    loadMachineIdentity(dir)
+    setDeviceLabel(dir, 'My Desktop')
+    expect(statSync(join(dir, 'machine.json')).mode & 0o777).toBe(0o600)
   })
 })
