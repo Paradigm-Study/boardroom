@@ -26,7 +26,6 @@ export function createDaemon(config: Config): Daemon {
 
   const machine = loadMachineIdentity(config.configDir)
   const capturer = new SessionCapturer(store, machine.machineId)
-  capturer.start()
 
   // Phase 2 auto-wake: when a parked/orphaned card is decided, resume the
   // agent's Claude Code session (claude --resume) so the work continues. No-ops
@@ -45,5 +44,9 @@ export function createDaemon(config: Config): Daemon {
   const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))
   if (existsSync(webDist)) app.use(express.static(webDist))
 
+  // Start capture LAST: it arms fs.watch + a setInterval. Only turn those on once
+  // all setup above has succeeded, so a throw mid-setup can't leak a watcher/timer
+  // with no returned Daemon handle to stop() them.
+  capturer.start()
   return { app, queue, store, capturer, orphanedOnBoot }
 }
