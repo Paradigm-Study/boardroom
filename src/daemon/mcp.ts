@@ -20,8 +20,10 @@ const STREAM_HEARTBEAT_MS = 120_000
 // if the human hasn't decided by then, PARK rather than keep clinging to a
 // connection Claude Code drops on the long tail (~22% orphan rate vs Codex's
 // ~5%). Decisions land in ~5.5 min on average, so 10 min keeps the vast
-// majority in-band and only sheds the fragile tail. present_plan is exempt
-// (its approval gate must never auto-resolve to a guessed verdict).
+// majority in-band and only sheds the fragile tail. ALL three tools park
+// (including present_plan): parking returns the PARKED_TEXT hard-STOP sentinel
+// and orphans the card — it never auto-resolves to a guessed verdict, and the
+// waker skips plan cards, so a late "approve" can never back-door an auto-resume.
 const BLOCK_MS = 600_000
 // Returned to the agent when the window elapses undecided. It MUST read as a
 // hard stop: a coding agent that asked a gating question is otherwise biased to
@@ -49,7 +51,7 @@ const DESCRIPTIONS = {
   clarify:
     'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks while the human decides. If they take longer than the block window you receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides and never parks — wait for a real verdict; never infer or guess approval. Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks while the human decides; if they take longer than the block window you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
   review_results:
     'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks while the human reviews. If they take longer than the block window you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
 } as const
@@ -57,6 +59,43 @@ const DESCRIPTIONS = {
 interface ToolResult {
   [x: string]: unknown
   content: { type: 'text'; text: string }[]
+}
+
+const MAX_TRANSCRIPT_DECISIONS = 8
+const MAX_TRANSCRIPT_OPTIONS = 5
+const MAX_TRANSCRIPT_TEXT = 180
+
+function clip(text: string, max = MAX_TRANSCRIPT_TEXT): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}...` : flat
+}
+
+function formatDecisionPrompt(d: Card['decisions'][number]): string {
+  const options = d.options.slice(0, MAX_TRANSCRIPT_OPTIONS).map(o => {
+    const suffix = o.recommended ? ' (recommended)' : ''
+    return `${clip(o.label, 60)}${suffix}`
+  })
+  if (d.options.length > MAX_TRANSCRIPT_OPTIONS) options.push(`+${d.options.length - MAX_TRANSCRIPT_OPTIONS} more`)
+  return `- ${clip(d.prompt)} Options: ${options.join(', ')}`
+}
+
+function formatGateContext(card: Card, cardId: string, state: 'opened' | 'resolved'): string {
+  const lines = [
+    `Boardroom gate ${state}: ${card.stage}`,
+    `Card: ${cardId}`,
+    `Project: ${clip(card.session.project)}`,
+    `Headline: ${clip(card.headline)}`,
+    'Decisions:',
+  ]
+  for (const d of card.decisions.slice(0, MAX_TRANSCRIPT_DECISIONS)) lines.push(formatDecisionPrompt(d))
+  if (card.decisions.length > MAX_TRANSCRIPT_DECISIONS) {
+    lines.push(`- +${card.decisions.length - MAX_TRANSCRIPT_DECISIONS} more decisions`)
+  }
+  return lines.join('\n')
+}
+
+function formatGateResult(card: Card, response: CardResponse): string {
+  return `${formatGateContext(card, response.cardId, 'resolved')}\n\nHuman response:\n${response.summary}`
 }
 
 function makeHangingHandler<I>(
@@ -104,6 +143,17 @@ function makeHangingHandler<I>(
     try {
       const response = await new Promise<CardResponse | ParkedMarker>((resolve, reject) => {
         const { cardId, gen } = queue.submit(card, { resolve: resolve as (r: CardResponse) => void, reject })
+        const transcript = formatGateContext(card, cardId, 'opened')
+        void ctx.mcpReq.notify({
+          method: 'notifications/message',
+          params: { level: 'info', logger: 'boardroom', data: transcript },
+        }).catch(() => {})
+        if (clientToken !== undefined) {
+          void ctx.mcpReq.notify({
+            method: 'notifications/progress',
+            params: { progressToken: clientToken, progress: 0, message: transcript },
+          }).catch(() => {})
+        }
         const drop = (): void => queue.disconnect(cardId, gen)
         requestCtx.getStore()?.onAbort(drop)
         ctx.mcpReq.signal.addEventListener('abort', drop, { once: true })
@@ -129,7 +179,7 @@ function makeHangingHandler<I>(
       }
       return {
         content: [
-          { type: 'text' as const, text: response.summary },
+          { type: 'text' as const, text: formatGateResult(card, response) },
           { type: 'text' as const, text: JSON.stringify(response) },
         ],
       }
@@ -150,12 +200,17 @@ function buildServer(queue: Queue): McpServer {
     { description: DESCRIPTIONS.clarify, inputSchema: ClarifyInput },
     makeHangingHandler(server, queue, compileClarify, true),
   )
-  // present_plan is exempt from bounded-block: a guessed "approve" green-lights
-  // work, so its gate must never auto-resolve. It keeps blocking until decided.
+  // present_plan parks like clarify/review_results: on the alive-but-slow long
+  // tail it returns the PARKED_TEXT hard-STOP sentinel rather than clinging to a
+  // connection Claude Code drops. Parking is NOT auto-approval — it orphans the
+  // card (reattachable, claimable) and resolves a STOP, never a guessed verdict.
+  // The waker also skips plan cards (waker.onCard), so a late "approve" can never
+  // back-door an auto-resume into building. Together that preserves "never
+  // auto-accept" while giving the slow tail a graceful, instructed exit.
   server.registerTool(
     'present_plan',
     { description: DESCRIPTIONS.present_plan, inputSchema: PresentPlanInput },
-    makeHangingHandler(server, queue, compilePlan, false),
+    makeHangingHandler(server, queue, compilePlan, true),
   )
   server.registerTool(
     'review_results',
@@ -163,6 +218,23 @@ function buildServer(queue: Queue): McpServer {
     makeHangingHandler(server, queue, compileResults, true),
   )
   return server
+}
+
+// An initialize request is the only POST that may open a new session (single or
+// batched). Anything else without a known session id is a client/contract error.
+function isInitializeRequest(body: unknown): boolean {
+  const isInit = (m: unknown): boolean =>
+    !!m && typeof m === 'object' && (m as { method?: unknown }).method === 'initialize'
+  return Array.isArray(body) ? body.some(isInit) : isInit(body)
+}
+
+// Unknown/stale session id → 404 so the client re-initializes cleanly.
+function sessionGone(res: Response): void {
+  res.status(404).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'mcp session not found — re-initialize' } })
+}
+// No session id where one is required → plain client error.
+function sessionMissing(res: Response): void {
+  res.status(400).json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'missing mcp-session-id' } })
 }
 
 export function buildMcpRouter(queue: Queue): Router {
@@ -194,6 +266,12 @@ export function buildMcpRouter(queue: Queue): Router {
     let transport = sessionId ? transports.get(sessionId) : undefined
 
     if (!transport) {
+      // A session id we don't recognize (e.g. the client still holds one from
+      // before a daemon restart): tell it to re-initialize instead of silently
+      // forking a fresh, never-initialized transport that then errors.
+      if (sessionId) { sessionGone(res); return }
+      // No session id: only an initialize request may open a new session.
+      if (!isInitializeRequest(req.body)) { sessionMissing(res); return }
       const fresh = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id: string) => { transports.set(id, fresh) },
@@ -219,7 +297,7 @@ export function buildMcpRouter(queue: Queue): Router {
   const sessionHandler = async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined
     const transport = sessionId ? transports.get(sessionId) : undefined
-    if (!transport) { res.status(400).json({ error: 'unknown or missing mcp-session-id' }); return }
+    if (!transport) { if (sessionId) sessionGone(res); else sessionMissing(res); return }
     await transport.handleRequest(req, res)
   }
   router.get('/mcp', sessionHandler)
