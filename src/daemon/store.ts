@@ -222,7 +222,10 @@ export class Store {
       return undefined
     }
     const result = CapturedSession.safeParse(raw)
-    return result.success ? result.data : undefined
+    if (result.success) return result.data
+    const sid = (raw as { sessionId?: string } | null)?.sessionId
+    console.warn(`[store] skipping captured session ${sid ?? '<unknown>'} that failed schema validation: ${result.error.issues[0]?.message}`)
+    return undefined
   }
 
   getCaptured(sessionId: string): CapturedSession | undefined {
