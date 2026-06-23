@@ -111,6 +111,11 @@ export const Card = z.object({
   createdAt: z.string(),
   decidedAt: z.string().optional(),
   deliveredAt: z.string().optional(),
+  // When the card last entered the `orphaned` state (disconnect/park/boot-recovery).
+  // The reattach window is measured from THIS, not createdAt, so a long-lived card
+  // re-orphaned on boot stays reattachable. Optional → legacy rows fall back to
+  // createdAt and behave exactly as before.
+  orphanedAt: z.string().optional(),
   fingerprint: z.string().optional(),
   answers: z.record(z.string(), DecisionAnswer).optional(),
 })

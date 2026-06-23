@@ -56,6 +56,7 @@ function cfg(overrides: Partial<Config> = {}): Config {
     remindEveryMinutes: 10,
     notifications: true,
     openOnPending: false,
+    reattachWindowMs: 24 * 60 * 60_000,
     dbPath: ':memory:',
     configDir: '/tmp/boardroom-test',
     ...overrides,

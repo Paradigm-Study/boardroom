@@ -179,6 +179,26 @@ describe('Store.findReattachable', () => {
     expect(store.findReattachable('other', now)).toBeUndefined()
     expect(store.findReattachable(undefined, now)).toBeUndefined()
   })
+
+  it('windows the reattach on ORPHAN time, not createdAt: orphanAllPending stamps a fresh clock', () => {
+    // A long-lived pending card (created 2 years ago) re-orphaned on boot must
+    // remain reattachable — its clock should restart at orphan time, not stay
+    // anchored to its ancient createdAt.
+    store.insert(fpCard('c1', 'pending', { createdAt: '2020-01-01T00:00:00.000Z' }))
+    store.orphanAllPending()
+    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+  })
+
+  it('falls back to createdAt for legacy orphans that have no orphanedAt', () => {
+    store.insert(fpCard('recent', 'orphaned', { createdAt: new Date(now - 60_000).toISOString() }))
+    expect(store.findReattachable('fp', now)?.id).toBe('recent') // recent createdAt, no orphanedAt → still in window
+  })
+
+  it('honors a custom reattach window (config-tunable)', () => {
+    store.insert(fpCard('c1', 'orphaned', { createdAt: new Date(now - 100).toISOString() }))
+    expect(store.findReattachable('fp', now, 1)).toBeUndefined()                 // 1ms window excludes
+    expect(store.findReattachable('fp', now, 24 * 60 * 60_000)?.id).toBe('c1')   // 24h window includes
+  })
 })
 
 describe('loadConfig', () => {
@@ -208,6 +228,56 @@ describe('Store session registry (Phase 2 auto-wake)', () => {
 
   it('returns undefined for an unknown project', () => {
     expect(store.getSession('never-seen')).toBeUndefined()
+  })
+})
+
+describe('Store session registry — cwd-keyed (worktree-safe)', () => {
+  it('does NOT collapse two worktrees that share a basename', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
+    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo')
+    expect(store.getSessionByCwd('/abs/wt-a/demo')?.sessionId).toBe('sid-A')
+    expect(store.getSessionByCwd('/abs/wt-b/demo')?.sessionId).toBe('sid-B')
+  })
+
+  it('getSessionByProject is fail-closed when the basename is ambiguous (>1 worktree)', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
+    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo')
+    expect(store.getSessionByProject('demo')).toBeUndefined()
+  })
+
+  it('getSessionByProject returns the unique row when a basename is unambiguous', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
+    expect(store.getSessionByProject('demo')).toEqual(
+      expect.objectContaining({ sessionId: 'sid-A', cwd: '/abs/wt-a/demo' }),
+    )
+  })
+
+  it('getSessionById resolves the exact session by its Claude session id', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
+    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-B')
+    expect(store.getSessionById('cc-B')).toEqual(
+      expect.objectContaining({ sessionId: 'sid-B', cwd: '/abs/wt-b/demo' }),
+    )
+  })
+
+  it('re-registering the same cwd updates in place (no duplicate row)', () => {
+    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
+    store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo')
+    expect(store.getSessionByCwd('/abs/wt-a/demo')?.sessionId).toBe('sid-A2')
+    expect(store.getSessionByProject('demo')?.sessionId).toBe('sid-A2') // still unique
+  })
+
+  it('backfills legacy project-keyed rows into sessions_v2 on boot (auto-wake survives the upgrade)', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'br-backfill-')), 'db.sqlite')
+    const old = new Database(dbPath)
+    old.exec('CREATE TABLE sessions (project TEXT PRIMARY KEY, session_id TEXT NOT NULL, cwd TEXT NOT NULL, updated_at TEXT NOT NULL)')
+    old.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('proj', 'sid', '/abs/proj', 'T')
+    old.close()
+    const migrated = new Store(dbPath) // boot should backfill sessions_v2 from the legacy table
+    expect(migrated.getSessionByProject('proj')).toEqual(
+      expect.objectContaining({ sessionId: 'sid', cwd: '/abs/proj' }),
+    )
+    migrated.close()
   })
 })
 

@@ -38,6 +38,30 @@ export class Store {
         updated_at TEXT NOT NULL
       )
     `)
+    // Worktree-safe registry, keyed on the ABSOLUTE cwd (not basename). Two
+    // checkouts of one repo share `basename(cwd)` but never a cwd, so they get
+    // distinct rows here — where the legacy `sessions` table (project PK) would
+    // clobber one with the other and let the waker resume into the wrong tree.
+    // `claude_session_id` is the stable id the waker prefers when present.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions_v2 (
+        cwd TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        claude_session_id TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    // One-time backfill so a DB written by a pre-cwd-keyed daemon keeps auto-wake
+    // working immediately after upgrade (the waker reads sessions_v2 only). Each
+    // legacy row carries a cwd, so it maps cleanly; idempotent (DO NOTHING) and a
+    // no-op once the row is registered fresh. `WHERE true` disambiguates the
+    // INSERT…SELECT…ON CONFLICT grammar in SQLite.
+    this.db.exec(`
+      INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at)
+      SELECT cwd, session_id, project, NULL, updated_at FROM sessions WHERE true
+      ON CONFLICT(cwd) DO NOTHING
+    `)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS captured_sessions (
         session_id TEXT PRIMARY KEY,
@@ -47,11 +71,23 @@ export class Store {
     `)
   }
 
-  recordSession(project: string, sessionId: string, cwd: string): void {
-    this.db.prepare(
-      `INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(project) DO UPDATE SET session_id = excluded.session_id, cwd = excluded.cwd, updated_at = excluded.updated_at`,
-    ).run(project, sessionId, cwd, new Date().toISOString())
+  recordSession(project: string, sessionId: string, cwd: string, claudeSessionId?: string): void {
+    const ts = new Date().toISOString()
+    // Both writes in one transaction so the legacy and cwd-keyed tables can never
+    // drift if the second INSERT throws (SQLITE_FULL/IOERR).
+    this.db.transaction(() => {
+      // Legacy project-keyed table, preserved for back-compat (callers of getSession).
+      this.db.prepare(
+        `INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(project) DO UPDATE SET session_id = excluded.session_id, cwd = excluded.cwd, updated_at = excluded.updated_at`,
+      ).run(project, sessionId, cwd, ts)
+      // Worktree-safe cwd-keyed table — the authoritative one for resume targeting.
+      this.db.prepare(
+        `INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(cwd) DO UPDATE SET session_id = excluded.session_id, project = excluded.project,
+           claude_session_id = excluded.claude_session_id, updated_at = excluded.updated_at`,
+      ).run(cwd, sessionId, project, claudeSessionId ?? null, ts)
+    })()
   }
 
   getSession(project: string): { sessionId: string; cwd: string } | undefined {
@@ -59,6 +95,30 @@ export class Store {
       | { session_id: string; cwd: string }
       | undefined
     return row ? { sessionId: row.session_id, cwd: row.cwd } : undefined
+  }
+
+  getSessionByCwd(cwd: string): SessionRow | undefined {
+    return toSessionRow(
+      this.db.prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE cwd = ?').get(cwd),
+    )
+  }
+
+  getSessionById(claudeSessionId: string): SessionRow | undefined {
+    return toSessionRow(
+      this.db.prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE claude_session_id = ?').get(claudeSessionId),
+    )
+  }
+
+  // FAIL-CLOSED resolve-by-basename: returns a row only when EXACTLY ONE session
+  // maps to this project name. Two same-basename worktrees → undefined, so the
+  // waker declines to auto-resume (copy-paste fallback) rather than resume into a
+  // guessed/wrong tree. The card carries only `project` (basename), so this is the
+  // best safe resolution when no Claude session id is available.
+  getSessionByProject(project: string): SessionRow | undefined {
+    const rows = this.db
+      .prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE project = ?')
+      .all(project)
+    return rows.length === 1 ? toSessionRow(rows[0]) : undefined
   }
 
   // Validate on the way in so a malformed card can never reach SQLite — the read
@@ -107,7 +167,8 @@ export class Store {
 
   orphanAllPending(): number {
     const pending = this.list('pending')
-    for (const card of pending) this.update({ ...card, status: 'orphaned' })
+    const ts = new Date().toISOString()
+    for (const card of pending) this.update({ ...card, status: 'orphaned', orphanedAt: ts })
     return pending.length
   }
 
@@ -122,7 +183,7 @@ export class Store {
     const matches = this.list().filter(c => c.fingerprint === fingerprint)
     const eligible = matches.filter(c =>
       (c.status === 'decided' && !c.deliveredAt) ||
-      (c.status === 'orphaned' && nowMs - Date.parse(c.createdAt) < windowMs),
+      (c.status === 'orphaned' && nowMs - Date.parse(c.orphanedAt ?? c.createdAt) < windowMs),
     )
     return eligible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
   }
@@ -161,5 +222,22 @@ export class Store {
 
   close(): void {
     this.db.close()
+  }
+}
+
+export interface SessionRow {
+  sessionId: string
+  cwd: string
+  claudeSessionId?: string
+}
+
+function toSessionRow(row: unknown): SessionRow | undefined {
+  if (!row || typeof row !== 'object') return undefined
+  const r = row as { session_id?: unknown; cwd?: unknown; claude_session_id?: unknown }
+  if (typeof r.session_id !== 'string' || typeof r.cwd !== 'string') return undefined
+  return {
+    sessionId: r.session_id,
+    cwd: r.cwd,
+    ...(typeof r.claude_session_id === 'string' ? { claudeSessionId: r.claude_session_id } : {}),
   }
 }

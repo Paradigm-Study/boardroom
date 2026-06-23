@@ -7,9 +7,9 @@ import type { Config } from './config.js'
 import { loadMachineIdentity } from './machine.js'
 import { buildMcpRouter } from './mcp.js'
 import { Queue } from './queue.js'
-import { SessionCapturer } from './sessionCapturer.js'
+import { SessionCapturer } from '../harness/claude-code/sessionCapturer.js'
 import { Store } from './store.js'
-import { Waker } from './waker.js'
+import { Waker } from '../harness/claude-code/waker.js'
 
 export interface Daemon {
   app: Express
@@ -22,7 +22,7 @@ export interface Daemon {
 export function createDaemon(config: Config): Daemon {
   const store = new Store(config.dbPath)
   const orphanedOnBoot = store.orphanAllPending()
-  const queue = new Queue(store)
+  const queue = new Queue(store, config.reattachWindowMs)
 
   const machine = loadMachineIdentity(config.configDir)
   const capturer = new SessionCapturer(store, machine.machineId)

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Card } from '../src/shared/card.js'
 import { createDaemon, type Daemon } from '../src/daemon/app.js'
-import { SessionCapturer } from '../src/daemon/sessionCapturer.js'
+import { SessionCapturer } from '../src/harness/claude-code/sessionCapturer.js'
 
 let dir: string
 let daemon: Daemon
@@ -17,6 +17,7 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'boardroom-int-'))
   daemon = createDaemon({
     port: 0, remindEveryMinutes: 10, notifications: false, openOnPending: false,
+    reattachWindowMs: 24 * 60 * 60_000,
     dbPath: join(dir, 'int.sqlite'), configDir: dir,
   })
   await new Promise<void>(resolve => {
