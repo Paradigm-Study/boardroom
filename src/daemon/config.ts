@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,6 +7,7 @@ export interface Config {
   remindEveryMinutes: number
   notifications: boolean
   openOnPending: boolean
+  reattachWindowMs: number
   dbPath: string
   configDir: string
 }
@@ -14,7 +15,8 @@ export interface Config {
 export function loadConfig(configDir?: string): Config {
   const dir = configDir ?? process.env.BOARDROOM_CONFIG_DIR ?? join(homedir(), '.config', 'boardroom')
   mkdirSync(dir, { recursive: true })
-  let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending'>> = {}
+  try { chmodSync(dir, 0o700) } catch { /* best-effort */ }
+  let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>> = {}
   const p = join(dir, 'config.json')
   if (existsSync(p)) file = JSON.parse(readFileSync(p, 'utf8'))
   return {
@@ -22,6 +24,7 @@ export function loadConfig(configDir?: string): Config {
     remindEveryMinutes: 10,
     notifications: true,
     openOnPending: false,
+    reattachWindowMs: 24 * 60 * 60_000, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
     dbPath: join(dir, 'boardroom.sqlite'),
     configDir: dir,

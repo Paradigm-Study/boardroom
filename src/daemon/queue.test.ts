@@ -180,6 +180,17 @@ describe('Queue.disconnect', () => {
     expect(store.get('c1')?.status).toBe('pending')
     expect(second.gen).toBeGreaterThan(gen)
   })
+
+  it('stamps a fresh orphan clock so a long-lived card stays reattachable', () => {
+    const { cardId, gen } = queue.submit(card('c1', 'shared-fp'), noop)
+    // Back-date creation to 48h ago: the reattach window must key off orphan time
+    // (now), not this ancient createdAt.
+    store.update({ ...store.get(cardId)!, createdAt: new Date(Date.now() - 48 * 60 * 60_000).toISOString() })
+    queue.disconnect(cardId, gen)                            // orphan now → stamps orphanedAt = now
+    const retry = queue.submit(card('c2', 'shared-fp'), noop) // identical fingerprint
+    expect(retry.cardId).toBe('c1')                          // revived in place, not duplicated
+    expect(store.list().filter(c => c.fingerprint === 'shared-fp')).toHaveLength(1)
+  })
 })
 
 describe('Queue.park', () => {

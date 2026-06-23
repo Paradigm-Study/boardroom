@@ -17,6 +17,10 @@ auto-accept anything on the human's behalf — approval lives in the cards.
   blocks (graph / phases / options_compare), each decision with exactly one
   recommended option. Once the human finalizes on the dashboard, just start
   working — do not re-ask in chat.
+- Mirror every Boardroom gate in the chat transcript. Before calling `clarify`,
+  `present_plan`, or `review_results`, post a concise visible line beginning
+  `Boardroom gate:` with the stage, headline, and decision prompts; after the
+  tool returns, post the verdict or chosen options before continuing.
 - For UI change requests, include lightweight wireframes or layout sketches in
   the option context so each option is visually understandable. Let each
   wireframe use its natural dimensions; do not force all options into one fixed

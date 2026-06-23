@@ -1,16 +1,22 @@
 import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
+import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
 
 interface ApiOptions {
   attachmentDir: string
+  configDir: string
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
+// Bound the device nickname: it is persisted to machine.json and echoed into every
+// /api/device and /api/sessions payload, so cap it rather than accept a multi-MB
+// label (the only other limit is express's 4mb body cap).
+const MAX_DEVICE_LABEL = 200
 
 // Exported for direct unit testing — the attachment routes' only traversal guard
 // for URL-derived path segments, so it must be provably correct in isolation.
@@ -91,6 +97,28 @@ function answersFrom(req: Request): Record<string, DecisionAnswer> {
 export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions): Router {
   const router = Router()
 
+  router.get('/api/sessions', (_req, res) => {
+    try { res.json(store.listCaptured()) } catch (err) { sendError(res, err) }
+  })
+
+  router.get('/api/device', (_req, res) => {
+    try { res.json(loadMachineIdentity(options.configDir)) } catch (err) { sendError(res, err) }
+  })
+
+  router.put('/api/device', (req, res) => {
+    try {
+      const { deviceLabel } = (req.body ?? {}) as { deviceLabel?: unknown }
+      const trimmed = typeof deviceLabel === 'string' ? deviceLabel.trim() : ''
+      if (!trimmed) {
+        throw new ValidationError('body must be { deviceLabel: <non-empty string> }')
+      }
+      if (trimmed.length > MAX_DEVICE_LABEL) {
+        throw new ValidationError(`deviceLabel must be at most ${MAX_DEVICE_LABEL} characters`)
+      }
+      res.json(setDeviceLabel(options.configDir, trimmed))
+    } catch (err) { sendError(res, err) }
+  })
+
   router.get('/api/cards', (req, res) => {
     try {
       const status = req.query.status as CardStatus | undefined
@@ -149,8 +177,10 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         const fileName = `${id}-${safeFileName(name)}`
         const dir = cardAttachmentDir(options.attachmentDir, card.id)
         mkdirSync(dir, { recursive: true })
+        try { chmodSync(dir, 0o700) } catch { /* best-effort */ }
         const path = join(dir, fileName)
         writeFileSync(path, req.body)
+        try { chmodSync(path, 0o600) } catch { /* best-effort */ }
 
         const ref: AttachmentRef = {
           id,
@@ -162,7 +192,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
           field: req.header('x-field') ?? undefined,
           uploadedAt: new Date().toISOString(),
         }
-        writeFileSync(attachmentMetaPath(options.attachmentDir, card.id, id), JSON.stringify(ref, null, 2))
+        const metaPath = attachmentMetaPath(options.attachmentDir, card.id, id)
+        writeFileSync(metaPath, JSON.stringify(ref, null, 2))
+        try { chmodSync(metaPath, 0o600) } catch { /* best-effort */ }
         res.status(201).json(ref)
       } catch (err) { sendError(res, err) }
     },

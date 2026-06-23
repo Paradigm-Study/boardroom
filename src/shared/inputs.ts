@@ -112,5 +112,18 @@ export const ReviewResultsInput = z.object({
   if (new Set(ids).size !== ids.length) {
     ctx.addIssue({ code: 'custom', message: 'duplicate claim ids', path: ['claims'] })
   }
+  // compileResults namespaces evidence blocks as `${claimId}/${blockId}`. Since
+  // "/" can appear in BOTH ids, distinct (claim, evidence) pairs can alias to the
+  // same compiled block id (claim "a"+"b/e" and "a/b"+"e" both -> "a/b/e"),
+  // silently routing a decision's blockRef to the wrong claim's evidence. Reject
+  // any input whose compiled block ids are not globally unique.
+  const blockIds = input.claims.flatMap(c => c.evidence.map(b => `${c.id}/${b.id}`))
+  if (new Set(blockIds).size !== blockIds.length) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'evidence block ids collide after claim-id namespacing — avoid "/" in claim or evidence ids',
+      path: ['claims'],
+    })
+  }
 })
 export type ReviewResultsInput = z.infer<typeof ReviewResultsInput>

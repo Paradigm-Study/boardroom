@@ -1,23 +1,34 @@
 #!/bin/bash
-# SessionStart hook. When the boardroom daemon is reachable, (re)inject the
-# boardroom protocol so it is active every session regardless of CLAUDE.md load
-# order. Fail-open: if the daemon is down, emit nothing and never block startup.
+# SessionStart hook. Inject the boardroom protocol on EVERY start so the workflow
+# is active regardless of CLAUDE.md load order. The daemon probe is ADVISORY: it
+# only (a) selects connected-vs-offline wording and (b) gates session registration.
+# It never suppresses the protocol — fail-CLOSED on guidance, fail-open on the
+# probe. (Previously a single `curl || exit 0` dropped the whole protocol whenever
+# the daemon was slow/cold at session start, e.g. right after a reboot.)
 # Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040).
 port="${BOARDROOM_PORT:-4040}"
 input=$(cat)
-curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${port}/api/cards" || exit 0
+
+# Liveness probe: any HTTP response within 2s → connected. Unreachable or
+# slow-past-2s → offline (we still inject, with fallback wording). One 2s shot, no
+# retry loop — retrying a daemon we just found down only adds latency, and the
+# registry self-heals on the next good start.
+connected=1
+curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${port}/api/cards" || connected=0
 
 # Register this session so the daemon can `claude --resume` it from the correct
 # absolute cwd when a parked card for this project is later decided (Phase 2
-# auto-wake). project = basename(cwd), matching the card project the protocol
-# below asks agents to use. Fail-open; never block startup.
-session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
-cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
-if [ -n "$session_id" ] && [ -n "$cwd" ]; then
-  body=$(jq -nc --arg s "$session_id" --arg c "$cwd" --arg p "$(basename "$cwd")" \
-    '{sessionId:$s,cwd:$c,project:$p}')
-  curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
-    -H 'content-type: application/json' -d "$body" || true
+# auto-wake). Gated on the probe result (not on script flow): only attempt it when
+# the daemon answered. Fail-open; never block startup.
+if [ "$connected" = 1 ]; then
+  session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+  cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+  if [ -n "$session_id" ] && [ -n "$cwd" ]; then
+    body=$(jq -nc --arg s "$session_id" --arg c "$cwd" --arg p "$(basename "$cwd")" \
+      '{sessionId:$s,cwd:$c,project:$p}')
+    curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
+      -H 'content-type: application/json' -d "$body" || true
+  fi
 fi
 
 read -r -d '' PROTOCOL <<'EOF'
@@ -57,9 +68,43 @@ behalf — their approval lives in the cards.
   than the block window you get a PARKED result instead of an answer — that means
   STOP: end your turn, do NOT guess, infer, or proceed; the decision is saved and
   re-issuing the identical call later claims it (re-runs nothing). present_plan
-  never parks — wait for a real verdict, never infer approval. If a call fails
-  because the server is unreachable, fall back to chat; do not retry in a loop.
+  may also park on a long wait — wait for a real verdict, never infer approval. If
+  a call fails because the server is unreachable, fall back to chat; do not retry
+  in a loop.
 EOF
 
-jq -nc --arg ctx "$PROTOCOL" \
+read -r -d '' FALLBACK <<'EOF'
+## Boardroom — the session workflow (daemon offline — best-effort)
+
+The boardroom daemon did not answer at session start, so the mcp__boardroom__*
+tools (clarify / present_plan / review_results) may be unavailable this session.
+Boardroom is still the DEFAULT workflow when reachable: the human decides
+everything as visual cards on a dashboard, and Claude Code runs in auto-permission
+mode and handles per-command permissions itself. Never auto-accept anything on the
+human's behalf.
+
+- JUDGE FIRST: simple skill calls, automatable/mechanical tasks, factual
+  questions and single-obvious fixes — just do them, no boardroom. Genuine
+  decisions, ambiguity, new features, structural changes and substantive results
+  — route through boardroom.
+- DECIDE (form the plan): before acting on an ambiguous task, FIRST call clarify
+  with the questions as button decisions; when the plan is formed, call
+  present_plan. Once the human finalizes on the dashboard, just start working.
+- CONFIRM mid-way: if something needs a human call, go back to boardroom (clarify)
+  — never ask in chat.
+- FINISH: when the work is done, call review_results with tight evidence so the
+  human can decide whether the session is complete.
+- Keep cards glanceable: tabular/comparative info in structured blocks, markdown
+  1–2 sentences, ≥1 global block + ≥1 question-local block per decision. Set the
+  card project to your working directory's name.
+- OFFLINE FALLBACK: if a mcp__boardroom__* call fails because the server is
+  unreachable, fall back to asking the same questions natively in chat — do not
+  retry in a loop.
+EOF
+
+if [ "$connected" = 1 ]; then ctx="$PROTOCOL"; else ctx="$FALLBACK"; fi
+
+# MUST remain the LAST statement: `read -r -d ''` exits 1 at EOF (no NUL found),
+# so the hook's exit status is this jq's (0), not a misleading non-zero.
+jq -nc --arg ctx "$ctx" \
   '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'

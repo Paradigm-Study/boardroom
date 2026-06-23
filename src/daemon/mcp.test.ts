@@ -3,7 +3,7 @@ import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createDaemon } from './app.js'
+import { createDaemon, type Daemon } from './app.js'
 import type { Config } from './config.js'
 import type { Queue } from './queue.js'
 import type { Store } from './store.js'
@@ -54,6 +54,7 @@ const PLAN_ARGS = {
 const delay = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 let dir: string
+let daemon: Daemon
 let store: Store
 let queue: Queue
 let server: Server
@@ -67,10 +68,11 @@ beforeEach(async () => {
     remindEveryMinutes: 10,
     notifications: false,
     openOnPending: false,
+    reattachWindowMs: 24 * 60 * 60_000,
     dbPath: join(dir, 'test.sqlite'),
     configDir: dir,
   }
-  const daemon = createDaemon(config)
+  daemon = createDaemon(config)
   store = daemon.store
   queue = daemon.queue
   server = await new Promise<Server>(resolve => {
@@ -80,6 +82,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  daemon.capturer.stop()
   // Force-drop any lingering sockets so the server's res 'close' handlers (which
   // call queue.disconnect -> store.get) run now, while the DB is still open.
   server.closeAllConnections?.()
@@ -246,6 +249,35 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     expect(beats.length).toBeGreaterThanOrEqual(2)
   }, 15_000)
 
+  it('announces the opened gate with a transcript-friendly info notification', async () => {
+    process.env.BOARDROOM_KEEPALIVE_MS = '1000'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    const messages = await collectMessages(callRes.body, 250)
+    ac.abort()
+
+    const notice = messages.find(m => {
+      if (m.method !== 'notifications/message') return false
+      const params = m.params as { level?: string; logger?: string; data?: unknown } | undefined
+      return params?.level === 'info' && params.logger === 'boardroom'
+    }) as { params?: { data?: unknown } } | undefined
+
+    expect(notice).toBeDefined()
+    const text = String(notice?.params?.data)
+    expect(text).toContain('Boardroom gate opened: clarify')
+    expect(text).toContain('does the stream stay warm?')
+    expect(text).toContain('Pick one?')
+    expect(text).toContain('A')
+  }, 15_000)
+
   it('PARKS a clarify call after the bounded window: returns a STOP sentinel and leaves the card reattachable', async () => {
     process.env.BOARDROOM_BLOCK_MS = '200'
     process.env.BOARDROOM_KEEPALIVE_MS = '50'
@@ -275,7 +307,7 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     expect(store.list('pending').length).toBe(0)
   }, 15_000)
 
-  it('does NOT park present_plan — its approval gate keeps blocking past the window', async () => {
+  it('PARKS present_plan after the bounded window too: returns a STOP sentinel, never an inferred approval', async () => {
     process.env.BOARDROOM_BLOCK_MS = '200'
     process.env.BOARDROOM_KEEPALIVE_MS = '50'
     const sessionId = await handshake()
@@ -288,14 +320,21 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     )
     expect(callRes.status).toBe(200)
 
-    // Collect well past the 200ms window — it must still be hanging, card still pending.
-    const messages = await collectMessages(callRes.body, 800)
+    const messages = await collectMessages(callRes.body, 1200)
     ac.abort()
 
-    const result = messages.find(m => m.id === 9 && 'result' in m)
-    expect(result).toBeUndefined()             // never returned — present_plan never parks
-    expect(store.list('pending').length).toBe(1)
-    expect(store.list('orphaned').length).toBe(0)
+    const result = messages.find(m => m.id === 9 && 'result' in m) as
+      | { result?: { content?: { type: string; text?: string }[] } }
+      | undefined
+    expect(result).toBeDefined() // RETURNED (parked), not hung forever
+    const texts = (result?.result?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
+    expect(texts).toMatch(/parked|STOP|re-issue/i)
+    expect(texts).not.toMatch(/Boardroom gate resolved/i) // never an inferred verdict
+
+    // Parked == orphaned: reattachable, decidable, no live waiter (the waker also
+    // skips plan cards, so a late "approve" never auto-resumes the agent).
+    expect(store.list('orphaned').length).toBe(1)
+    expect(store.list('pending').length).toBe(0)
   }, 15_000)
 
   it('still resolves the call with the human decision', async () => {
@@ -323,6 +362,36 @@ describe('hanging tool calls keep their SSE stream warm', () => {
       | undefined
     expect(result).toBeDefined()
     const texts = (result?.result?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
+    expect(texts).toContain('Boardroom gate resolved: clarify')
+    expect(texts).toContain('does the stream stay warm?')
+    expect(texts).toContain('Pick one?')
+    expect(texts).toContain('Human response:')
     expect(texts).toContain('pick')
   }, 15_000)
+})
+
+describe('unknown mcp-session-id handling (clean reconnect contract)', () => {
+  it('POST with an unknown session id → 404 so the client re-initializes (no forked transport)', async () => {
+    const res = await post(
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } },
+      { 'mcp-session-id': 'no-such-session' },
+    )
+    await res.body?.cancel().catch(() => {})
+    expect(res.status).toBe(404)
+  })
+
+  it('POST without a session id that is NOT an initialize request → 400', async () => {
+    const res = await post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } })
+    await res.body?.cancel().catch(() => {})
+    expect(res.status).toBe(400)
+  })
+
+  it('GET with an unknown session id → 404; with none → 400', async () => {
+    const r404 = await fetch(base, { headers: { accept: 'text/event-stream', 'mcp-session-id': 'no-such' } })
+    await r404.body?.cancel().catch(() => {})
+    expect(r404.status).toBe(404)
+    const r400 = await fetch(base, { headers: { accept: 'text/event-stream' } })
+    await r400.body?.cancel().catch(() => {})
+    expect(r400.status).toBe(400)
+  })
 })

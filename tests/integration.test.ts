@@ -1,11 +1,12 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Card } from '../src/shared/card.js'
 import { createDaemon, type Daemon } from '../src/daemon/app.js'
+import { SessionCapturer } from '../src/harness/claude-code/sessionCapturer.js'
 
 let dir: string
 let daemon: Daemon
@@ -16,6 +17,7 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'boardroom-int-'))
   daemon = createDaemon({
     port: 0, remindEveryMinutes: 10, notifications: false, openOnPending: false,
+    reattachWindowMs: 24 * 60 * 60_000,
     dbPath: join(dir, 'int.sqlite'), configDir: dir,
   })
   await new Promise<void>(resolve => {
@@ -25,6 +27,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  daemon.capturer.stop()
   await new Promise<void>(resolve => httpServer.close(() => resolve()))
   daemon.store.close()
   rmSync(dir, { recursive: true, force: true })
@@ -111,5 +114,19 @@ describe('present_plan end-to-end', () => {
     }
     expect(message).toMatch(/headline/i)
     await client.close()
+  })
+})
+
+describe('session capture', () => {
+  it('captures a session dropped into a watched ~/.claude/sessions dir', () => {
+    const claudeDir = mkdtempSync(join(tmpdir(), 'br-claude-int-'))
+    mkdirSync(join(claudeDir, 'sessions'), { recursive: true })
+    writeFileSync(join(claudeDir, 'sessions', '4242.json'),
+      JSON.stringify({ pid: 4242, sessionId: 'int-1', cwd: '/tmp/proj', version: '2.1.181' }))
+    const probe = new SessionCapturer(daemon.store, 'm-int', { claudeDir, isAlive: () => true })
+    probe.reconcile()
+    probe.stop()
+    rmSync(claudeDir, { recursive: true, force: true })
+    expect(daemon.store.listCaptured().map(s => s.sessionId)).toContain('int-1')
   })
 })

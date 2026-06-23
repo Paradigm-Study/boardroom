@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -48,5 +48,11 @@ describe('loadConfig', () => {
     expect(cfg.configDir).toBe(dir)
     // ...while a real override (port) still takes effect.
     expect(cfg.port).toBe(9999)
+  })
+
+  it('creates the config dir locked to 0700', () => {
+    const cfgDir = join(dir, 'cfgdir')
+    loadConfig(cfgDir)
+    expect(statSync(cfgDir).mode & 0o777).toBe(0o700)
   })
 })

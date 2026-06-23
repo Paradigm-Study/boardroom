@@ -1,10 +1,11 @@
 import express from 'express'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import request from 'supertest'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Card } from '../shared/card.js'
+import { CapturedSession } from '../shared/session.js'
 import { buildApiRouter, isWithinRoot, safeSegment } from './api.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
@@ -32,7 +33,7 @@ beforeEach(() => {
   queue = new Queue(store)
   app = express()
   app.use(express.json({ limit: '4mb' }))
-  app.use(buildApiRouter(queue, store, { attachmentDir: join(dir, 'attachments') }))
+  app.use(buildApiRouter(queue, store, { attachmentDir: join(dir, 'attachments'), configDir: dir }))
 })
 
 afterEach(() => {
@@ -273,6 +274,22 @@ describe('POST /api/cards/:id/decide — delivery flag', () => {
   })
 })
 
+describe('attachment storage perms', () => {
+  it('locks the attachment dir to 0700 and files to 0600', async () => {
+    queue.submit(card('att1'), noop)
+    const res = await request(app)
+      .post('/api/cards/att1/attachments')
+      .set('x-answer-id', 'd1')
+      .set('content-type', 'application/octet-stream')
+      .set('x-file-name', 'note.txt')
+      .send(Buffer.from('hello'))
+    expect(res.status).toBe(201)
+    expect(statSync(join(dir, 'attachments', 'att1')).mode & 0o777).toBe(0o700)
+    expect(statSync(res.body.path).mode & 0o777).toBe(0o600)
+    expect(statSync(join(dir, 'attachments', 'att1', `${res.body.id}.json`)).mode & 0o777).toBe(0o600)
+  })
+})
+
 describe('GET /events', () => {
   it('responds with an SSE stream', async () => {
     const res = await request(app)
@@ -307,5 +324,34 @@ describe('POST /api/session (Phase 2 wake registry)', () => {
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/absolute/)
     expect(store.getSession('demo')).toBeUndefined()
+  })
+})
+
+describe('GET /api/sessions', () => {
+  it('lists captured sessions', async () => {
+    store.upsertCaptured(CapturedSession.parse({
+      sessionId: 's1', machineId: 'm1', pid: 1, cwd: '/x/p', project: 'p',
+      status: 'alive', capturedAt: 'T', lastSeenAt: 'T',
+    }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    expect(res.body).toHaveLength(1)
+    expect(res.body[0].sessionId).toBe('s1')
+  })
+})
+
+describe('device identity', () => {
+  it('renames the nickname and keeps machineId', async () => {
+    const before = (await request(app).get('/api/device').expect(200)).body
+    const res = await request(app).put('/api/device').send({ deviceLabel: 'Studio Mac' }).expect(200)
+    expect(res.body.deviceLabel).toBe('Studio Mac')
+    expect(res.body.machineId).toBe(before.machineId)
+  })
+
+  it('rejects an empty nickname', async () => {
+    await request(app).put('/api/device').send({ deviceLabel: '  ' }).expect(400)
+  })
+
+  it('rejects an over-long nickname (bounded write)', async () => {
+    await request(app).put('/api/device').send({ deviceLabel: 'x'.repeat(201) }).expect(400)
   })
 })

@@ -23,7 +23,7 @@ export class Queue extends EventEmitter {
   // stale close event can never collide with a revived card's new waiter.
   private gens = new Map<string, number>()
 
-  constructor(private store: Store) {
+  constructor(private store: Store, private reattachWindowMs = 24 * 60 * 60_000) {
     super()
   }
 
@@ -45,7 +45,7 @@ export class Queue extends EventEmitter {
   // newer connection has already taken over. If a prior decision is waiting to
   // be claimed, the waiter resolves immediately and gen is -1.
   submit(card: Card, waiter: Waiter): { cardId: string; gen: number } {
-    const existing = this.store.findReattachable(card.fingerprint, this.now())
+    const existing = this.store.findReattachable(card.fingerprint, this.now(), this.reattachWindowMs)
 
     if (existing?.status === 'decided' && existing.answers) {
       const delivered: Card = { ...existing, deliveredAt: new Date().toISOString() }
@@ -173,7 +173,7 @@ export class Queue extends EventEmitter {
     this.waiters.delete(id)
     const card = this.store.get(id)
     if (!card || card.status !== 'pending') return
-    const updated: Card = { ...card, status: 'orphaned' }
+    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString() }
     this.store.update(updated)
     entry.waiter.reject(new Error('caller disconnected before a decision was made'))
     this.emit('card', updated)
@@ -193,7 +193,7 @@ export class Queue extends EventEmitter {
     const card = this.store.get(id)
     if (!card || card.status !== 'pending') return false
     this.waiters.delete(id)
-    const updated: Card = { ...card, status: 'orphaned' }
+    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString() }
     this.store.update(updated)
     this.emit('card', updated)
     return true
