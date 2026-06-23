@@ -1,0 +1,3 @@
+# Require repository owner review for all changes when branch protection enables
+# Code Owner reviews on the default branch.
+* @Geo-Li
