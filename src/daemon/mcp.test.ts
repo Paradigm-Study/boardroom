@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createDaemon, type Daemon } from './app.js'
 import type { Config } from './config.js'
+import { parkWindowMs } from './mcp.js'
 import type { Queue } from './queue.js'
 import type { Store } from './store.js'
 
@@ -337,6 +338,34 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     expect(store.list('pending').length).toBe(0)
   }, 15_000)
 
+  it('does NOT park by default (no BOARDROOM_BLOCK_MS): the call hangs until the human decides', async () => {
+    // The regression this fixes: a previous build hard-coded a 10-min park as the
+    // DEFAULT, silently orphaning any decision slower than 10 minutes. With parking
+    // opt-in, an unset BOARDROOM_BLOCK_MS must leave the card hanging (pending) and
+    // never resolve a PARKED sentinel on its own.
+    delete process.env.BOARDROOM_BLOCK_MS
+    process.env.BOARDROOM_KEEPALIVE_MS = '50'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'clarify', arguments: CLARIFY_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    // Collect well past several keepalive beats; the call must still be hanging.
+    const messages = await collectMessages(callRes.body, 600)
+    ac.abort()
+
+    // The call has not resolved (no park, no return) and the card is still pending —
+    // an orphaned card here would mean it parked.
+    expect(messages.find(m => m.id === 11 && 'result' in m)).toBeUndefined()
+    expect(store.list('pending').length).toBe(1)
+    expect(store.list('orphaned').length).toBe(0)
+  }, 15_000)
+
   it('still resolves the call with the human decision', async () => {
     process.env.BOARDROOM_KEEPALIVE_MS = '150'
     const sessionId = await handshake()
@@ -393,5 +422,22 @@ describe('unknown mcp-session-id handling (clean reconnect contract)', () => {
     const r400 = await fetch(base, { headers: { accept: 'text/event-stream' } })
     await r400.body?.cancel().catch(() => {})
     expect(r400.status).toBe(400)
+  })
+})
+
+describe('parkWindowMs — parking is opt-in (hang-until-decided by default)', () => {
+  it('returns undefined when BOARDROOM_BLOCK_MS is unset → the call hangs until the human decides', () => {
+    expect(parkWindowMs({})).toBeUndefined()
+  })
+
+  it('returns the positive millisecond window when BOARDROOM_BLOCK_MS is explicitly set', () => {
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '200' })).toBe(200)
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '600000' })).toBe(600_000)
+  })
+
+  it('treats 0, negative, and non-numeric values as "never park" (undefined)', () => {
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '0' })).toBeUndefined()
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '-5' })).toBeUndefined()
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: 'nope' })).toBeUndefined()
   })
 })

@@ -16,16 +16,16 @@ const requestCtx = new AsyncLocalStorage<RequestCtx>()
 
 const KEEPALIVE_MS = 30_000
 const STREAM_HEARTBEAT_MS = 120_000
-// Bounded-block window. Hold the live (token-free) connection up to this long;
-// if the human hasn't decided by then, PARK rather than keep clinging to a
-// connection Claude Code drops on the long tail (~22% orphan rate vs Codex's
-// ~5%). Decisions land in ~5.5 min on average, so 10 min keeps the vast
-// majority in-band and only sheds the fragile tail. ALL three tools park
-// (including present_plan): parking returns the PARKED_TEXT hard-STOP sentinel
-// and orphans the card — it never auto-resolves to a guessed verdict, and the
-// waker skips plan cards, so a late "approve" can never back-door an auto-resume.
-const BLOCK_MS = 600_000
-// Returned to the agent when the window elapses undecided. It MUST read as a
+// Parking is OPT-IN. By default a tool call hangs until the human decides — the
+// dual-layer heartbeats below keep the connection alive, and a genuine drop
+// (sleep, network blip, kill) orphans the card so an identical re-issue reattaches.
+// Set BOARDROOM_BLOCK_MS to a positive number of milliseconds to re-enable a
+// bounded park: if the human hasn't decided by then, the call resolves the
+// PARKED_TEXT hard-STOP sentinel and orphans the card (never an inferred verdict;
+// the waker skips plan cards so a late "approve" can't back-door an auto-resume).
+// A previous build hard-coded a 10-min park as the DEFAULT, which silently
+// orphaned every decision slower than 10 minutes — that is why this is now opt-in.
+// Returned to the agent when an opt-in park window elapses undecided. It MUST read as a
 // hard stop: a coding agent that asked a gating question is otherwise biased to
 // guess and proceed, which would defeat the human-in-the-loop guarantee.
 const PARKED_TEXT =
@@ -44,16 +44,25 @@ function envMs(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback
 }
 
+// The opt-in park window. Returns the configured positive millisecond window, or
+// undefined when BOARDROOM_BLOCK_MS is unset / 0 / negative / non-numeric — and
+// undefined means "never park; hang until the human decides." Pure (env is passed
+// in) so the opt-in contract is unit-testable without spinning up the transport.
+export function parkWindowMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = Number(env.BOARDROOM_BLOCK_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : undefined
+}
+
 const GLANCEABLE =
   ' AUTHORING RULES (the human reads like a CEO — keep it glanceable): every clarify/plan card must include at least one unreferenced global block plus at least one question-local block for each decision. Put question-local context in blocks and wire that decision\'s blockRefs to those block ids; leave only whole-card context unreferenced. For UI change requests, include lightweight wireframes or layout sketches in the option context and let each wireframe use its natural dimensions; do not force all options into one fixed card size unless readability requires it. Omit context that does not change the answer. Put anything tabular/comparative/quantitative/sequential in a structured block (table, options_compare, phases, graph, diff_stat), NOT in prose. Keep markdown to 1–2 sentences — never multi-paragraph essays; long prose gets clamped behind "show more" and just wastes the reader.'
 
 const DESCRIPTIONS = {
   clarify:
-    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks while the human decides. If they take longer than the block window you receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
+    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks while the human decides; if they take longer than the block window you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
   review_results:
-    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks while the human reviews. If they take longer than the block window you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
+    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
 } as const
 
 interface ToolResult {
@@ -102,7 +111,6 @@ function makeHangingHandler<I>(
   server: McpServer,
   queue: Queue,
   compile: (input: I, agent: string) => Card,
-  bounded: boolean,
 ): (input: I, ctx: ServerContext) => Promise<ToolResult> {
   return async (input, ctx) => {
     const agent = server.server.getClientVersion()?.name ?? 'unknown'
@@ -157,13 +165,14 @@ function makeHangingHandler<I>(
         const drop = (): void => queue.disconnect(cardId, gen)
         requestCtx.getStore()?.onAbort(drop)
         ctx.mcpReq.signal.addEventListener('abort', drop, { once: true })
-        // Bounded block: if no decision lands within the window, PARK the card
-        // (orphan it gracefully) and resolve a STOP sentinel instead of holding a
-        // connection Claude Code will drop on the long tail. queue.park no-ops if
-        // a decision already arrived or a newer connection took over, so the real
-        // result always wins the race.
-        if (bounded) {
-          const blockMs = envMs('BOARDROOM_BLOCK_MS', BLOCK_MS)
+        // Opt-in bounded park: only when BOARDROOM_BLOCK_MS is explicitly set. If
+        // no decision lands within that window, PARK the card (orphan it gracefully)
+        // and resolve a STOP sentinel. Unset (the default) → no timer is armed and
+        // the call hangs until the human decides. queue.park no-ops if a decision
+        // already arrived or a newer connection took over, so the real result always
+        // wins the race.
+        const blockMs = parkWindowMs()
+        if (blockMs !== undefined) {
           parkTimer = setTimeout(() => {
             if (queue.park(cardId, gen)) resolve({ parked: true, cardId })
           }, blockMs)
@@ -198,24 +207,22 @@ function buildServer(queue: Queue): McpServer {
   server.registerTool(
     'clarify',
     { description: DESCRIPTIONS.clarify, inputSchema: ClarifyInput },
-    makeHangingHandler(server, queue, compileClarify, true),
+    makeHangingHandler(server, queue, compileClarify),
   )
-  // present_plan parks like clarify/review_results: on the alive-but-slow long
-  // tail it returns the PARKED_TEXT hard-STOP sentinel rather than clinging to a
-  // connection Claude Code drops. Parking is NOT auto-approval — it orphans the
+  // All three tools share one park policy (opt-in via BOARDROOM_BLOCK_MS). When a
+  // park IS configured, present_plan parking is NOT auto-approval — it orphans the
   // card (reattachable, claimable) and resolves a STOP, never a guessed verdict.
   // The waker also skips plan cards (waker.onCard), so a late "approve" can never
-  // back-door an auto-resume into building. Together that preserves "never
-  // auto-accept" while giving the slow tail a graceful, instructed exit.
+  // back-door an auto-resume into building, preserving "never auto-accept."
   server.registerTool(
     'present_plan',
     { description: DESCRIPTIONS.present_plan, inputSchema: PresentPlanInput },
-    makeHangingHandler(server, queue, compilePlan, true),
+    makeHangingHandler(server, queue, compilePlan),
   )
   server.registerTool(
     'review_results',
     { description: DESCRIPTIONS.review_results, inputSchema: ReviewResultsInput },
-    makeHangingHandler(server, queue, compileResults, true),
+    makeHangingHandler(server, queue, compileResults),
   )
   return server
 }
