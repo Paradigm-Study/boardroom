@@ -1,6 +1,7 @@
 import { createDaemon } from './app.js'
 import { loadConfig } from './config.js'
 import { guardListen } from './listen.js'
+import { startMenubar } from './menubar.js'
 import { startAutoOpen, startNotifications } from './notify.js'
 
 process.umask(0o077)
@@ -16,3 +17,8 @@ guardListen(server, config.port)
 
 startNotifications(queue, config)
 startAutoOpen(queue, config)
+
+// Bind the menu-bar app's life to the daemon's: ensure the tray app is up on every
+// (re)start so one reboot revives both. Default-on; set BOARDROOM_NO_MENUBAR for
+// local `npm run dev` so it doesn't pop the tray.
+startMenubar()
