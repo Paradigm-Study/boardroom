@@ -27,6 +27,13 @@ export const STAGE: Record<Stage, StageMeta> = {
       'Each decision is a fork in how it gets built; pick what you want.',
       '“Send back” with a note halts it — the note becomes the agent’s next instruction.',
     ]),
+  spec: meta('Spec gate', 'var(--spec)',
+    'Lock what “good” means before the work — keep, reword, or drop each criterion.',
+    [
+      'This is the definition of done: each criterion is a good outcome the agent must hit and a bad one it must avoid.',
+      'Keep a criterion as-is, Adjust it with a note, or Drop it from scope.',
+      '“Lock spec” freezes the contract; “Revise” sends it back with your note.',
+    ]),
   results: meta('Results review', 'var(--results)',
     'Sign off on what the agent did — trust the proof, flag what’s wrong.',
     [

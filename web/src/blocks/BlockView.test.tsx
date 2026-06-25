@@ -10,6 +10,38 @@ afterEach(() => {
   window.location.hash = ''
 })
 
+describe('BlockView acceptance block', () => {
+  it('renders each criterion with its good/bad outcomes, trace, and the goal', () => {
+    const block: Block = {
+      id: 'ac', type: 'acceptance', title: 'Contract', goal: 'ship securely',
+      criteria: [
+        { id: 'cr1', behavior: 'tokens are secure', good: 'httpOnly cookie only', bad: 'token in localStorage', tracesTo: 'token_storage' },
+      ],
+    }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('tokens are secure')).toBeTruthy()
+    expect(screen.getByText(/httpOnly cookie only/)).toBeTruthy()
+    expect(screen.getByText(/token in localStorage/)).toBeTruthy()
+    expect(screen.getByText(/token_storage/)).toBeTruthy()
+    expect(screen.getByText(/ship securely/)).toBeTruthy()
+  })
+
+  it('shows a met/unmet status pill when a criterion carries status', () => {
+    const block: Block = {
+      id: 'ac', type: 'acceptance',
+      criteria: [
+        { id: 'cr1', behavior: 'b1', good: 'g1', bad: 'x1', tracesTo: 't1', status: 'met' },
+        { id: 'cr2', behavior: 'b2', good: 'g2', bad: 'x2', tracesTo: 't2', status: 'unmet' },
+      ],
+    }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('met')).toBeTruthy()
+    expect(screen.getByText('unmet')).toBeTruthy()
+  })
+})
+
 describe('BlockView renders each data-bearing block type', () => {
   it('table: renders every row across all columns', () => {
     const block: Block = {

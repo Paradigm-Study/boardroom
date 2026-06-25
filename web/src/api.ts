@@ -1,4 +1,10 @@
 import type { AttachmentRef, Card, DecideResponse, DecisionAnswer } from '../../src/shared/card.js'
+import type { CapturedSession } from '../../src/shared/session.js'
+
+export interface DeviceIdentity {
+  machineId: string
+  deviceLabel: string
+}
 
 async function check<T>(res: globalThis.Response): Promise<T> {
   const text = await res.text()
@@ -16,6 +22,17 @@ async function check<T>(res: globalThis.Response): Promise<T> {
 
 export async function fetchCards(): Promise<Card[]> {
   return check(await fetch('/api/cards'))
+}
+
+// Every Claude Code session the daemon has captured on this machine (alive + ended).
+// Read-only; the Folders view groups these by code folder.
+export async function fetchSessions(): Promise<CapturedSession[]> {
+  return check(await fetch('/api/sessions'))
+}
+
+// This machine's identity — the editable device nickname is shown in the Folders view.
+export async function fetchDevice(): Promise<DeviceIdentity> {
+  return check(await fetch('/api/device'))
 }
 
 export async function decideCard(

@@ -1,7 +1,7 @@
-import { ArrowRight, ClipboardCopy } from 'lucide-react'
-import { useMemo, useState, type ReactNode } from 'react'
+import { ArrowRight, Check, ClipboardCopy } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
-import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type AttachmentRef, type Card, type PlanVerdict, type ResultsVerdict } from '../../src/shared/card.js'
+import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
 import { decideCard, uploadAttachment } from './api.js'
 import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
@@ -113,13 +113,36 @@ function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, com
 // Shown when a decision was recorded while the agent was offline: the summary is
 // claimed automatically on reconnect, or the human can copy it to paste by hand.
 function OfflinePickup({ summary }: { summary: string }) {
+  const [copied, setCopied] = useState(false)
+  const resetCopiedTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (resetCopiedTimer.current !== null) window.clearTimeout(resetCopiedTimer.current)
+    }
+  }, [])
+
+  async function copySummary(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(summary)
+      setCopied(true)
+      if (resetCopiedTimer.current !== null) window.clearTimeout(resetCopiedTimer.current)
+      resetCopiedTimer.current = window.setTimeout(() => {
+        setCopied(false)
+        resetCopiedTimer.current = null
+      }, 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
+
   return (
     <div className="offline-out">
       <p id="offline-pickup-label" style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:</p>
       <textarea readOnly aria-labelledby="offline-pickup-label" value={summary} />
-      <button className="copy-btn" onClick={() => void navigator.clipboard.writeText(summary)}>
-        <ClipboardCopy size={14} aria-hidden />
-        Copy to clipboard
+      <button className="copy-btn" aria-live="polite" onClick={() => void copySummary()}>
+        {copied ? <Check size={14} aria-hidden /> : <ClipboardCopy size={14} aria-hidden />}
+        {copied ? 'Copied' : 'Copy to clipboard'}
       </button>
     </div>
   )
@@ -139,10 +162,17 @@ export function CardView({ card }: { card: Card }) {
 
   const [answers, setAnswers] = useCardAnswers(card, readonly, pickupSummary)
 
-  // Plan approval is NOT a separate gate — it's the act of submitting your
-  // agreement to the plan's decisions. The auto-appended verdict is driven by
-  // the submit bar, never shown as a row to answer.
-  const planMode = card.stage === 'plan'
+  // Plan approval and spec lock are NOT separate gates — each is the act of
+  // submitting your agreement (the auto-appended verdict is driven by the submit
+  // bar, never shown as a row to answer). Both share one "verdict gate" shape:
+  // an approve-style primary action plus a "send back" (revise) path. Clarify has
+  // no verdict gate; results has its own finish bar.
+  const verdictGate =
+    card.stage === 'plan'
+      ? { id: PLAN_VERDICT_ID, approve: 'approve', approveLabel: orphaned ? 'Approve (agent offline)' : 'Approve plan & proceed', readyState: 'agreed on all', progressWord: 'agreed' }
+      : card.stage === 'spec'
+        ? { id: SPEC_VERDICT_ID, approve: 'lock', approveLabel: orphaned ? 'Lock spec (agent offline)' : 'Lock spec', readyState: 'all criteria set', progressWord: 'set' }
+        : null
   const resultsMode = card.stage === 'results'
   const workspace = useMemo(() => prepareCardWorkspace(card), [card])
   const choiceDecisions = workspace.choiceDecisions
@@ -167,13 +197,15 @@ export function CardView({ card }: { card: Card }) {
     }
   }
 
-  async function submit(planVerdict?: PlanVerdict): Promise<void> {
-    await commit(planVerdict
+  // Stamp the verdict gate's chosen verb (approve/lock, or revise on send-back) and
+  // submit. No verb / no gate → a plain clarify submit of just the answers.
+  async function submitVerdict(verb?: string): Promise<void> {
+    await commit(verdictGate && verb
       ? {
           ...answers,
-          [PLAN_VERDICT_ID]: {
-            chosen: [planVerdict],
-            note: planVerdict === 'revise' ? sendBackNote : '',
+          [verdictGate.id]: {
+            chosen: [verb],
+            note: verb === 'revise' ? sendBackNote : '',
             custom: '',
             ...(sendBackAttachments.length ? { attachments: sendBackAttachments } : {}),
           },
@@ -276,7 +308,7 @@ export function CardView({ card }: { card: Card }) {
               </section>
             )}
 
-            {!readonly && !pickupSummary && planMode && (
+            {!readonly && !pickupSummary && verdictGate && (
               sendingBack
                 ? (
                   <div className="submit-bar">
@@ -286,35 +318,35 @@ export function CardView({ card }: { card: Card }) {
                       busy={busy}
                       onNoteChange={setSendBackNote}
                       onUpload={async file => {
-                        const attachment = await uploadFor(PLAN_VERDICT_ID, 'note', file)
+                        const attachment = await uploadFor(verdictGate.id, 'note', file)
                         setSendBackAttachments(prev => [...prev, attachment])
                         return attachment
                       }}
                       onRemoveAttachment={id => setSendBackAttachments(prev => prev.filter(a => a.id !== id))}
                       onCancel={() => setSendingBack(false)}
-                      onSend={() => void submit('revise')}
+                      onSend={() => void submitVerdict('revise')}
                     />
                   </div>
                 )
                 : (
                   <SubmitBar
                     leading={<button className="submit ghost" onClick={() => setSendingBack(true)}>Send back…</button>}
-                    state={ready ? 'agreed on all' : `${answeredCount}/${choiceDecisions.length} agreed`}
-                    label={orphaned ? 'Approve (agent offline)' : 'Approve plan & proceed'}
+                    state={ready ? verdictGate.readyState : `${answeredCount}/${choiceDecisions.length} ${verdictGate.progressWord}`}
+                    label={verdictGate.approveLabel}
                     ready={ready}
                     busy={busy}
-                    onSubmit={() => void submit('approve')}
+                    onSubmit={() => void submitVerdict(verdictGate.approve)}
                   />
                 )
             )}
 
-            {!readonly && !pickupSummary && !planMode && (
+            {!readonly && !pickupSummary && !verdictGate && (
               <SubmitBar
                 state={`${answeredCount}/${choiceDecisions.length} answered`}
                 label={orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
                 ready={ready}
                 busy={busy}
-                onSubmit={() => void submit()}
+                onSubmit={() => void submitVerdict()}
               />
             )}
           </section>

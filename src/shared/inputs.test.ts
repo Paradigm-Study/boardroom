@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClarifyInput, PresentPlanInput, ReviewResultsInput } from './inputs.js'
+import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from './inputs.js'
 
 const decision = {
   id: 'd1',
@@ -127,5 +127,106 @@ describe('ReviewResultsInput', () => {
       claims: [{ id: 'c1', claim: 'tests pass', evidence: [{ id: 'e1', type: 'evidence', output: '42 passed', exitCode: 0 }] }],
     })
     expect(r.success).toBe(true)
+  })
+
+  it('accepts a claim tagged with a criterionId and an echoed spec contract', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      spec: { goal: 'secure tokens', criteria: [criterion] },
+      claims: [{
+        id: 'c1', criterionId: 'cr1', claim: 'tokens land in an httpOnly cookie',
+        evidence: [{ id: 'e1', type: 'markdown', text: 'see auth.ts' }],
+      }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('stays backward compatible: no spec, no criterionId', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      claims: [{ id: 'c1', claim: 'tests pass', evidence: [{ id: 'e1', type: 'markdown', text: 'x' }] }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects an echoed spec with duplicate criterion ids', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      spec: { criteria: [criterion, criterion] },
+      claims: [{ id: 'c1', claim: 'x', evidence: [{ id: 'e1', type: 'markdown', text: 'y' }] }],
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects an echoed spec criterion using the reserved verdict id', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      spec: { criteria: [{ ...criterion, id: 'spec_verdict' }] },
+      claims: [{ id: 'c1', claim: 'x', evidence: [{ id: 'e1', type: 'markdown', text: 'y' }] }],
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a claim whose criterionId is absent from the echoed spec', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      spec: { criteria: [criterion] }, // only cr1
+      claims: [{ id: 'c1', criterionId: 'cr99', claim: 'x', evidence: [{ id: 'e1', type: 'markdown', text: 'y' }] }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /criterionId/.test(JSON.stringify(i.path)) || /criterion/.test(i.message))).toBe(true)
+  })
+
+  it('accepts an untied claim (no criterionId) even when a spec is present', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      spec: { criteria: [criterion] },
+      claims: [{ id: 'c1', claim: 'an untied claim', evidence: [{ id: 'e1', type: 'markdown', text: 'y' }] }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('ignores a stray criterionId when no spec is echoed (nothing to validate against)', () => {
+    const r = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      claims: [{ id: 'c1', criterionId: 'cr1', claim: 'x', evidence: [{ id: 'e1', type: 'markdown', text: 'y' }] }],
+    })
+    expect(r.success).toBe(true)
+  })
+})
+
+const criterion = {
+  id: 'cr1',
+  behavior: 'auth tokens are persisted client-side',
+  good: 'tokens live only in httpOnly cookies',
+  bad: 'any auth token in localStorage',
+  tracesTo: 'token_storage',
+}
+
+describe('SpecInput', () => {
+  const valid = { project: 'demo', headline: 'what done means', goal: 'secure tokens', criteria: [criterion] }
+
+  it('requires at least one criterion', () => {
+    expect(SpecInput.safeParse({ ...valid, criteria: [] }).success).toBe(false)
+  })
+
+  it('rejects duplicate criterion ids', () => {
+    const r = SpecInput.safeParse({ ...valid, criteria: [criterion, criterion] })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a criterion id that collides with the reserved verdict id', () => {
+    const r = SpecInput.safeParse({ ...valid, criteria: [{ ...criterion, id: 'spec_verdict' }] })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /reserved/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a criterion missing its good or bad outcome', () => {
+    expect(SpecInput.safeParse({ ...valid, criteria: [{ ...criterion, bad: '' }] }).success).toBe(false)
+  })
+
+  it('accepts a valid spec with a goal, criteria, and an optional on-disk specRef', () => {
+    expect(SpecInput.safeParse({ ...valid, specRef: '/tmp/spec.md' }).success).toBe(true)
   })
 })

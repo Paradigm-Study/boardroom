@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
+import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, SPEC_VERDICT_ID, SPEC_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
 
@@ -60,7 +60,10 @@ export class Queue extends EventEmitter {
     }
 
     if (existing?.status === 'orphaned') {
-      const revived: Card = { ...existing, status: 'pending' }
+      // Reattach: back to a live waiter. Clear the orphan metadata so a now-live
+      // card carries no stale orphanedAt/Reason (which would otherwise mislead the
+      // dashboard's "reconnecting" surfacing if it were ever read on a pending card).
+      const revived: Card = { ...existing, status: 'pending', orphanedAt: undefined, orphanedReason: undefined }
       this.store.update(revived)
       const gen = this.attach(existing.id, waiter)
       this.emit('card', revived)
@@ -86,13 +89,21 @@ export class Queue extends EventEmitter {
   //   - results "keep going" → validate the verdict plus only the claims actually
   //     voted on (an unreviewed claim shouldn't block continuing, but a
   //     deny/changes vote still needs its note).
-  // "mark complete" stays strict: you cannot declare the session done while a
-  // claim is left unreviewed.
+  //   - spec "revise"        → validate only the spec verdict (the send-back analog:
+  //     sending the whole contract back doesn't require addressing each criterion).
+  // "mark complete" / "lock spec" stay strict: you cannot declare the session done
+  // (or freeze the contract) while a claim / criterion is left unaddressed.
   private validationScope(card: Card, answers: Record<string, DecisionAnswer>): Card {
     if (card.stage === 'plan') {
       const v = PLAN_VERDICTS.find(o => o === answers[PLAN_VERDICT_ID]?.chosen[0])
       if (v === 'revise' || v === 'reject') {
         return { ...card, decisions: card.decisions.filter(d => d.id === PLAN_VERDICT_ID) }
+      }
+    }
+    if (card.stage === 'spec') {
+      const v = SPEC_VERDICTS.find(o => o === answers[SPEC_VERDICT_ID]?.chosen[0])
+      if (v === 'revise') {
+        return { ...card, decisions: card.decisions.filter(d => d.id === SPEC_VERDICT_ID) }
       }
     }
     if (card.stage === 'results') {
@@ -173,7 +184,7 @@ export class Queue extends EventEmitter {
     this.waiters.delete(id)
     const card = this.store.get(id)
     if (!card || card.status !== 'pending') return
-    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString() }
+    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString(), orphanedReason: 'disconnect' }
     this.store.update(updated)
     entry.waiter.reject(new Error('caller disconnected before a decision was made'))
     this.emit('card', updated)
@@ -193,7 +204,7 @@ export class Queue extends EventEmitter {
     const card = this.store.get(id)
     if (!card || card.status !== 'pending') return false
     this.waiters.delete(id)
-    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString() }
+    const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString(), orphanedReason: 'park' }
     this.store.update(updated)
     this.emit('card', updated)
     return true

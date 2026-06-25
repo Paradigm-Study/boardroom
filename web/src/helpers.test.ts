@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Decision } from '../../src/shared/card.js'
-import { answersComplete, claimNotesValid, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
+import type { Card, Decision } from '../../src/shared/card.js'
+import { answersComplete, claimNotesValid, isReconnecting, needsHuman, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
 
 const decision: Decision = {
   id: 'd1', prompt: 'p',
@@ -8,6 +8,46 @@ const decision: Decision = {
   noteRequiredOn: ['b'],
 }
 const multi: Decision = { ...decision, id: 'd2', multi: true, noteRequiredOn: [] }
+
+describe('needsHuman / isReconnecting', () => {
+  const NOW = Date.parse('2026-06-23T12:00:00.000Z')
+  const minutesAgo = (m: number): string => new Date(NOW - m * 60_000).toISOString()
+  function card(o: Partial<Card>): Card {
+    return {
+      id: 'c', stage: 'clarify', session: { agent: 'claude-code', project: 'p' },
+      headline: 'h', blocks: [], decisions: [decision],
+      status: 'pending', createdAt: minutesAgo(5), ...o,
+    }
+  }
+
+  it('a pending card needs the human', () => {
+    expect(needsHuman(card({ status: 'pending' }), NOW)).toBe(true)
+  })
+
+  it('a card a restart orphaned (reason "boot") within the window is reconnecting and still needs the human', () => {
+    const c = card({ status: 'orphaned', orphanedReason: 'boot', orphanedAt: minutesAgo(2) })
+    expect(isReconnecting(c, NOW)).toBe(true)
+    expect(needsHuman(c, NOW)).toBe(true)
+  })
+
+  it('a card orphaned by a disconnect or park is NOT reconnecting (stays in history)', () => {
+    for (const reason of ['disconnect', 'park'] as const) {
+      const c = card({ status: 'orphaned', orphanedReason: reason, orphanedAt: minutesAgo(2) })
+      expect(isReconnecting(c, NOW)).toBe(false)
+      expect(needsHuman(c, NOW)).toBe(false)
+    }
+  })
+
+  it('a boot-orphaned card past the 24h reattach window is no longer reconnecting', () => {
+    const c = card({ status: 'orphaned', orphanedReason: 'boot', orphanedAt: minutesAgo(25 * 60) })
+    expect(isReconnecting(c, NOW)).toBe(false)
+    expect(needsHuman(c, NOW)).toBe(false)
+  })
+
+  it('a decided card never needs the human', () => {
+    expect(needsHuman(card({ status: 'decided' }), NOW)).toBe(false)
+  })
+})
 
 describe('toggleChoice', () => {
   it('single-select replaces the choice', () => {

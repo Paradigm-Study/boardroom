@@ -32,6 +32,8 @@ function label(b: Block): string {
       return `${b.phases.length} phases`
     case 'options_compare':
       return `${b.options.length} options`
+    case 'acceptance':
+      return `${b.criteria.length} criteri${b.criteria.length === 1 ? 'on' : 'a'}`
     case 'markdown':
       return 'notes'
   }

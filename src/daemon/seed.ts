@@ -75,6 +75,18 @@ const plan = call('present_plan', {
   ],
 })
 
+const spec = call('present_spec', {
+  project: 'seed-demo', title: 'demo session',
+  headline: 'Acceptance contract for CSV export',
+  goal: 'Users can export large, correct CSVs without harming the server.',
+  specRef: '/tmp/example-acceptance.md',
+  criteria: [
+    { id: 'mem', behavior: 'Exporting a huge report holds memory flat', good: 'memory stays roughly constant while rows stream (cursor + backpressure)', bad: 'the process buffers the whole report and OOMs on big exports', tracesTo: 'Export strategy = stream rows' },
+    { id: 'unicode', behavior: 'Non-ASCII data round-trips in Excel', good: 'a UTF-8 BOM is written; accented names open correctly', bad: 'mojibake / mangled characters in the opened file', tracesTo: 'Risk: Unicode mangling' },
+    { id: 'authz', behavior: 'Only permitted roles can export', good: 'admins and editors can export; viewers get 403', bad: 'a viewer can pull the full dataset', tracesTo: 'Who can export?' },
+  ],
+})
+
 const results = call('review_results', {
   project: 'seed-demo', title: 'demo session',
   headline: 'CSV export shipped — review the claims',
@@ -94,5 +106,5 @@ const results = call('review_results', {
   ],
 })
 
-await Promise.all([clarify, plan, results])
-console.log('[seed] all three cards decided. Done.')
+await Promise.all([clarify, plan, spec, results])
+console.log('[seed] all four cards decided. Done.')

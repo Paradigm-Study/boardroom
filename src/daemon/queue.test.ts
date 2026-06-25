@@ -41,6 +41,30 @@ function resultsCard(id: string, fingerprint = `fp-${id}`): Card {
   }
 }
 
+function specCard(id: string, fingerprint = `fp-${id}`): Card {
+  const crit = (cid: string, prompt: string): Card['decisions'][number] => ({
+    id: cid, prompt, criterionId: cid.replace('crit:', ''),
+    options: [{ id: 'keep', label: 'Keep' }, { id: 'adjust', label: 'Adjust' }, { id: 'drop', label: 'Drop' }],
+    noteRequiredOn: ['adjust', 'drop'],
+  })
+  return {
+    id, stage: 'spec',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h', blocks: [],
+    criteria: [
+      { id: 'a', behavior: 'A holds', good: 'A passes', bad: 'A breaks', tracesTo: 'd1' },
+      { id: 'b', behavior: 'B holds', good: 'B passes', bad: 'B breaks', tracesTo: 'd1' },
+    ],
+    decisions: [
+      crit('crit:a', 'A holds'),
+      crit('crit:b', 'B holds'),
+      { id: 'spec_verdict', prompt: 'Lock this acceptance contract?', options: [{ id: 'lock', label: 'Lock spec' }, { id: 'revise', label: 'Revise' }], noteRequiredOn: ['revise'] },
+    ],
+    status: 'pending', createdAt: new Date().toISOString(),
+    fingerprint,
+  }
+}
+
 const noop = { resolve: () => {}, reject: () => {} }
 
 let dir: string
@@ -119,6 +143,24 @@ describe('Queue.decide', () => {
     expect(updated.status).toBe('decided')
   })
 
+  it('spec send-back (revise) needs only the verdict, not every criterion addressed', () => {
+    queue.submit(specCard('s1'), noop)
+    // lock still requires each criterion answered
+    expect(() => queue.decide('s1', { spec_verdict: { chosen: ['lock'] } })).toThrow(ValidationError)
+    // revise is the send-back analog: just the verdict + its note
+    const { card: updated } = queue.decide('s1', { spec_verdict: { chosen: ['revise'], note: 'add a perf criterion' } })
+    expect(updated.status).toBe('decided')
+  })
+
+  it('spec "lock" requires every criterion addressed', () => {
+    queue.submit(specCard('s1'), noop)
+    // crit:b unaddressed — locking the contract is not allowed.
+    expect(() => queue.decide('s1', {
+      'crit:a': { chosen: ['keep'] },
+      spec_verdict: { chosen: ['lock'] },
+    })).toThrow(ValidationError)
+  })
+
   it('results "keep going" still requires a note on any claim voted revise/reject', () => {
     queue.submit(resultsCard('r1'), noop)
     expect(() => queue.decide('r1', {
@@ -170,6 +212,7 @@ describe('Queue.disconnect', () => {
     queue.disconnect(cardId, gen)
     expect(reject).toHaveBeenCalled()
     expect(store.get('c1')?.status).toBe('orphaned')
+    expect(store.get('c1')?.orphanedReason).toBe('disconnect')
   })
 
   it('is a no-op when a newer connection has taken over (stale gen)', () => {
@@ -191,6 +234,16 @@ describe('Queue.disconnect', () => {
     expect(retry.cardId).toBe('c1')                          // revived in place, not duplicated
     expect(store.list().filter(c => c.fingerprint === 'shared-fp')).toHaveLength(1)
   })
+
+  it('clears orphan metadata when a retry revives an orphaned card to pending', () => {
+    const { cardId, gen } = queue.submit(card('c1', 'shared-fp'), noop)
+    queue.disconnect(cardId, gen)                            // orphaned + orphanedAt + reason 'disconnect'
+    queue.submit(card('c2', 'shared-fp'), noop)              // reattach → revive to pending
+    const revived = store.get(cardId)
+    expect(revived?.status).toBe('pending')
+    expect(revived?.orphanedReason).toBeUndefined()         // no stale reason on a live card
+    expect(revived?.orphanedAt).toBeUndefined()
+  })
 })
 
 describe('Queue.park', () => {
@@ -200,6 +253,7 @@ describe('Queue.park', () => {
     const { cardId, gen } = queue.submit(card('c1'), { resolve, reject })
     expect(queue.park(cardId, gen)).toBe(true)
     expect(store.get('c1')?.status).toBe('orphaned')   // reattachable, unlike a stranded 'pending'
+    expect(store.get('c1')?.orphanedReason).toBe('park')
     expect(reject).not.toHaveBeenCalled()              // the handler resolves a STOP sentinel itself
     expect(resolve).not.toHaveBeenCalled()
   })
@@ -271,6 +325,21 @@ describe('Queue.submit — reattach & claim', () => {
     const second = queue.submit(card('c2', 'shared-fp'), noop)
     expect(second.cardId).toBe('c2')                  // fresh card, did not steal c1
     expect(store.get('c1')?.status).toBe('pending')
+  })
+
+  it('reattaches an orphaned spec card with its criteria contract intact, claimable offline', () => {
+    const first = queue.submit(specCard('s1', 'spec-fp'), noop)
+    queue.disconnect(first.cardId, first.gen)          // agent dropped mid-lock
+    // Human locks the contract offline (revive-by-decide is undelivered).
+    queue.decide('s1', { 'crit:a': { chosen: ['keep'] }, 'crit:b': { chosen: ['keep'] }, spec_verdict: { chosen: ['lock'] } })
+    expect(store.get('s1')?.deliveredAt).toBeUndefined()
+    expect(store.get('s1')?.criteria?.length).toBe(2) // contract survived the round-trip
+
+    const resolve = vi.fn()
+    const retry = queue.submit(specCard('s2', 'spec-fp'), { resolve, reject: vi.fn() })
+    expect(retry.gen).toBe(-1)                          // claimed immediately
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ cardId: 's1' }))
+    expect(store.get('s2')).toBeUndefined()             // no duplicate
   })
 })
 

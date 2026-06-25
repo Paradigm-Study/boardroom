@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { Card, RESULTS_VERDICT_ID } from '../shared/card.js'
-import { compileClarify, compilePlan, compileResults, PLAN_VERDICT } from './compile.js'
+import { Card, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from '../shared/card.js'
+import { compileClarify, compilePlan, compileResults, compileSpec, PLAN_VERDICT } from './compile.js'
 
 const decision = {
   id: 'd1',
@@ -10,6 +10,10 @@ const decision = {
     { id: 'b', label: 'B' },
   ],
 }
+
+const criterion = (id: string, behavior: string) => ({
+  id, behavior, good: `${behavior} holds`, bad: `${behavior} fails`, tracesTo: 'd1',
+})
 
 describe('compileClarify', () => {
   it('builds a pending clarify card with session attribution', () => {
@@ -85,6 +89,70 @@ describe('compileResults', () => {
     // The verdict's own note is the optional card-level add-on, so it is NOT required.
     expect(verdict.noteRequiredOn ?? []).toEqual([])
     // The verdict carries no evidence blocks of its own.
+    expect(verdict.blockRefs ?? []).toEqual([])
+  })
+
+  it('with an echoed spec, stores the criteria and tags each claim with its criterionId', () => {
+    const card = compileResults({
+      project: 'demo', headline: 'done',
+      spec: { goal: 'ship securely', criteria: [criterion('cr1', 'tokens secure'), criterion('cr2', 'tests pass')] },
+      claims: [{ id: 'c1', criterionId: 'cr1', claim: 'tokens in httpOnly cookie', evidence: [{ id: 'e1', type: 'markdown' as const, text: 'x' }] }],
+    }, 'claude-code')
+
+    expect(card.criteria?.map(c => c.id)).toEqual(['cr1', 'cr2'])
+    expect(card.decisions.find(d => d.id === 'claim:c1')!.criterionId).toBe('cr1')
+  })
+
+  it('without a spec, carries no criteria (backward compatible)', () => {
+    const card = compileResults({
+      project: 'demo', headline: 'done',
+      claims: [{ id: 'c1', claim: 'tests pass', evidence: [{ id: 'e1', type: 'markdown' as const, text: 'x' }] }],
+    }, 'claude-code')
+    expect(card.criteria).toBeUndefined()
+  })
+})
+
+describe('compileSpec', () => {
+  const input = {
+    project: 'demo', headline: 'definition of done', goal: 'ship securely',
+    criteria: [criterion('cr1', 'tokens secure'), criterion('cr2', 'tests pass')],
+    specRef: '/tmp/spec.md',
+    blocks: [],
+  }
+
+  it('builds a pending spec card carrying the contract and a specRef', () => {
+    const card = compileSpec(input, 'claude-code')
+    expect(Card.parse(card).stage).toBe('spec')
+    expect(card.status).toBe('pending')
+    expect(card.specRef).toBe('/tmp/spec.md')
+    expect(card.criteria?.map(c => c.id)).toEqual(['cr1', 'cr2'])
+  })
+
+  it('renders one keep/adjust/drop decision per criterion, wired to its acceptance block', () => {
+    const card = compileSpec(input, 'claude-code')
+    const d1 = card.decisions.find(d => d.id === 'crit:cr1')!
+    expect(d1.options.map(o => o.id)).toEqual(['keep', 'adjust', 'drop'])
+    expect(d1.noteRequiredOn).toEqual(['adjust', 'drop'])
+    expect(d1.blockRefs).toEqual(['crit/cr1'])
+    expect(d1.criterionId).toBe('cr1')
+    // the referenced block exists and is an acceptance block
+    expect(card.blocks.find(b => b.id === 'crit/cr1')?.type).toBe('acceptance')
+  })
+
+  it('includes a global (unreferenced) acceptance overview block carrying the goal', () => {
+    const card = compileSpec(input, 'claude-code')
+    const referenced = new Set(card.decisions.flatMap(d => d.blockRefs ?? []))
+    const globals = card.blocks.filter(b => !referenced.has(b.id))
+    const overview = globals.find(b => b.type === 'acceptance')
+    expect(overview).toBeDefined()
+    expect(overview!.type === 'acceptance' && overview!.goal).toBe('ship securely')
+  })
+
+  it('appends a lock/revise verdict with a required revise note', () => {
+    const card = compileSpec(input, 'codex')
+    const verdict = card.decisions.find(d => d.id === SPEC_VERDICT_ID)!
+    expect(verdict.options.map(o => o.id)).toEqual(['lock', 'revise'])
+    expect(verdict.noteRequiredOn).toEqual(['revise'])
     expect(verdict.blockRefs ?? []).toEqual([])
   })
 })

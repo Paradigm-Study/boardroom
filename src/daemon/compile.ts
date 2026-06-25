@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type Card, type Decision, type DecisionOption, type PlanVerdict, type ResultsVerdict } from '../shared/card.js'
+import type { Block } from '../shared/blocks.js'
+import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type Card, type Decision, type DecisionOption, type PlanVerdict, type ResultsVerdict, type SpecVerdict } from '../shared/card.js'
 
 // Verdict option lists are constrained to the shared unions so a renamed verdict
 // is a compile error here AND at every consumer that compares against it.
 type VerdictOption<V extends string> = Omit<DecisionOption, 'id'> & { id: V }
-import type { ClarifyInput, PresentPlanInput, ReviewResultsInput } from '../shared/inputs.js'
+import type { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 
 const now = (): string => new Date().toISOString()
 
@@ -64,6 +65,67 @@ export function compilePlan(input: PresentPlanInput, agent: string): Card {
   }
 }
 
+// The spec gate's lock/revise verdict, appended to every spec card. The note on
+// `revise` is the send-back instruction; its always-on note/attachments are also
+// the card-level add-on (e.g. "add a criterion: …").
+export const SPEC_VERDICT: Decision = {
+  id: SPEC_VERDICT_ID,
+  prompt: 'Lock this acceptance contract?',
+  options: [
+    { id: 'lock', label: 'Lock spec', detail: 'Freeze these criteria as the definition of done', recommended: true },
+    { id: 'revise', label: 'Revise', detail: 'Send back with changes' },
+  ] satisfies VerdictOption<SpecVerdict>[],
+  noteRequiredOn: ['revise'] satisfies SpecVerdict[],
+  blockRefs: [],
+}
+
+// The spec gate. Each criterion becomes its own acceptance block (question-local)
+// plus a keep/adjust/drop decision; a global acceptance "contract" block carries
+// the goal + the full list. The agent supplies criteria, not blocks — boardroom
+// builds the card, mirroring how compileResults turns claims into the card.
+export function compileSpec(input: SpecInput, agent: string): Card {
+  const overview: Block = {
+    id: 'spec_contract',
+    type: 'acceptance',
+    title: 'Acceptance contract',
+    goal: input.goal,
+    criteria: input.criteria,
+  }
+  const perCriterion: Block[] = input.criteria.map(c => ({
+    id: `crit/${c.id}`,
+    type: 'acceptance',
+    criteria: [c],
+  }))
+  const decisions: Decision[] = input.criteria.map(c => ({
+    id: `crit:${c.id}`,
+    prompt: c.behavior,
+    criterionId: c.id,
+    options: [
+      { id: 'keep', label: 'Keep', recommended: true },
+      { id: 'adjust', label: 'Adjust', detail: 'Reword via the note' },
+      { id: 'drop', label: 'Drop', detail: 'Remove from the contract' },
+    ],
+    noteRequiredOn: ['adjust', 'drop'],
+    blockRefs: [`crit/${c.id}`],
+  }))
+  decisions.push(SPEC_VERDICT)
+  return {
+    id: randomUUID(),
+    stage: 'spec',
+    session: session(input, agent),
+    headline: input.headline,
+    // Overview first (global), then any extra agent context, then the per-criterion
+    // local blocks the decisions reference.
+    blocks: [overview, ...input.blocks, ...perCriterion],
+    decisions,
+    ...(input.specRef ? { specRef: input.specRef } : {}),
+    criteria: input.criteria,
+    status: 'pending',
+    createdAt: now(),
+    fingerprint: fingerprint(input.project, 'spec', input.headline),
+  }
+}
+
 // The explicit "is the session complete?" verdict appended to every results card.
 // The human sets it directly — completion is NOT inferred from the per-claim
 // votes — and its own note/attachments are the always-on card-level add-on (asks
@@ -85,6 +147,9 @@ export function compileResults(input: ReviewResultsInput, agent: string): Card {
   const decisions: Decision[] = input.claims.map(c => ({
     id: `claim:${c.id}`,
     prompt: c.claim,
+    // Tie the claim to its acceptance criterion (when the agent echoed a spec) so
+    // the summary can compute met/unmet and the dashboard can group by criterion.
+    ...(c.criterionId ? { criterionId: c.criterionId } : {}),
     options: [
       { id: 'approve', label: 'Approve' },
       { id: 'revise', label: 'Revise', detail: 'On the right track — apply the note' },
@@ -102,6 +167,8 @@ export function compileResults(input: ReviewResultsInput, agent: string): Card {
     headline: input.headline,
     blocks,
     decisions,
+    // The echoed contract being judged (stateless V1: the agent re-supplies it).
+    ...(input.spec ? { criteria: input.spec.criteria } : {}),
     status: 'pending',
     createdAt: now(),
     fingerprint: fingerprint(input.project, 'results', input.headline),

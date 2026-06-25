@@ -1,5 +1,5 @@
 import dagre from 'dagre'
-import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
+import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, ListChecks, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -31,6 +31,7 @@ const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
   diff_stat: { label: 'Change footprint', Icon: FileDiff },
   evidence: { label: 'Evidence', Icon: Terminal },
   mermaid: { label: 'Diagram', Icon: GitFork },
+  acceptance: { label: 'Acceptance criteria', Icon: ListChecks },
 }
 
 // Prose is clamped to a few lines with a Show more toggle so a verbose agent
@@ -224,6 +225,28 @@ function Evidence({ block, forceOpen }: { block: Extract<Block, { type: 'evidenc
   )
 }
 
+// The acceptance contract: a checklist of behavior-driven criteria. Each row shows
+// the behavior, the GOOD outcome (✓) we want, the BAD anti-goal (✗) to avoid, and
+// the decision it traces to — plus a met/unmet pill once results are judged.
+function Acceptance({ block }: { block: Extract<Block, { type: 'acceptance' }> }) {
+  return (
+    <div className="acceptance">
+      {block.goal && <div className="acceptance-goal">{block.goal}</div>}
+      {block.criteria.map(c => (
+        <div key={c.id} className={`crit${c.status ? ` crit-${c.status}` : ''}`}>
+          <div className="crit-head">
+            <span className="crit-behavior">{c.behavior}</span>
+            {c.status && <span className={`crit-status ${c.status}`}>{c.status}</span>}
+          </div>
+          <div className="crit-good"><span className="crit-mark good" aria-hidden>✓</span>{c.good}</div>
+          <div className="crit-bad"><span className="crit-mark bad" aria-hidden>✗</span>{c.bad}</div>
+          <div className="crit-trace">traces to {c.tracesTo}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function Mermaid({ block }: { block: Extract<Block, { type: 'mermaid' }> }) {
   const [svg, setSvg] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
@@ -269,6 +292,7 @@ export function BlockView({ block, highlighted, forceOpen, anchorScope }: {
     case 'diff_stat': body = <DiffStat block={block} />; break
     case 'evidence': body = <Evidence block={block} forceOpen={forceOpen} />; break
     case 'mermaid': body = <Mermaid block={block} />; break
+    case 'acceptance': body = <Acceptance block={block} />; break
   }
   return (
     <div

@@ -57,6 +57,14 @@ describe('Store', () => {
     expect(store.get('c1')?.status).toBe('orphaned')
     expect(store.get('c2')?.status).toBe('decided')
   })
+
+  it('stamps orphanedReason "boot" so a restart-orphaned card can resurface as actionable', () => {
+    store.insert(card('c1'))
+    store.orphanAllPending()
+    const recovered = store.get('c1')
+    expect(recovered?.status).toBe('orphaned')
+    expect(recovered?.orphanedReason).toBe('boot')
+  })
 })
 
 describe('Store validation on write', () => {

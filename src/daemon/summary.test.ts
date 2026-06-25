@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { Card } from '../shared/card.js'
+import type { Card, Criterion } from '../shared/card.js'
+import { SPEC_VERDICT_ID } from '../shared/card.js'
 import { buildSummary } from './summary.js'
 
-const claim = (id: string, prompt: string): Card['decisions'][number] => ({
+const claim = (id: string, prompt: string, criterionId?: string): Card['decisions'][number] => ({
   id, prompt,
   options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
   noteRequiredOn: ['revise', 'reject'],
+  ...(criterionId ? { criterionId } : {}),
 })
+
+const crit = (id: string, behavior: string): Criterion =>
+  ({ id, behavior, good: `${behavior} holds`, bad: `${behavior} regressed`, tracesTo: 'd1' })
 
 function resultsCard(): Card {
   return {
@@ -97,6 +102,119 @@ describe('buildSummary — results', () => {
     expect(s).toContain('Added instructions')
     expect(s).toContain('mockup.png')
     expect(s).toContain('/tmp/mockup.png')
+  })
+})
+
+describe('buildSummary — results judged against criteria', () => {
+  function specResultsCard(): Card {
+    return {
+      ...resultsCard(),
+      criteria: [crit('cr1', 'tokens are secure'), crit('cr2', 'tests pass')],
+      decisions: [
+        claim('claim:c1', 'tokens in httpOnly cookie', 'cr1'),
+        claim('claim:c2', '42 tests pass', 'cr2'),
+        { id: 'results_verdict', prompt: 'Is the session complete?', options: [{ id: 'complete', label: 'Mark complete' }, { id: 'continue', label: 'Keep going' }] },
+      ],
+    }
+  }
+
+  it('leads the not-complete body with the unmet criteria, before the rejected group', () => {
+    const s = buildSummary(specResultsCard(), {
+      'claim:c1': { chosen: ['approve'] },                 // cr1 met
+      'claim:c2': { chosen: ['reject'], note: 'still red' }, // cr2 unmet
+      results_verdict: { chosen: ['continue'] },
+    })
+    expect(s).toMatch(/UNMET CRITERIA \(1\)/)
+    expect(s).toContain('tests pass')             // the unmet criterion's behavior
+    expect(s).toContain('tests pass regressed')   // its bad outcome to avoid
+    expect(s).not.toMatch(/UNMET[\s\S]*tokens are secure/) // the met one isn't listed as unmet
+    const unmetIdx = s.search(/UNMET CRITERIA/)
+    const rejectIdx = s.search(/Reject/)
+    expect(unmetIdx).toBeGreaterThanOrEqual(0)
+    expect(rejectIdx).toBeGreaterThanOrEqual(0)
+    expect(unmetIdx).toBeLessThan(rejectIdx)
+  })
+
+  it('a criterion with no claim at all counts as unmet', () => {
+    const card = specResultsCard()
+    const s = buildSummary(card, {
+      'claim:c1': { chosen: ['approve'] },   // cr1 met; cr2 has a claim but unreviewed below
+      'claim:c2': { chosen: ['revise'], note: 'almost' }, // revise ≠ met
+      results_verdict: { chosen: ['continue'] },
+    })
+    expect(s).toMatch(/UNMET CRITERIA \(1\)/)
+    expect(s).toContain('tests pass')
+  })
+
+  it('reports all criteria met when each has an approved claim', () => {
+    const s = buildSummary(specResultsCard(), {
+      'claim:c1': { chosen: ['approve'] },
+      'claim:c2': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
+    })
+    expect(s).toMatch(/all .*criteria met/i)
+    expect(s).not.toMatch(/UNMET CRITERIA/)
+  })
+
+  it('flags marking complete while criteria remain unmet (human is still sovereign)', () => {
+    const s = buildSummary(specResultsCard(), {
+      'claim:c1': { chosen: ['approve'] },
+      'claim:c2': { chosen: ['reject'], note: 'nope' },
+      results_verdict: { chosen: ['complete'] },
+    })
+    expect(s.split('\n')[0]).toMatch(/COMPLETE/)
+    expect(s).toMatch(/unmet/i)
+  })
+})
+
+describe('buildSummary — spec', () => {
+  function specCard(): Card {
+    return {
+      id: 's1', stage: 'spec',
+      session: { agent: 'claude-code', project: 'demo' },
+      headline: 'definition of done', blocks: [],
+      criteria: [crit('cr1', 'tokens are secure'), crit('cr2', 'tests pass')],
+      decisions: [
+        { id: 'crit:cr1', prompt: 'tokens are secure', criterionId: 'cr1', options: [{ id: 'keep', label: 'Keep' }, { id: 'adjust', label: 'Adjust' }, { id: 'drop', label: 'Drop' }], noteRequiredOn: ['adjust', 'drop'] },
+        { id: 'crit:cr2', prompt: 'tests pass', criterionId: 'cr2', options: [{ id: 'keep', label: 'Keep' }, { id: 'adjust', label: 'Adjust' }, { id: 'drop', label: 'Drop' }], noteRequiredOn: ['adjust', 'drop'] },
+        { id: SPEC_VERDICT_ID, prompt: 'Lock this acceptance contract?', options: [{ id: 'lock', label: 'Lock spec' }, { id: 'revise', label: 'Revise' }] },
+      ],
+      specRef: '/tmp/spec.md',
+      status: 'pending', createdAt: '2026-06-23T00:00:00.000Z',
+    }
+  }
+
+  it('locking leads with LOCKED and lists the kept contract (good/bad) plus the write-to-specRef instruction', () => {
+    const s = buildSummary(specCard(), {
+      'crit:cr1': { chosen: ['keep'] },
+      'crit:cr2': { chosen: ['adjust'], note: 'must also cover refresh tokens' },
+      spec_verdict: { chosen: ['lock'] },
+    })
+    expect(s.split('\n')[0]).toMatch(/LOCKED/)
+    expect(s).toContain('tokens are secure')
+    expect(s).toContain('tokens are secure holds')   // the good outcome
+    expect(s).toContain('must also cover refresh tokens')   // adjust note
+    expect(s).toContain('/tmp/spec.md')   // write-back instruction
+  })
+
+  it('dropping a criterion lists it as out of scope', () => {
+    const s = buildSummary(specCard(), {
+      'crit:cr1': { chosen: ['keep'] },
+      'crit:cr2': { chosen: ['drop'], note: 'not this milestone' },
+      spec_verdict: { chosen: ['lock'] },
+    })
+    expect(s).toMatch(/out of scope/i)
+    expect(s).toContain('not this milestone')
+  })
+
+  it('revise leads with sent-back and carries the verdict note', () => {
+    const s = buildSummary(specCard(), {
+      'crit:cr1': { chosen: ['keep'] },
+      'crit:cr2': { chosen: ['keep'] },
+      spec_verdict: { chosen: ['revise'], note: 'add a performance criterion' },
+    })
+    expect(s.split('\n')[0]).toMatch(/sent back/i)
+    expect(s).toContain('add a performance criterion')
   })
 })
 

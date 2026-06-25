@@ -98,4 +98,9 @@ describe('parseHash / fileHash', () => {
   it('omits absent optional params', () => {
     expect(parseHash(fileHash({ url: 'x.png' }))).toEqual({ kind: 'file', url: 'x.png' })
   })
+  it('parses the folders route, with or without a leading # or trailing /', () => {
+    expect(parseHash('#/folders')).toEqual({ kind: 'folders' })
+    expect(parseHash('/folders')).toEqual({ kind: 'folders' })
+    expect(parseHash('#/folders/')).toEqual({ kind: 'folders' })
+  })
 })

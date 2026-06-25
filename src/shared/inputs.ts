@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
-import { Decision, PLAN_VERDICT_ID } from './card.js'
+import { Decision, PLAN_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
+import { Criterion } from './criterion.js'
 
 const sessionFields = {
   project: z.string().min(1).describe('Project name or working directory — shown in the inbox'),
@@ -96,12 +97,56 @@ export const PresentPlanInput = z.object({
 })
 export type PresentPlanInput = z.infer<typeof PresentPlanInput>
 
+// The spec gate. The agent distills the locked plan decisions into behavior-driven
+// criteria; the human locks or reshapes them. A thin facade by design — boardroom
+// owns the GATE, not the authoring (the agent uses whatever spec skill it has).
+// Criterion-id hygiene shared by the spec card (SpecInput) and the echoed contract
+// at results time (SpecEcho): ids become decision ids (`crit:<id>`) and the Map key
+// in the summary builder, so duplicates silently shadow one another, and a criterion
+// sharing the reserved verdict id would be shadowed by the lock-verdict row. Reject
+// both at whichever boundary the contract enters — so an echoed contract is held to
+// the same invariants the present_spec gate enforced.
+function checkCriterionIds(criteria: { id: string }[], ctx: z.RefinementCtx, path: (string | number)[]): void {
+  const ids = criteria.map(c => c.id)
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: 'custom', message: 'duplicate criterion ids', path })
+  }
+  if (ids.includes(SPEC_VERDICT_ID)) {
+    ctx.addIssue({ code: 'custom', message: `criterion id "${SPEC_VERDICT_ID}" is reserved for the lock verdict`, path })
+  }
+}
+
+export const SpecInput = z.object({
+  ...sessionFields,
+  headline: z.string().min(1).describe('One-line summary of what "done and good" means here'),
+  goal: z.string().min(1).describe('1–2 sentences: the overarching outcome the criteria serve'),
+  criteria: z.array(Criterion).min(1).describe('Acceptance criteria — each a good outcome, a bad anti-goal, and the decision it traces to'),
+  specRef: z.string().optional().describe('Absolute path to the on-disk spec file; the agent writes the locked contract here and reads it back to verify/review'),
+  blocks: z.array(Block).default([]).describe('Optional extra context blocks'),
+}).superRefine((input, ctx) => {
+  checkCriterionIds(input.criteria, ctx, ['criteria'])
+})
+export type SpecInput = z.infer<typeof SpecInput>
+
+// The locked contract the agent echoes back into review_results (stateless V1:
+// the daemon keeps no copy, so the agent re-supplies it from its session spec file).
+// Held to the SAME id invariants as the spec card it came from.
+export const SpecEcho = z.object({
+  goal: z.string().optional(),
+  criteria: z.array(Criterion).min(1),
+}).superRefine((input, ctx) => {
+  checkCriterionIds(input.criteria, ctx, ['criteria'])
+})
+export type SpecEcho = z.infer<typeof SpecEcho>
+
 export const ReviewResultsInput = z.object({
   ...sessionFields,
   headline: z.string().min(1).describe('One-line summary of what was delivered'),
+  spec: SpecEcho.optional().describe('The locked acceptance contract, echoed so results can be judged criterion by criterion'),
   claims: z.array(z.object({
     id: z.string().min(1),
     claim: z.string().min(1).describe('One outcome you are claiming, e.g. "all 42 tests pass"'),
+    criterionId: z.string().optional().describe('The acceptance criterion this claim satisfies (from the locked spec)'),
     evidence: z.array(Block).min(1).describe('At least one block backing this claim'),
   })).min(1),
 }).superRefine((input, ctx) => {
@@ -123,6 +168,23 @@ export const ReviewResultsInput = z.object({
       code: 'custom',
       message: 'evidence block ids collide after claim-id namespacing — avoid "/" in claim or evidence ids',
       path: ['claims'],
+    })
+  }
+  // When a spec is echoed, every tagged claim must point at a real criterion. A
+  // criterionId with no match would otherwise silently leave that criterion UNMET
+  // no matter how the claim is voted — a self-defeating typo. Fail fast at the
+  // boundary (mirroring ClarifyInput's blockRefs check) so the agent self-corrects.
+  // An untagged claim is allowed: a claim need not bind to the contract.
+  if (input.spec) {
+    const specIds = new Set(input.spec.criteria.map(c => c.id))
+    input.claims.forEach((c, i) => {
+      if (c.criterionId && !specIds.has(c.criterionId)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `claim criterionId "${c.criterionId}" is not a criterion in the echoed spec`,
+          path: ['claims', i, 'criterionId'],
+        })
+      }
     })
   }
 })

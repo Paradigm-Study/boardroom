@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Criterion } from './criterion.js'
 
 const base = { id: z.string().min(1), title: z.string().optional() }
 
@@ -55,8 +56,18 @@ export const EvidenceBlock = z.object({
 
 export const MermaidBlock = z.object({ ...base, type: z.literal('mermaid'), source: z.string().min(1) })
 
+// The acceptance contract, rendered as a checklist of behavior-driven criteria
+// (good ✓ / bad ✗ / trace, plus a met/unmet pill at results time). Strictly
+// informational like every other block; the binding lives in the card's decisions.
+export const AcceptanceBlock = z.object({
+  ...base,
+  type: z.literal('acceptance'),
+  goal: z.string().optional(),
+  criteria: z.array(Criterion).min(1),
+})
+
 export const Block = z.discriminatedUnion('type', [
   MarkdownBlock, GraphBlock, PhasesBlock, OptionsCompareBlock,
-  TableBlock, DiffStatBlock, EvidenceBlock, MermaidBlock,
+  TableBlock, DiffStatBlock, EvidenceBlock, MermaidBlock, AcceptanceBlock,
 ])
 export type Block = z.infer<typeof Block>

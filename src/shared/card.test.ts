@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { Block } from './blocks.js'
-import { Card, Decision, DecisionAnswer } from './card.js'
+import { Card, Criterion, Decision, DecisionAnswer, Stage } from './card.js'
 
 const markdown = { id: 'b1', type: 'markdown', text: 'hello' }
+
+const criterion = {
+  id: 'cr1',
+  behavior: 'auth tokens are persisted client-side',
+  good: 'tokens live only in httpOnly cookies',
+  bad: 'any auth token in localStorage',
+  tracesTo: 'token_storage',
+}
 
 const decision = {
   id: 'd1',
@@ -38,6 +46,7 @@ describe('Block', () => {
       { id: 'df', type: 'diff_stat', files: [{ path: 'a.ts', additions: 1, deletions: 2 }] },
       { id: 'e', type: 'evidence', output: 'all tests pass', command: 'npm test', exitCode: 0 },
       { id: 'm', type: 'mermaid', source: 'graph TD; a-->b' },
+      { id: 'ac', type: 'acceptance', goal: 'secure tokens', criteria: [criterion] },
     ]
     for (const b of blocks) expect(Block.parse(b).id).toBe(b.id)
   })
@@ -45,6 +54,38 @@ describe('Block', () => {
   it('rejects an unknown type with the field path', () => {
     const r = Block.safeParse({ id: 'x', type: 'gif', url: 'nope' })
     expect(r.success).toBe(false)
+  })
+
+  it('rejects an acceptance block with no criteria', () => {
+    expect(Block.safeParse({ id: 'ac', type: 'acceptance', criteria: [] }).success).toBe(false)
+  })
+})
+
+describe('Criterion', () => {
+  it('accepts a full criterion', () => {
+    expect(Criterion.parse(criterion).id).toBe('cr1')
+  })
+
+  it('rejects an empty good or bad outcome', () => {
+    expect(Criterion.safeParse({ ...criterion, good: '' }).success).toBe(false)
+    expect(Criterion.safeParse({ ...criterion, bad: '' }).success).toBe(false)
+  })
+
+  it('rejects a missing behavior or trace', () => {
+    expect(Criterion.safeParse({ ...criterion, behavior: '' }).success).toBe(false)
+    const { tracesTo, ...noTrace } = criterion
+    expect(Criterion.safeParse(noTrace).success).toBe(false)
+  })
+
+  it('accepts an optional met/unmet status', () => {
+    expect(Criterion.parse({ ...criterion, status: 'met' }).status).toBe('met')
+    expect(Criterion.safeParse({ ...criterion, status: 'sideways' }).success).toBe(false)
+  })
+})
+
+describe('Stage', () => {
+  it('includes the spec stage', () => {
+    expect(Stage.parse('spec')).toBe('spec')
   })
 })
 
@@ -75,6 +116,13 @@ describe('Card', () => {
 
   it('rejects a card with zero decisions', () => {
     expect(Card.safeParse({ ...card, decisions: [] }).success).toBe(false)
+  })
+
+  it('carries an optional acceptance-criteria contract', () => {
+    const parsed = Card.parse({ ...card, stage: 'spec', criteria: [criterion] })
+    expect(parsed.criteria?.[0].id).toBe('cr1')
+    // legacy cards without criteria still parse
+    expect(Card.parse(card).criteria).toBeUndefined()
   })
 })
 

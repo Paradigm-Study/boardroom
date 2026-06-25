@@ -113,6 +113,62 @@ const pendingResults: Card = {
   ],
 }
 
+const specCriterion = { id: 'cr1', behavior: 'tokens are secure', good: 'httpOnly cookie only', bad: 'token in localStorage', tracesTo: 'token_storage' }
+const pendingSpec: Card = {
+  ...pendingPlan,
+  id: 'spec-1',
+  stage: 'spec',
+  headline: 'Definition of done',
+  blocks: [
+    { id: 'spec_contract', type: 'acceptance', title: 'Acceptance contract', goal: 'ship securely', criteria: [specCriterion] },
+    { id: 'crit/cr1', type: 'acceptance', criteria: [specCriterion] },
+  ],
+  decisions: [
+    { id: 'crit:cr1', prompt: 'tokens are secure', criterionId: 'cr1', blockRefs: ['crit/cr1'], options: [{ id: 'keep', label: 'Keep', recommended: true }, { id: 'adjust', label: 'Adjust' }, { id: 'drop', label: 'Drop' }], noteRequiredOn: ['adjust', 'drop'] },
+    { id: 'spec_verdict', prompt: 'Lock this acceptance contract?', options: [{ id: 'lock', label: 'Lock spec', recommended: true }, { id: 'revise', label: 'Revise' }], noteRequiredOn: ['revise'] },
+  ],
+  criteria: [specCriterion],
+}
+
+describe('CardView pending spec actions', () => {
+  it('renders send-back and lock actions, and the criterion as an acceptance block', () => {
+    render(<CardView card={pendingSpec} />)
+
+    expect(screen.getByRole('button', { name: 'Send back…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Lock spec' })).toBeTruthy()
+    // the good/bad contract is shown
+    expect(screen.getAllByText(/httpOnly cookie only/).length).toBeGreaterThan(0)
+  })
+
+  it('locks the spec after each criterion is addressed', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingSpec, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingSpec} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }))
+    const lock = screen.getByRole('button', { name: 'Lock spec' })
+    await waitFor(() => expect((lock as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(lock)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('spec-1', {
+      'crit:cr1': { chosen: ['keep'] },
+      spec_verdict: { chosen: ['lock'] },
+    }))
+  })
+
+  it('sends the spec back with a revise note', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingSpec, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingSpec} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send back…' }))
+    fireEvent.change(screen.getByLabelText('Send-back note'), { target: { value: 'add a performance criterion' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send back' }))
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('spec-1', expect.objectContaining({
+      spec_verdict: { chosen: ['revise'], note: 'add a performance criterion' },
+    })))
+  })
+})
+
 describe('CardView pending plan actions', () => {
   it('shows explicit session provenance for the selected card', () => {
     render(<CardView card={pendingPlan} />)
@@ -240,6 +296,24 @@ describe('CardView pending plan actions', () => {
 
     const textarea = await screen.findByLabelText(/paste it in by hand/)
     expect((textarea as HTMLTextAreaElement).value).toBe('paste me')
+  })
+
+  it('confirms inline after copying the offline-pickup summary', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingClarify, status: 'decided' }, summary: 'paste me', delivered: false })
+    render(<CardView card={pendingClarify} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detail A' }))
+    const submit = screen.getByRole('button', { name: 'Submit decisions' })
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(submit)
+
+    const copy = await screen.findByRole('button', { name: 'Copy to clipboard' })
+    fireEvent.click(copy)
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('paste me'))
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
   })
 
   it('keeps compact submit-bar overrides after the base submit button rule', () => {

@@ -1,5 +1,5 @@
 import type { Block } from '../../src/shared/blocks.js'
-import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, type Card, type Decision } from '../../src/shared/card.js'
+import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type Card, type Decision } from '../../src/shared/card.js'
 
 export interface VisualSummary {
   totalBlocks: number
@@ -14,11 +14,12 @@ export interface CardWorkspace {
   linkedBlocksFor(decisionId: string): Block[]
 }
 
-// The synthetic verdict decisions (plan_verdict / results_verdict) are driven by
-// the submit bar, never rendered as a row to answer, so they are filtered out of
-// the decisions the card actually shows.
+// The synthetic verdict decisions (plan_verdict / spec_verdict / results_verdict)
+// are driven by the submit bar, never rendered as a row to answer, so they are
+// filtered out of the decisions the card actually shows.
 function visibleDecisions(card: Card): Decision[] {
   if (card.stage === 'plan') return card.decisions.filter(d => d.id !== PLAN_VERDICT_ID)
+  if (card.stage === 'spec') return card.decisions.filter(d => d.id !== SPEC_VERDICT_ID)
   if (card.stage === 'results') return card.decisions.filter(d => d.id !== RESULTS_VERDICT_ID)
   return card.decisions
 }

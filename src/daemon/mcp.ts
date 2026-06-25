@@ -4,8 +4,8 @@ import { Router, type Request, type Response } from 'express'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import type { Card, CardResponse } from '../shared/card.js'
-import { ClarifyInput, PresentPlanInput, ReviewResultsInput } from '../shared/inputs.js'
-import { compileClarify, compilePlan, compileResults } from './compile.js'
+import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
+import { compileClarify, compilePlan, compileResults, compileSpec } from './compile.js'
 import type { Queue } from './queue.js'
 
 interface RequestCtx {
@@ -61,6 +61,8 @@ const DESCRIPTIONS = {
     'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
   present_plan:
     "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
+  present_spec:
+    'Lock in the acceptance contract AFTER the plan is approved and BEFORE you build: the behavior-driven definition of done. Pass `goal` plus `criteria` — each criterion a `good` outcome (the pass condition), a `bad` anti-goal (the failure to avoid), and `tracesTo` (the decision/goal it enforces). Boardroom owns the GATE, not the authoring: derive criteria from the locked plan decisions (or your own spec/acceptance skill) — do not over-engineer it. The human reviews each criterion (keep / adjust / drop), may add more, and locks the contract (or sends it back to revise). On lock you get the final contract back as your definition of done: write it to `specRef` so it survives later turns, build until every criterion is MET, then call review_results echoing the spec (read back from `specRef`) with each claim tagged by `criterionId`. This call blocks until the human decides; a PARKED result means STOP and re-issue the identical call later to claim the verdict. Idempotent on retry.' + GLANCEABLE,
   review_results:
     'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
 } as const
@@ -218,6 +220,14 @@ function buildServer(queue: Queue): McpServer {
     'present_plan',
     { description: DESCRIPTIONS.present_plan, inputSchema: PresentPlanInput },
     makeHangingHandler(server, queue, compilePlan),
+  )
+  // The spec gate sits between plan approval and the work: the agent distills the
+  // locked decisions into acceptance criteria, the human locks/steers them, and the
+  // contract becomes the definition of done that review_results is judged against.
+  server.registerTool(
+    'present_spec',
+    { description: DESCRIPTIONS.present_spec, inputSchema: SpecInput },
+    makeHangingHandler(server, queue, compileSpec),
   )
   server.registerTool(
     'review_results',

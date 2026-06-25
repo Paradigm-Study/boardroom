@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
+import { Criterion } from './criterion.js'
+
+// Re-exported (schema + inferred type) so consumers can import Criterion from the
+// card module alongside Card/Decision without reaching into the lower-level module.
+export { Criterion } from './criterion.js'
 
 export const DecisionOption = z.object({
   id: z.string().min(1),
@@ -16,6 +21,11 @@ export const Decision = z.object({
   multi: z.boolean().optional(),
   blockRefs: z.array(z.string()).optional().describe('Question-local context: ids of blocks that should appear inside this decision row. Blocks not referenced by any decision are global card context.'),
   noteRequiredOn: z.array(z.string()).optional(),
+  // Links a decision to an acceptance criterion: on spec cards (the criterion being
+  // kept/adjusted/dropped) and on results cards (the criterion a claim is judged
+  // against). Lets the summary builder and dashboard group by criterion and compute
+  // met/unmet. Like blockRefs, it is non-binding context, not a new interaction.
+  criterionId: z.string().optional(),
 }).superRefine((d, ctx) => {
   const ids = d.options.map(o => o.id)
   if (new Set(ids).size !== ids.length) {
@@ -36,7 +46,7 @@ export const SessionInfo = z.object({
 })
 export type SessionInfo = z.infer<typeof SessionInfo>
 
-export const Stage = z.enum(['clarify', 'plan', 'results'])
+export const Stage = z.enum(['clarify', 'plan', 'spec', 'results'])
 export type Stage = z.infer<typeof Stage>
 
 export const CardStatus = z.enum(['pending', 'decided', 'orphaned'])
@@ -57,6 +67,11 @@ export const PLAN_VERDICT_ID = 'plan_verdict'
 // this one symbol.
 export const RESULTS_VERDICT_ID = 'results_verdict'
 
+// The synthetic decision id for a spec card's lock/revise verdict — the human's
+// "lock this contract" toggle. Its note/attachments are the always-on card-level
+// add-on (e.g. "add a criterion: …"). Same plumbing as the other *_VERDICT_IDs.
+export const SPEC_VERDICT_ID = 'spec_verdict'
+
 // The verdict option ids the human actually picks, as shared closed unions.
 // compile.ts builds the verdict option lists from these, and every consumer
 // (queue, summary, CardView, ResultsChecklist) types its comparisons against
@@ -68,6 +83,12 @@ export type PlanVerdict = (typeof PLAN_VERDICTS)[number]
 
 export const RESULTS_VERDICTS = ['complete', 'continue'] as const
 export type ResultsVerdict = (typeof RESULTS_VERDICTS)[number]
+
+// The spec gate's verdict: lock the contract as-is, or send it back to revise.
+// No "reject" — a spec is never thrown away wholesale; the human reshapes it via
+// per-criterion drop + the revise note, then locks.
+export const SPEC_VERDICTS = ['lock', 'revise'] as const
+export type SpecVerdict = (typeof SPEC_VERDICTS)[number]
 
 export const AttachmentRef = z.object({
   id: z.string().min(1),
@@ -116,8 +137,23 @@ export const Card = z.object({
   // re-orphaned on boot stays reattachable. Optional → legacy rows fall back to
   // createdAt and behave exactly as before.
   orphanedAt: z.string().optional(),
+  // WHY the card was orphaned, set alongside orphanedAt. 'boot' (a daemon
+  // restart recovered it from under a live waiter) is the only reason the
+  // dashboard resurfaces as still-actionable ("reconnecting") rather than burying
+  // in history, so a deploy/restart never loses a decision. Optional → legacy rows
+  // (and the live `pending`/`decided` states) simply have no reason.
+  orphanedReason: z.enum(['disconnect', 'park', 'boot']).optional(),
   fingerprint: z.string().optional(),
   answers: z.record(z.string(), DecisionAnswer).optional(),
+  // The behavior-driven acceptance contract. Set on spec cards (the proposed
+  // criteria) and on results cards (the contract being judged); the single source
+  // the summary builder and dashboard read. Optional → clarify/plan cards and
+  // legacy rows are unaffected.
+  criteria: z.array(Criterion).optional(),
+  // Absolute path to the on-disk spec file the agent writes on lock and reads back
+  // to verify/review — the session-resident home of the contract (the daemon never
+  // persists it). Mirrors planRef.
+  specRef: z.string().optional(),
 })
 export type Card = z.infer<typeof Card>
 

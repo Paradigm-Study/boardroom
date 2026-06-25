@@ -1,9 +1,11 @@
 # boardroom
 
 A visual decision layer between coding agents and you. Agents send questions,
-plans, and results to a local daemon over MCP; you decide with buttons on a
-dashboard; your decisions return as the tool result. Spec:
-`docs/superpowers/specs/2026-06-11-boardroom-design.md`.
+plans, acceptance specs, and results to a local daemon over MCP; you decide with
+buttons on a dashboard; your decisions return as the tool result. Spec:
+`docs/superpowers/specs/2026-06-11-boardroom-design.md`; the spec gate (an
+acceptance contract between plan and results):
+`docs/superpowers/specs/2026-06-23-spec-gate-design.md`.
 
 ## Run
 
@@ -70,8 +72,8 @@ Boardroom is fastest when agents send visual structure, not prose:
 
 - Put the decision in buttons; keep prompts to one sentence.
 - Put comparisons in `options_compare`, sequences in `phases`, dependencies in
-  `graph`, facts in `table`, file changes in `diff_stat`, and test output in
-  `evidence`.
+  `graph`, facts in `table`, file changes in `diff_stat`, test output in
+  `evidence`, and acceptance criteria in `acceptance`.
 - For UI change requests, include lightweight wireframes or layout sketches in
   the option context. Let each wireframe use its natural dimensions; do not force
   all options into one fixed card size unless readability requires it.

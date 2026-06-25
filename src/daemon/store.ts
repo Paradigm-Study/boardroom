@@ -175,7 +175,12 @@ export class Store {
   orphanAllPending(): number {
     const pending = this.list('pending')
     const ts = new Date().toISOString()
-    for (const card of pending) this.update({ ...card, status: 'orphaned', orphanedAt: ts })
+    // Tag the reason 'boot' so the dashboard can resurface these as actionable
+    // ("reconnecting") instead of burying them in history — a deploy/restart must
+    // never silently drop a decision the human was still on the hook for.
+    for (const card of pending) {
+      this.update({ ...card, status: 'orphaned', orphanedAt: ts, orphanedReason: 'boot' })
+    }
     return pending.length
   }
 

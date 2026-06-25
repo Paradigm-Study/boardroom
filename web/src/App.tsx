@@ -1,9 +1,11 @@
 import { Armchair, Bell } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, subscribeCards } from './api.js'
+import type { CapturedSession } from '../../src/shared/session.js'
+import { fetchCards, fetchSessions, subscribeCards } from './api.js'
 import { CardView } from './CardView.js'
 import { FileViewer } from './FileViewer.js'
+import { FolderColumns } from './FolderColumns.js'
 import { parseHash } from './fileView.js'
 import { notifyCard, notifyPermission, requestNotify } from './notify.js'
 import { TaskSidebar } from './TaskSidebar.js'
@@ -20,6 +22,7 @@ function useHashRoute(): string {
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
+  const [sessions, setSessions] = useState<CapturedSession[] | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
   const [loadError, setLoadError] = useState<string | null>(null)
   const seenPending = useRef<Set<string> | null>(null) // null until first load → no launch burst
@@ -85,8 +88,18 @@ export function App() {
   // back on the dashboard — never strands the window on a file, even on a deep link.
   const returnHash = useRef('')
   useEffect(() => {
-    if (route.kind !== 'file') returnHash.current = hash
+    if (route.kind !== 'file' && route.kind !== 'folders') returnHash.current = hash
   }, [hash, route.kind])
+
+  // Sessions feed the Folders overlay only. Fetch when it opens and poll while it's
+  // up (the capturer reconciles every 5s); stop on close so the dashboard is idle.
+  useEffect(() => {
+    if (route.kind !== 'folders') return
+    const load = (): void => { void fetchSessions().then(setSessions).catch(() => { /* overlay shows last-known */ }) }
+    load()
+    const timer = setInterval(load, 4000)
+    return () => clearInterval(timer)
+  }, [route.kind])
 
   useEffect(() => {
     if (onRoot && newestPendingId) {
@@ -103,6 +116,15 @@ export function App() {
         url={route.url}
         name={route.name}
         mime={route.mime}
+        onClose={() => { window.location.hash = returnHash.current }}
+      />
+    )
+  }
+
+  if (route.kind === 'folders') {
+    return (
+      <FolderColumns
+        sessions={sessions}
         onClose={() => { window.location.hash = returnHash.current }}
       />
     )

@@ -35,6 +35,23 @@ const card: Card = {
   createdAt: '2026-06-16T12:00:00.000Z',
 }
 
+const specCard: Card = {
+  id: 's1',
+  stage: 'spec',
+  session: { agent: 'codex', project: 'boardroom' },
+  headline: 'Definition of done',
+  blocks: [
+    { id: 'spec_contract', type: 'acceptance', goal: 'ship securely', criteria: [{ id: 'cr1', behavior: 'b', good: 'g', bad: 'x', tracesTo: 't' }] },
+    { id: 'crit/cr1', type: 'acceptance', criteria: [{ id: 'cr1', behavior: 'b', good: 'g', bad: 'x', tracesTo: 't' }] },
+  ],
+  decisions: [
+    { id: 'crit:cr1', prompt: 'b', criterionId: 'cr1', blockRefs: ['crit/cr1'], options: [{ id: 'keep', label: 'Keep' }, { id: 'adjust', label: 'Adjust' }, { id: 'drop', label: 'Drop' }] },
+    { id: 'spec_verdict', prompt: 'Lock?', options: [{ id: 'lock', label: 'Lock spec' }, { id: 'revise', label: 'Revise' }] },
+  ],
+  status: 'pending',
+  createdAt: '2026-06-23T12:00:00.000Z',
+}
+
 describe('prepareCardWorkspace', () => {
   it('drops the plan verdict from the visible decisions and links each decision to its blocks', () => {
     const workspace = prepareCardWorkspace(card)
@@ -42,6 +59,15 @@ describe('prepareCardWorkspace', () => {
     expect(workspace.choiceDecisions.map(d => d.id)).toEqual(['shape'])
     expect(workspace.globalBlocks.map(b => b.id)).toEqual(['intro'])
     expect(workspace.linkedBlocksFor('shape').map(b => b.id)).toEqual(['graph', 'risk'])
+  })
+
+  it('drops the spec verdict from the visible decisions, keeping the per-criterion ones', () => {
+    const workspace = prepareCardWorkspace(specCard)
+
+    expect(workspace.choiceDecisions.map(d => d.id)).toEqual(['crit:cr1'])
+    // the overview block is global; the per-criterion block is question-local
+    expect(workspace.globalBlocks.map(b => b.id)).toEqual(['spec_contract'])
+    expect(workspace.linkedBlocksFor('crit:cr1').map(b => b.id)).toEqual(['crit/cr1'])
   })
 
   it('summarizes the block counts', () => {

@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "dev": "tsx src/daemon/index.ts",
+    "dev": "BOARDROOM_NO_MENUBAR=1 tsx src/daemon/index.ts",
     "dev:web": "vite web",
     "build:web": "vite build web",
     "seed": "tsx src/daemon/seed.ts",

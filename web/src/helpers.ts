@@ -1,6 +1,32 @@
-import { OTHER_OPTION_ID, type AttachmentRef, type Decision, type DecisionAnswer } from '../../src/shared/card.js'
+import { OTHER_OPTION_ID, type AttachmentRef, type Card, type Decision, type DecisionAnswer } from '../../src/shared/card.js'
 
 export { OTHER_OPTION_ID }
+
+// Mirrors the daemon's default reattach window (config.ts reattachWindowMs /
+// store.findReattachable). The dashboard has no access to the configured value, so
+// it keys the "reconnecting" surfacing off the same 24h default.
+export const REATTACH_WINDOW_MS = 24 * 60 * 60_000
+
+// "Reconnecting": a card a daemon restart orphaned (orphanedReason 'boot') out from
+// under a live waiter while it was still awaiting a decision, still within the
+// reattach window. The dashboard surfaces these as actionable rather than burying
+// them in history, so a deploy/restart never silently drops a decision — deciding
+// one still reaches the agent via the existing reattach + waker (claude --resume).
+// Disconnect/park orphans are deliberately excluded (they stay in history).
+export function isReconnecting(card: Card, nowMs: number = Date.now()): boolean {
+  return (
+    card.status === 'orphaned' &&
+    card.orphanedReason === 'boot' &&
+    nowMs - new Date(card.orphanedAt ?? card.createdAt).getTime() < REATTACH_WINDOW_MS
+  )
+}
+
+// The single source of truth for "this card is still on the human's plate": live
+// pending, or reconnecting after a restart. Drives the Needs-you bucket, the count,
+// and which card the dashboard auto-opens.
+export function needsHuman(card: Card, nowMs: number = Date.now()): boolean {
+  return card.status === 'pending' || isReconnecting(card, nowMs)
+}
 
 export interface DraftAnswer {
   chosen: string[]
@@ -11,6 +37,19 @@ export interface DraftAnswer {
 
 export function emptyDraft(): DraftAnswer {
   return { chosen: [], note: '', custom: '' }
+}
+
+// Compact relative age ("now" / "5m" / "3h" / "2d") for sidebar + session rows.
+// Returns '' for an unparseable timestamp so a bad value renders as nothing rather
+// than "NaNd".
+export function age(iso: string): string {
+  const ms = new Date(iso).getTime()
+  if (!Number.isFinite(ms)) return ''
+  const mins = Math.round((Date.now() - ms) / 60_000)
+  if (mins < 1) return 'now'
+  if (mins < 60) return `${mins}m`
+  const hours = Math.round(mins / 60)
+  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`
 }
 
 export function toggleChoice(decision: Decision, chosen: string[], optionId: string): string[] {

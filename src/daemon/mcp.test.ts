@@ -52,6 +52,16 @@ const PLAN_ARGS = {
   ],
 }
 
+// A minimal, schema-valid present_spec payload: a goal + one criterion.
+const SPEC_ARGS = {
+  project: 'keepalive-test',
+  headline: 'definition of done',
+  goal: 'ship securely',
+  criteria: [
+    { id: 'cr1', behavior: 'tokens are secure', good: 'httpOnly cookie only', bad: 'token in localStorage', tracesTo: 'token_storage' },
+  ],
+}
+
 const delay = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 let dir: string
@@ -364,6 +374,36 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     expect(messages.find(m => m.id === 11 && 'result' in m)).toBeUndefined()
     expect(store.list('pending').length).toBe(1)
     expect(store.list('orphaned').length).toBe(0)
+  }, 15_000)
+
+  it('registers present_spec: hangs as a spec gate and resolves with the locked contract', async () => {
+    process.env.BOARDROOM_KEEPALIVE_MS = '150'
+    const sessionId = await handshake()
+
+    const ac = new AbortController()
+    const callRes = await post(
+      { jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'present_spec', arguments: SPEC_ARGS } },
+      { 'mcp-session-id': sessionId },
+      ac.signal,
+    )
+    expect(callRes.status).toBe(200)
+
+    await delay(500)
+    const pending = store.list('pending')
+    expect(pending.length).toBe(1)
+    expect(pending[0].stage).toBe('spec')
+    queue.decide(pending[0].id, { 'crit:cr1': { chosen: ['keep'] }, spec_verdict: { chosen: ['lock'] } })
+
+    const messages = await collectMessages(callRes.body, 1000)
+    ac.abort()
+
+    const result = messages.find(m => m.id === 21 && 'result' in m) as
+      | { result?: { content?: { type: string; text?: string }[] } }
+      | undefined
+    expect(result).toBeDefined()
+    const texts = (result?.result?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n')
+    expect(texts).toContain('Boardroom gate resolved: spec')
+    expect(texts).toContain('Spec LOCKED')
   }, 15_000)
 
   it('still resolves the call with the human decision', async () => {

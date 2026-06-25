@@ -77,6 +77,7 @@ export type Route =
   | { kind: 'root' }
   | { kind: 'card'; id: string }
   | { kind: 'file'; url: string; name?: string; mime?: string }
+  | { kind: 'folders' }
 
 export function fileHash(file: { url: string; name?: string; mime?: string }): string {
   const q = new URLSearchParams({ u: file.url })
@@ -99,6 +100,7 @@ export function parseHash(hash: string): Route {
       }
     }
   }
+  if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
   const card = /^\/card\/(.+)$/.exec(raw)
   if (card) return { kind: 'card', id: card[1] }
   return { kind: 'root' }

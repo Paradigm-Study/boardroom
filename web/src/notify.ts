@@ -3,6 +3,7 @@ import type { Card } from '../../src/shared/card.js'
 const STAGE_LABEL: Record<Card['stage'], string> = {
   clarify: 'Needs scoping',
   plan: 'Plan to approve',
+  spec: 'Spec to lock',
   results: 'Results to review',
 }
 
