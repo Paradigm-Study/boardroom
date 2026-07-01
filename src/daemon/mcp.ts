@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import type { Card, CardResponse } from '../shared/card.js'
 import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 import { compileClarify, compilePlan, compileResults, compileSpec } from './compile.js'
+import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import type { Queue } from './queue.js'
 
 interface RequestCtx {
@@ -203,9 +204,10 @@ function makeHangingHandler<I>(
 
 function buildServer(queue: Queue): McpServer {
   const server = new McpServer({ name: 'boardroom', version: '0.1.0' })
-  // Required so the keepalive may emit `notifications/message` to clients that
-  // didn't request progress (see makeHangingHandler). Must precede connect().
-  server.server.registerCapabilities({ logging: {} })
+  // logging: so the keepalive may emit `notifications/message` to clients that didn't
+  // request progress (see makeHangingHandler). resources: for the widget-catalog
+  // resource below. Must precede connect().
+  server.server.registerCapabilities({ logging: {}, resources: {} })
   server.registerTool(
     'clarify',
     { description: DESCRIPTIONS.clarify, inputSchema: ClarifyInput },
@@ -233,6 +235,21 @@ function buildServer(queue: Queue): McpServer {
     'review_results',
     { description: DESCRIPTIONS.review_results, inputSchema: ReviewResultsInput },
     makeHangingHandler(server, queue, compileResults),
+  )
+  // The widget dialbook as an MCP resource: any session can read the full palette
+  // (name / conveys / when-to-use / a valid example per block type) before composing a
+  // card. A resource, not a tool, so it never bloats the per-turn tool list.
+  server.registerResource(
+    'widget-catalog',
+    'boardroom://widgets/catalog',
+    {
+      title: 'Boardroom widget catalog',
+      description: 'One metadata entry per block type (name, what it conveys, when to use, a tiny valid example). Consult before authoring clarify/present_plan/present_spec/review_results blocks to pick the right widget.',
+      mimeType: 'application/json',
+    },
+    async uri => ({
+      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(widgetCatalogList(), null, 2) }],
+    }),
   )
   return server
 }
