@@ -29,6 +29,29 @@ describe('compileClarify', () => {
   })
 })
 
+describe('sections threading', () => {
+  const sections = [{ id: 's1', kind: 'decide' as const, decisionRefs: ['d1'] }]
+  const planBlocks = [{ id: 'ph', type: 'phases' as const, phases: [{ title: 'P' }] }]
+
+  it('copies sections onto a clarify card when present and omits the key when absent', () => {
+    const withS = compileClarify({ project: 'demo', headline: 'h', blocks: [], decisions: [decision], sections }, 'cc')
+    expect(withS.sections).toEqual(sections)
+    const withoutS = compileClarify({ project: 'demo', headline: 'h', blocks: [], decisions: [decision] }, 'cc')
+    expect('sections' in withoutS).toBe(false)
+  })
+
+  it('copies sections onto a plan card', () => {
+    const card = compilePlan({ project: 'demo', headline: 'h', blocks: planBlocks, decisions: [decision], sections }, 'cc')
+    expect(card.sections).toEqual(sections)
+  })
+
+  it('keeps the fingerprint identical with and without sections', () => {
+    const a = compileClarify({ project: 'demo', headline: 'same', blocks: [], decisions: [decision] }, 'cc')
+    const b = compileClarify({ project: 'demo', headline: 'same', blocks: [], decisions: [decision], sections }, 'cc')
+    expect(a.fingerprint).toBe(b.fingerprint)
+  })
+})
+
 describe('compilePlan', () => {
   const input = {
     project: 'demo', headline: 'the plan',

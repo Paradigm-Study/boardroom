@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
-import { Decision, PLAN_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
+import { Decision, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
 import { Criterion } from './criterion.js'
+import { Section } from './section.js'
 
 const sessionFields = {
   project: z.string().min(1).describe('Project name or working directory — shown in the inbox'),
@@ -55,14 +56,77 @@ function checkQuestionAndGlobalContext(
   }
 }
 
+// Reserved for cardWorkspace's synthesized legacy sections — an agent-authored
+// section using one of these ids would collide with the default layout.
+const RESERVED_SECTION_IDS = new Set(['__decisions__', '__global__'])
+// All verdict decision ids: a section may never place a verdict row, and the
+// strict-coverage check skips them (they are appended by compile, post-validation).
+const VERDICT_IDS = new Set<string>([PLAN_VERDICT_ID, SPEC_VERDICT_ID, RESULTS_VERDICT_ID])
+
+// The mixable-sections coverage check (runs ONLY when sections is present, in place of
+// checkQuestionAndGlobalContext). STRICT on decisions — every non-verdict decision must
+// be placed in exactly one decide-section; LENIENT on blocks — an unplaced block simply
+// does not render. Also enforces ref hygiene (refs resolve, no verdict/reserved ids).
+function checkSections(
+  input: { blocks?: Block[]; decisions?: Decision[]; sections?: Section[] },
+  ctx: z.RefinementCtx,
+): void {
+  const sections = input.sections ?? []
+  const blockIds = new Set((input.blocks ?? []).map(b => b.id))
+  const decisionIds = (input.decisions ?? []).map(d => d.id).filter(id => !VERDICT_IDS.has(id))
+
+  const seen = new Set<string>()
+  sections.forEach((s, i) => {
+    if (RESERVED_SECTION_IDS.has(s.id)) {
+      ctx.addIssue({ code: 'custom', message: `section id "${s.id}" is reserved`, path: ['sections', i, 'id'] })
+    }
+    if (seen.has(s.id)) {
+      ctx.addIssue({ code: 'custom', message: `duplicate section id "${s.id}"`, path: ['sections', i, 'id'] })
+    }
+    seen.add(s.id)
+    for (const ref of s.blockRefs ?? []) {
+      if (!blockIds.has(ref)) {
+        ctx.addIssue({ code: 'custom', message: `section blockRefs references unknown block "${ref}"`, path: ['sections', i, 'blockRefs'] })
+      }
+    }
+    ;(s.decisionRefs ?? []).forEach((ref, j) => {
+      if (VERDICT_IDS.has(ref)) {
+        ctx.addIssue({ code: 'custom', message: `section may not reference the verdict decision "${ref}"`, path: ['sections', i, 'decisionRefs', j] })
+      } else if (!decisionIds.includes(ref)) {
+        ctx.addIssue({ code: 'custom', message: `section decisionRefs references unknown decision "${ref}"`, path: ['sections', i, 'decisionRefs', j] })
+      }
+    })
+  })
+
+  const placement = new Map<string, number>()
+  for (const s of sections) {
+    if (s.kind !== 'decide') continue
+    for (const ref of s.decisionRefs ?? []) placement.set(ref, (placement.get(ref) ?? 0) + 1)
+  }
+  decisionIds.forEach((id, i) => {
+    const count = placement.get(id) ?? 0
+    if (count !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        message: count === 0
+          ? `decision "${id}" is not placed in any decide-section`
+          : `decision "${id}" is placed in ${count} sections (must be exactly one)`,
+        path: ['decisions', i],
+      })
+    }
+  })
+}
+
 export const ClarifyInput = z.object({
   ...sessionFields,
   headline: z.string().min(1).describe('One-line summary of what you need decided'),
   blocks: z.array(Block).default([]).describe('Context blocks for the card. Include at least one global block left unreferenced and at least one question-local block referenced by each decision blockRefs.'),
   decisions: z.array(Decision).min(1).describe('The questions, as button decisions'),
+  sections: z.array(Section).optional().describe('Optional mixable-sections layout — group decisions and blocks into decide/explain/report sections rendered in order. When present, every non-verdict decision must be placed in exactly one decide-section; blocks may be left unplaced.'),
 }).superRefine((input, ctx) => {
   checkBlockRefs(input, ctx)
-  checkQuestionAndGlobalContext(input, ctx)
+  if (input.sections) checkSections(input, ctx)
+  else checkQuestionAndGlobalContext(input, ctx)
 })
 export type ClarifyInput = z.infer<typeof ClarifyInput>
 
@@ -74,6 +138,7 @@ export const PresentPlanInput = z.object({
   blocks: z.array(Block).min(1).describe('Plan visuals; must include at least one graph, phases, or options_compare block, at least one unreferenced global block, and at least one question-local block referenced by each plan decision blockRefs.'),
   decisions: z.array(Decision).default([]).describe('Plan-level decisions; a final approve/revise/reject verdict is appended automatically'),
   planRef: z.string().optional().describe('Absolute path to the full plan markdown on disk, for drill-down'),
+  sections: z.array(Section).optional().describe('Optional mixable-sections layout — group decisions and blocks into decide/explain/report sections rendered in order. When present, every non-verdict decision must be placed in exactly one decide-section; blocks may be left unplaced.'),
 }).superRefine((input, ctx) => {
   if (!input.blocks.some(b => STRUCTURAL.has(b.type))) {
     ctx.addIssue({
@@ -93,7 +158,8 @@ export const PresentPlanInput = z.object({
     }
   })
   checkBlockRefs(input, ctx)
-  checkQuestionAndGlobalContext(input, ctx)
+  if (input.sections) checkSections(input, ctx)
+  else checkQuestionAndGlobalContext(input, ctx)
 })
 export type PresentPlanInput = z.infer<typeof PresentPlanInput>
 

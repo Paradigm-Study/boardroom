@@ -91,3 +91,51 @@ describe('prepareCardWorkspace', () => {
     expect(prepareCardWorkspace(results).choiceDecisions.map(d => d.id)).toEqual(['claim:a'])
   })
 })
+
+describe('resolveSections', () => {
+  it('synthesizes a default decide section + a global explain section for a legacy card', () => {
+    const { sections } = prepareCardWorkspace(card)
+    expect(sections.map(s => [s.id, s.kind])).toEqual([['__decisions__', 'decide'], ['__global__', 'explain']])
+    expect(sections[0].rows.map(r => r.decision.id)).toEqual(['shape'])
+    expect(sections[0].rows[0].blocks.map(b => b.id)).toEqual(['graph', 'risk'])
+    expect(sections[0].blocks).toEqual([])
+    expect(sections[1].blocks.map(b => b.id)).toEqual(['intro'])
+  })
+
+  it('omits the global explain section when a legacy card has no global blocks', () => {
+    const noGlobal: Card = { ...card, blocks: card.blocks.filter(b => b.id !== 'intro') }
+    expect(prepareCardWorkspace(noGlobal).sections.map(s => s.id)).toEqual(['__decisions__'])
+  })
+
+  it('keeps visualSummary derived from blockRefs even for a sectioned card', () => {
+    const sectioned: Card = {
+      ...card,
+      sections: [
+        { id: 'decide-1', kind: 'decide', decisionRefs: ['shape'] },
+        { id: 'ctx', kind: 'explain', blockRefs: ['intro'] },
+      ],
+    }
+    expect(prepareCardWorkspace(sectioned).visualSummary).toEqual({ totalBlocks: 3, linkedBlocks: 2 })
+  })
+
+  it('resolves an explicit sections array, keeping decision rows at their global index and deduping linked blocks', () => {
+    const sectioned: Card = {
+      ...card,
+      blocks: [...card.blocks, { id: 'extra', type: 'markdown', text: 'unlinked' }],
+      sections: [
+        { id: 'why', kind: 'explain', title: 'Why', blockRefs: ['intro'] },
+        // decide-section blockRefs include a LINKED block ('graph') — it must be deduped out
+        { id: 'pick', kind: 'decide', decisionRefs: ['shape'], blockRefs: ['graph', 'extra'] },
+      ],
+    }
+    const { sections } = prepareCardWorkspace(sectioned)
+    expect(sections.map(s => s.id)).toEqual(['why', 'pick'])
+    expect(sections[0].title).toBe('Why')
+    expect(sections[0].blocks.map(b => b.id)).toEqual(['intro'])
+    const decide = sections[1]
+    expect(decide.rows.map(r => r.decision.id)).toEqual(['shape'])
+    expect(decide.rows[0].index).toBe(0)
+    expect(decide.rows[0].blocks.map(b => b.id)).toEqual(['graph', 'risk'])
+    expect(decide.blocks.map(b => b.id)).toEqual(['extra'])
+  })
+})

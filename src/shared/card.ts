@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
 import { Criterion } from './criterion.js'
+import { Section } from './section.js'
 
 // Re-exported (schema + inferred type) so consumers can import Criterion from the
 // card module alongside Card/Decision without reaching into the lower-level module.
@@ -154,6 +155,11 @@ export const Card = z.object({
   // to verify/review — the session-resident home of the contract (the daemon never
   // persists it). Mirrors planRef.
   specRef: z.string().optional(),
+  // Optional mixable-sections layout (clarify/plan only). Absent → the card renders
+  // exactly as today (byte-identical); cardWorkspace synthesizes a default section
+  // list. References existing block/decision ids; mints nothing. Never enters
+  // fingerprint, never set on spec/results cards.
+  sections: z.array(Section).optional(),
 })
 export type Card = z.infer<typeof Card>
 

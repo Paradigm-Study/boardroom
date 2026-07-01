@@ -230,3 +230,130 @@ describe('SpecInput', () => {
     expect(SpecInput.safeParse({ ...valid, specRef: '/tmp/spec.md' }).success).toBe(true)
   })
 })
+
+describe('mixable sections', () => {
+  const phasesBlock = { id: 'g', type: 'phases', phases: [{ title: 'P' }] }
+
+  it('skips the global-context requirement when sections are present', () => {
+    // `decision` has empty blockRefs + both blocks are unreferenced — this FAILS
+    // checkQuestionAndGlobalContext today, but PASSES when a valid sections array
+    // places every non-verdict decision in exactly one decide-section.
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [decision],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects a decision placed in zero decide-sections (strict on decisions)', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [{ id: 's1', kind: 'explain', blockRefs: ['global'] }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /not placed in any decide-section/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a decision placed in two decide-sections', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [
+        { id: 's1', kind: 'decide', decisionRefs: ['d1'] },
+        { id: 's2', kind: 'decide', decisionRefs: ['d1'] },
+      ],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /placed in 2 sections/.test(i.message))).toBe(true)
+  })
+
+  it('allows an unplaced block (lenient) but rejects refs to unknown ids', () => {
+    expect(ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [localBlock, globalBlock],
+      decisions: [decision],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'], blockRefs: ['local'] }], // 'global' unplaced — fine
+    }).success).toBe(true)
+
+    expect(ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'], blockRefs: ['nope'] }],
+    }).success).toBe(false)
+  })
+
+  it('rejects a section decisionRef pointing at a verdict id, and a reserved section id', () => {
+    expect(ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [
+        { id: 's1', kind: 'decide', decisionRefs: ['d1'] },
+        { id: 's2', kind: 'decide', decisionRefs: ['plan_verdict'] },
+      ],
+    }).success).toBe(false)
+
+    const reserved = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [{ id: '__decisions__', kind: 'decide', decisionRefs: ['d1'] }],
+    })
+    expect(reserved.success).toBe(false)
+    if (!reserved.success) expect(reserved.error.issues.some(i => /reserved/.test(i.message))).toBe(true)
+  })
+
+  it('still enforces structural + exactly-one-recommended + blockRefs on a sectioned plan', () => {
+    // missing structural block
+    expect(PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [{ id: 'm', type: 'markdown', text: 'x' }],
+      decisions: [decisionWithContext],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }],
+    }).success).toBe(false)
+
+    // two recommended options
+    expect(PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [phasesBlock],
+      decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A', recommended: true }, { id: 'b', label: 'B', recommended: true }], blockRefs: ['g'] }],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }],
+    }).success).toBe(false)
+
+    // decision.blockRefs to an unknown block — checkBlockRefs runs even when sections are present
+    expect(PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [phasesBlock],
+      decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A', recommended: true }, { id: 'b', label: 'B' }], blockRefs: ['nope'] }],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }],
+    }).success).toBe(false)
+  })
+
+  it('does not require a pre-included plan_verdict decision to be placed in a section', () => {
+    const r = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [phasesBlock],
+      decisions: [
+        { id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A', recommended: true }, { id: 'b', label: 'B' }], blockRefs: ['g'] },
+        { id: 'plan_verdict', prompt: 'v', options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }] },
+      ],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('strips a stray sections field from SpecInput and ReviewResultsInput', () => {
+    const spec = SpecInput.safeParse({
+      project: 'demo', headline: 'h', goal: 'g',
+      criteria: [{ id: 'c1', behavior: 'b', good: 'good', bad: 'bad', tracesTo: 't' }],
+      sections: [{ id: 's1', kind: 'decide' }],
+    })
+    expect(spec.success).toBe(true)
+    if (spec.success) expect('sections' in spec.data).toBe(false)
+
+    const results = ReviewResultsInput.safeParse({
+      project: 'demo', headline: 'h',
+      claims: [{ id: 'cl1', claim: 'works', evidence: [{ id: 'e', type: 'markdown', text: 'proof' }] }],
+      sections: [{ id: 's1', kind: 'decide' }],
+    })
+    expect(results.success).toBe(true)
+    if (results.success) expect('sections' in results.data).toBe(false)
+  })
+})
