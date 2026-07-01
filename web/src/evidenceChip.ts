@@ -34,7 +34,23 @@ function label(b: Block): string {
       return `${b.options.length} options`
     case 'acceptance':
       return `${b.criteria.length} criteri${b.criteria.length === 1 ? 'on' : 'a'}`
+    case 'callout':
+      return clip(b.summary, 24)
+    case 'key_facts':
+      return `${b.facts.length} fact${b.facts.length === 1 ? '' : 's'}`
+    case 'bar_list':
+      return `${b.items.length}-bar list`
+    case 'progress':
+      return `${b.value}/${b.total}`
+    case 'visual':
+      return b.format === 'svg' ? 'svg figure' : 'visual'
     case 'markdown':
       return 'notes'
+    // Exhaustiveness guard: a new block type that forgets a case here is a compile
+    // error (b is no longer `never`), not a silent undefined chip label at runtime.
+    default: {
+      const _exhaustive: never = b
+      return _exhaustive
+    }
   }
 }

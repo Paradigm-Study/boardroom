@@ -1,6 +1,6 @@
 import dagre from 'dagre'
-import { ArrowRight, BadgeCheck, FileDiff, FileText, GitFork, ListChecks, Milestone, Network, Scale, Table2, Terminal, type LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowRight, BadgeCheck, BarChart3, FileDiff, FileText, Gauge, GitFork, Image as ImageIcon, ListChecks, Megaphone, Milestone, Network, Scale, Table2, Terminal, TrendingUp, type LucideIcon } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Block } from '../../../src/shared/blocks.js'
@@ -32,6 +32,11 @@ const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
   evidence: { label: 'Evidence', Icon: Terminal },
   mermaid: { label: 'Diagram', Icon: GitFork },
   acceptance: { label: 'Acceptance criteria', Icon: ListChecks },
+  callout: { label: 'Callout', Icon: Megaphone },
+  key_facts: { label: 'Key facts', Icon: Gauge },
+  bar_list: { label: 'Ranking', Icon: BarChart3 },
+  progress: { label: 'Progress', Icon: TrendingUp },
+  visual: { label: 'Visual', Icon: ImageIcon },
 }
 
 // Prose is clamped to a few lines with a Show more toggle so a verbose agent
@@ -271,6 +276,125 @@ function Mermaid({ block }: { block: Extract<Block, { type: 'mermaid' }> }) {
   return <div dangerouslySetInnerHTML={{ __html: svg }} />
 }
 
+// Tone-tinted aside. The one-line summary always shows; an optional markdown
+// `detail` lives behind a native "Explain more" disclosure (prose-only, where the
+// clamp/typography work — never wrapping graphs or tables).
+function Callout({ block }: { block: Extract<Block, { type: 'callout' }> }) {
+  return (
+    <div className={`callout tone-${block.tone}`}>
+      <div className="callout-summary">{block.summary}</div>
+      {block.detail && (
+        <details className="callout-more">
+          <summary>Explain more</summary>
+          <div className="prose">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>{block.detail}</ReactMarkdown>
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// Label/value/delta scoreboard. The number and delta sit in their own spans so a
+// fact reads as one glanceable cell.
+function KeyFacts({ block }: { block: Extract<Block, { type: 'key_facts' }> }) {
+  return (
+    <div className="key-facts">
+      {block.facts.map((f, i) => (
+        <div key={i} className="kf">
+          <div className="kf-label">{f.label}</div>
+          <div className="kf-value">
+            <span className="kf-num">{f.value}</span>
+            {f.delta && <span className={`kf-delta${f.tone ? ` kf-${f.tone}` : ''}`}>{f.delta}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Ranked horizontal bars scaled to the largest value (or an explicit `max`).
+function BarList({ block }: { block: Extract<Block, { type: 'bar_list' }> }) {
+  const max = block.max ?? Math.max(...block.items.map(i => i.value), 1)
+  return (
+    <div className="bar-list">
+      {block.items.map((it, i) => (
+        <div key={i} className="bar-row">
+          <span className="bar-label">{it.label}</span>
+          <span className="bar-track">
+            <span className="bar-fill" style={{ width: `${Math.round((it.value / max) * 100)}%` }} />
+          </span>
+          <span className="bar-val">{it.display ?? String(it.value)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// A single bar toward a target — a static snapshot.
+function Progress({ block }: { block: Extract<Block, { type: 'progress' }> }) {
+  const pct = Math.max(0, Math.min(100, Math.round((block.value / block.total) * 100)))
+  return (
+    <div className="progress-w">
+      <div className="progress-top">
+        {block.label && <span className="progress-label">{block.label}</span>}
+        <span className="progress-read">{block.value}/{block.total}</span>
+      </div>
+      <div className="progress-track">
+        <div className={`progress-fill${block.tone ? ` progress-${block.tone}` : ''}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+// The Content-Security-Policy injected into every visual's srcdoc. `default-src 'none'`
+// blocks ALL network (img/font/css-url/@import/svg-image/beacon); `style-src 'unsafe-inline'`
+// is required for the injected token <style> and author inline style= and grants ZERO
+// script capability. `sandbox`/`frame-ancestors` are intentionally absent — a meta CSP
+// cannot deliver them; the iframe `sandbox=""` attribute is the SOLE sandbox.
+const VISUAL_CSP = "default-src 'none'; img-src 'none'; font-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; child-src 'none'"
+
+// Boardroom theme tokens re-emitted INSIDE the iframe — CSS custom properties do not
+// cross the iframe boundary, so a visual that references var(--ink) needs them re-declared
+// here. `light-dark()` + color-scheme keeps visuals tracking the user's mode with no JS.
+const VISUAL_TOKENS_CSS = ":root{color-scheme:light dark;--bg:light-dark(#ffffff,#161616);--bg-2:light-dark(#f7f7f6,#1d1d1c);--bg-3:light-dark(#efefed,#262624);--ink:light-dark(#1a1a1a,#ebebe9);--ink-2:light-dark(#5f5f5c,#a3a39e);--ink-3:light-dark(#969691,#6e6e69);--line:light-dark(#e7e7e4,#2e2e2c);--line-2:light-dark(#d4d4d0,#41413e);--accent:light-dark(#3b6ddb,#7396e8);--accent-soft:light-dark(#eef3fd,#20283b);--ok:light-dark(#177a52,#5bbd92);--bad:light-dark(#bb3a2a,#e07c6e);--pending:light-dark(#b45309,#e8a356);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--mono:ui-monospace,'SF Mono',Menlo,monospace;--r:8px;--r-lg:10px}html,body{margin:0;padding:0}body{background:transparent;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65}svg{display:block;width:100%;height:auto}"
+
+// Assemble the iframe document from a FIXED trusted <head> (the CSP meta is the literal
+// FIRST node, before any author byte) with author markup concatenated ONLY into <body>.
+// SECURITY: block.source must flow through HERE and nowhere else — never into
+// dangerouslySetInnerHTML or any other parent-DOM sink. Even a smuggled second
+// <meta CSP> can only intersect/tighten this policy, never loosen it.
+export function buildVisualSrcDoc(block: Extract<Block, { type: 'visual' }>): string {
+  return '<html><head>'
+    + `<meta http-equiv="Content-Security-Policy" content="${VISUAL_CSP}">`
+    + '<meta name="color-scheme" content="light dark">'
+    + `<style>${VISUAL_TOKENS_CSS}</style>`
+    + `</head><body>${block.source}</body></html>`
+}
+
+// Agent-authored static SVG/HTML, rendered in a sandboxed iframe. The trusted KIND
+// chrome (label + border) stays OUTSIDE the frame so a visual can never forge dashboard
+// UI. sandbox="" = opaque origin, no scripts, no same-origin, no top-nav, no forms/popups.
+// NEVER add allow-scripts or allow-same-origin (same-origin would expose the dashboard's
+// real session — daemon serves frame and host from the same 127.0.0.1 origin).
+function Visual({ block }: { block: Extract<Block, { type: 'visual' }> }) {
+  const srcDoc = useMemo(() => buildVisualSrcDoc(block), [block])
+  const style: CSSProperties = block.aspectRatio
+    ? { width: '100%', aspectRatio: String(block.aspectRatio), maxHeight: 720 }
+    : { width: '100%', height: `${block.height ?? 240}px` }
+  return (
+    <iframe
+      className="visual-frame"
+      title={block.title ?? 'visual'}
+      sandbox=""
+      referrerPolicy="no-referrer"
+      loading="lazy"
+      srcDoc={srcDoc}
+      style={style}
+    />
+  )
+}
+
 // `anchorScope` (a decision id) namespaces the DOM anchor so the same block can be
 // shown under two decisions without their ids colliding — an unscoped `block-<id>`
 // would appear twice and an Evidence link would jump to the wrong row. The
@@ -293,6 +417,11 @@ export function BlockView({ block, highlighted, forceOpen, anchorScope }: {
     case 'evidence': body = <Evidence block={block} forceOpen={forceOpen} />; break
     case 'mermaid': body = <Mermaid block={block} />; break
     case 'acceptance': body = <Acceptance block={block} />; break
+    case 'callout': body = <Callout block={block} />; break
+    case 'key_facts': body = <KeyFacts block={block} />; break
+    case 'bar_list': body = <BarList block={block} />; break
+    case 'progress': body = <Progress block={block} />; break
+    case 'visual': body = <Visual block={block} />; break
   }
   return (
     <div

@@ -282,3 +282,117 @@ describe('labelLines (graph node word-wrap/truncate)', () => {
     expect(labelLines(word)).toEqual([word])
   })
 })
+
+describe('BlockView new widgets', () => {
+  it('callout: renders the summary and an Explain more disclosure for the detail', () => {
+    const block: Block = {
+      id: 'c', type: 'callout', tone: 'warn',
+      summary: 'Touches auth — slower rollout',
+      detail: 'The token-storage path changes, so we stage it behind a flag.',
+    }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('Touches auth — slower rollout')).toBeTruthy()
+    expect(screen.getByText('Explain more')).toBeTruthy()
+  })
+
+  it('callout: omits the disclosure when there is no detail', () => {
+    const block: Block = { id: 'c2', type: 'callout', tone: 'info', summary: 'Just an FYI' }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('Just an FYI')).toBeTruthy()
+    expect(screen.queryByText('Explain more')).toBeNull()
+  })
+
+  it('key_facts: renders each fact label, value, and delta', () => {
+    const block: Block = {
+      id: 'k', type: 'key_facts',
+      facts: [
+        { label: 'Tests', value: '142', delta: '+12', tone: 'good' },
+        { label: 'Bundle', value: '211kb', delta: '−4', tone: 'good' },
+      ],
+    }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('Tests')).toBeTruthy()
+    expect(screen.getByText('142')).toBeTruthy()
+    expect(screen.getByText('+12')).toBeTruthy()
+    expect(screen.getByText('Bundle')).toBeTruthy()
+    expect(screen.getByText('211kb')).toBeTruthy()
+  })
+
+  it('bar_list: renders each item label and its display value', () => {
+    const block: Block = {
+      id: 'b', type: 'bar_list',
+      items: [
+        { label: 'auth.ts', value: 320, display: '320 ms' },
+        { label: 'db.ts', value: 120, display: '120 ms' },
+      ],
+    }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('auth.ts')).toBeTruthy()
+    expect(screen.getByText('320 ms')).toBeTruthy()
+    expect(screen.getByText('db.ts')).toBeTruthy()
+    expect(screen.getByText('120 ms')).toBeTruthy()
+  })
+
+  it('progress: renders the label and a value-over-total readout', () => {
+    const block: Block = { id: 'p', type: 'progress', label: 'Migration', value: 18, total: 24 }
+    render(<BlockView block={block} />)
+
+    expect(screen.getByText('Migration')).toBeTruthy()
+    expect(screen.getByText('18/24')).toBeTruthy()
+  })
+})
+
+describe('BlockView visual widget (sandboxed)', () => {
+  const svgVisual: Block = {
+    id: 'vz', type: 'visual', format: 'svg', aspectRatio: 16 / 9,
+    source: '<svg viewBox="0 0 16 9"><rect width="16" height="9"></rect></svg>',
+  }
+
+  it('renders the visual inside an iframe with sandbox="" exactly — the sole security boundary', () => {
+    const { container } = render(<BlockView block={svgVisual} />)
+    const iframe = container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(iframe).toBeTruthy()
+    // The whole boundary rests on this exact value. If anyone ever adds allow-scripts
+    // or allow-same-origin, this test fails — by design.
+    expect(iframe.getAttribute('sandbox')).toBe('')
+    expect(iframe.getAttribute('sandbox')).not.toContain('allow-scripts')
+    expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
+    expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer')
+    expect(iframe.getAttribute('loading')).toBe('lazy')
+  })
+
+  it('builds a srcdoc whose CSP meta is first in <head>, before the token style and the author source', () => {
+    const { container } = render(<BlockView block={svgVisual} />)
+    const doc = (container.querySelector('iframe.visual-frame') as HTMLIFrameElement).getAttribute('srcdoc') ?? ''
+    expect(doc).toContain("default-src 'none'")
+    expect(doc).toContain("object-src 'none'")
+    const cspIdx = doc.indexOf('Content-Security-Policy')
+    const styleIdx = doc.indexOf('<style')
+    const sourceIdx = doc.indexOf('<rect')
+    expect(cspIdx).toBeGreaterThanOrEqual(0)
+    expect(cspIdx).toBeLessThan(styleIdx)
+    expect(cspIdx).toBeLessThan(sourceIdx)
+  })
+
+  it('keeps the CSP meta ahead of an author source that injects a stray </head>', () => {
+    const sneaky: Block = { id: 'vs', type: 'visual', format: 'html', height: 120, source: '<div>a</div></head>' }
+    const { container } = render(<BlockView block={sneaky} />)
+    const doc = (container.querySelector('iframe.visual-frame') as HTMLIFrameElement).getAttribute('srcdoc') ?? ''
+    expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<div>a</div></head>'))
+  })
+
+  it('sizes by aspectRatio when given, by height otherwise, defaulting to 240px', () => {
+    const a = render(<BlockView block={svgVisual} />)
+    expect((a.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.aspectRatio).toBeTruthy()
+
+    const withH = render(<BlockView block={{ id: 'vh', type: 'visual', format: 'html', height: 300, source: '<div>x</div>' }} />)
+    expect((withH.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.height).toBe('300px')
+
+    const bare = render(<BlockView block={{ id: 'vb', type: 'visual', format: 'html', source: '<div>x</div>' }} />)
+    expect((bare.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.height).toBe('240px')
+  })
+})

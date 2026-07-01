@@ -206,6 +206,7 @@ a { color: inherit; }
   color: var(--ink); font-weight: 550;
 }
 .source-strip code { font-family: var(--mono); font-size: 11.5px; }
+.source-time { font-variant-numeric: tabular-nums; }
 .source-label {
   flex-shrink: 0; font-size: 10.5px; font-weight: 650;
   letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3);
@@ -303,6 +304,10 @@ a { color: inherit; }
   background: var(--bg);
 }
 .global-context .block:last-child { margin-bottom: 0; }
+
+/* A titled decide-section's head (sectioned cards only; legacy cards have no title,
+   so this never renders for them and the byte-identical legacy layout is preserved). */
+.section-head { margin: 18px 0 8px; }
 
 .dsec { padding: 20px 0 18px; border-top: 1px solid var(--line); }
 .dsec:first-of-type, .decision-row .dsec { border-top: none; }
@@ -497,7 +502,11 @@ a { color: inherit; }
 
 /* Acceptance contract: the spec gate's behavior-driven criteria checklist. */
 .acceptance { display: flex; flex-direction: column; gap: 9px; }
-.acceptance-goal { font-size: 12.5px; color: var(--ink-2); font-style: italic; }
+.acceptance-goal {
+  font-size: 12.5px; color: var(--ink-2); padding: 8px 12px; border-radius: var(--r);
+  background: color-mix(in srgb, var(--stage-color, var(--spec)) 7%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--stage-color, var(--spec)) 45%, transparent);
+}
 .crit {
   border: 1px solid var(--line); border-left: 3px solid var(--line-2);
   border-radius: var(--r); padding: 9px 12px; display: flex; flex-direction: column; gap: 3px;
@@ -513,10 +522,115 @@ a { color: inherit; }
 .crit-status.met { background: var(--ok-soft); color: var(--ok); }
 .crit-status.unmet { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 .crit-status.unknown { background: var(--bg-2); color: var(--ink-2); }
+.crit-status.dropped { background: var(--bg-2); color: var(--ink-3); }
+
+/* Spec recall drawer — a read-only cross-compare of the locked contract vs results. */
+.spec-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw);
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: -16px 0 40px -24px rgba(0,0,0,0.35);
+  display: flex; flex-direction: column; z-index: 50; overflow-y: auto;
+  --stage-color: var(--spec);
+}
+.spec-drawer-head {
+  position: sticky; top: 0; background: var(--bg); display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+}
+.spec-drawer-head h3 { margin: 2px 0 0; font-size: 15px; }
+.spec-drawer-close { background: none; border: none; color: var(--ink-3); cursor: pointer; padding: 4px; border-radius: var(--r); }
+.spec-drawer-close:hover { color: var(--ink); background: var(--bg-2); }
+.spec-progress { padding: 14px 18px 6px; }
+.spec-progress-track { height: 7px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
+.spec-progress-fill { display: block; height: 100%; background: var(--ok); border-radius: 999px; transition: width 200ms ease; }
+.spec-progress-label { display: block; margin-top: 6px; font-size: 12px; color: var(--ink-2); font-family: var(--mono); }
+.spec-goal {
+  margin: 6px 18px 4px; padding: 9px 12px; font-size: 12.5px; color: var(--ink-2);
+  background: color-mix(in srgb, var(--spec) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--spec) 28%, transparent); border-radius: var(--r);
+}
+.spec-crit-list { padding: 8px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+.spec-crit.dropped { display: flex; align-items: center; justify-content: space-between; gap: 8px; opacity: 0.6; padding: 8px 12px; border: 1px dashed var(--line); border-radius: var(--r); }
+.spec-claims { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--line); }
+.spec-claim { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
+.spec-claim.none { color: var(--ink-3); font-style: italic; }
+.spec-claim-text { flex: 1; color: var(--ink); }
+.spec-claim .vote { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 999px; flex: none; }
+.spec-claim .vote.approve { background: var(--ok-soft); color: var(--ok); }
+.spec-claim .vote.reject { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+.spec-claim .vote.revise, .spec-claim .vote.pending { background: var(--bg-2); color: var(--ink-2); }
+.spec-claim-link { background: none; border: none; color: var(--stage-color); cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 2px; padding: 0; flex: none; }
+.spec-claim-link:hover { text-decoration: underline; }
+
+/* The "Spec" open affordance shown on a card whose session has a locked contract. */
+.spec-open-btn {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+  color: var(--spec); background: color-mix(in srgb, var(--spec) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--spec) 30%, transparent); border-radius: 999px;
+  padding: 4px 11px; cursor: pointer;
+}
+.spec-open-btn:hover { background: color-mix(in srgb, var(--spec) 16%, transparent); }
 .crit-good, .crit-bad { font-size: 12.5px; line-height: 1.45; display: flex; gap: 6px; align-items: baseline; }
 .crit-good { color: var(--ok); } .crit-bad { color: var(--bad); }
 .crit-mark { font-weight: 700; flex: none; }
 .crit-trace { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+
+/* Callout: tone-tinted aside with an optional "Explain more" disclosure. */
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--ink-3);
+  border-radius: var(--r); padding: 11px 14px; background: var(--bg-2);
+}
+.callout-summary { font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+.callout.tone-info { border-left-color: var(--accent); background: var(--accent-soft); }
+.callout.tone-success { border-left-color: var(--ok); background: var(--ok-soft); }
+.callout.tone-warn { border-left-color: var(--pending); background: var(--pending-soft); }
+.callout.tone-danger { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.callout-more { margin-top: 8px; }
+.callout-more > summary {
+  font-size: 12px; font-weight: 600; color: var(--accent); cursor: pointer;
+  list-style: none; width: fit-content;
+}
+.callout-more > summary::-webkit-details-marker { display: none; }
+.callout-more > summary::before { content: '› '; }
+.callout-more[open] > summary::before { content: '⌄ '; }
+.callout-more .prose { margin-top: 7px; }
+
+/* Key facts: a compact label/value/delta scoreboard. */
+.key-facts { display: flex; flex-wrap: wrap; gap: 10px; }
+.kf {
+  flex: 1 1 110px; min-width: 96px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 9px 12px; background: var(--bg-2);
+}
+.kf-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 3px;
+}
+.kf-value { display: flex; align-items: baseline; gap: 7px; }
+.kf-num { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); }
+.kf-delta { font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.kf-delta.kf-good { color: var(--ok); }
+.kf-delta.kf-bad { color: var(--bad); }
+
+/* Bar list: ranked horizontal bars (pure CSS, no chart lib). */
+.bar-list { display: flex; flex-direction: column; gap: 7px; }
+.bar-row { display: grid; grid-template-columns: minmax(72px, 0.4fr) 1fr auto; align-items: center; gap: 10px; }
+.bar-label { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 8px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.bar-val { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Progress: a single bar toward a target (static snapshot). */
+.progress-w { display: flex; flex-direction: column; gap: 6px; }
+.progress-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.progress-label { font-size: 13px; font-weight: 550; color: var(--ink); }
+.progress-read { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.progress-track { height: 10px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.3s ease; }
+.progress-fill.progress-good { background: var(--ok); }
+.progress-fill.progress-bad { background: var(--bad); }
+
+/* Visual: agent-authored static SVG/HTML in a sandboxed iframe. The visible border is
+   the non-spoofable boundary — a visual can never forge surrounding dashboard chrome. */
+.visual-frame { display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--r); background: transparent; }
 
 .evidence summary { font-size: 13px; cursor: pointer; color: var(--ink-2); display: flex; align-items: center; gap: 7px; font-family: var(--mono); }
 .evidence pre {
