@@ -73,45 +73,73 @@ function checkSections(
 ): void {
   const sections = input.sections ?? []
   const blockIds = new Set((input.blocks ?? []).map(b => b.id))
-  const decisionIds = (input.decisions ?? []).map(d => d.id).filter(id => !VERDICT_IDS.has(id))
+  // Non-verdict decisions carry their ORIGINAL index: a pre-included verdict decision
+  // (compile tolerates one) must not shift the reported issue path off the real decision.
+  const nonVerdict = (input.decisions ?? []).map((d, idx) => ({ id: d.id, idx })).filter(d => !VERDICT_IDS.has(d.id))
+  const decisionIds = new Set(nonVerdict.map(d => d.id))
+  // Blocks referenced by a visible decision render scoped under that decision and are
+  // dropped from section context (cardWorkspace), so they are exempt from the
+  // at-most-one-section rule below.
+  const linkedBlockIds = new Set((input.decisions ?? []).filter(d => !VERDICT_IDS.has(d.id)).flatMap(d => d.blockRefs ?? []))
 
-  const seen = new Set<string>()
+  const seenSectionIds = new Set<string>()
+  const blockPlacements = new Map<string, number>()   // unlinked context block id -> total section refs
+  const decidePlacements = new Map<string, number>()  // decision id -> distinct decide-sections placing it
+
   sections.forEach((s, i) => {
     if (RESERVED_SECTION_IDS.has(s.id)) {
       ctx.addIssue({ code: 'custom', message: `section id "${s.id}" is reserved`, path: ['sections', i, 'id'] })
     }
-    if (seen.has(s.id)) {
+    if (seenSectionIds.has(s.id)) {
       ctx.addIssue({ code: 'custom', message: `duplicate section id "${s.id}"`, path: ['sections', i, 'id'] })
     }
-    seen.add(s.id)
+    seenSectionIds.add(s.id)
+
     for (const ref of s.blockRefs ?? []) {
       if (!blockIds.has(ref)) {
         ctx.addIssue({ code: 'custom', message: `section blockRefs references unknown block "${ref}"`, path: ['sections', i, 'blockRefs'] })
+      } else if (!linkedBlockIds.has(ref)) {
+        // A context block renders once, in at most one section. Track cross- and
+        // intra-section repeats so a duplicate can't mint a duplicate #block-<id> anchor.
+        blockPlacements.set(ref, (blockPlacements.get(ref) ?? 0) + 1)
       }
     }
-    ;(s.decisionRefs ?? []).forEach((ref, j) => {
+
+    const decisionRefs = s.decisionRefs ?? []
+    if (s.kind !== 'decide' && decisionRefs.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'decisionRefs is only meaningful on a decide-section', path: ['sections', i, 'decisionRefs'] })
+    }
+    const seenRefs = new Set<string>()
+    decisionRefs.forEach((ref, j) => {
       if (VERDICT_IDS.has(ref)) {
         ctx.addIssue({ code: 'custom', message: `section may not reference the verdict decision "${ref}"`, path: ['sections', i, 'decisionRefs', j] })
-      } else if (!decisionIds.includes(ref)) {
+      } else if (!decisionIds.has(ref)) {
         ctx.addIssue({ code: 'custom', message: `section decisionRefs references unknown decision "${ref}"`, path: ['sections', i, 'decisionRefs', j] })
+      } else if (seenRefs.has(ref)) {
+        ctx.addIssue({ code: 'custom', message: `decision "${ref}" is listed more than once in this section`, path: ['sections', i, 'decisionRefs', j] })
       }
+      seenRefs.add(ref)
     })
+    if (s.kind === 'decide') {
+      for (const ref of seenRefs) if (decisionIds.has(ref)) decidePlacements.set(ref, (decidePlacements.get(ref) ?? 0) + 1)
+    }
   })
 
-  const placement = new Map<string, number>()
-  for (const s of sections) {
-    if (s.kind !== 'decide') continue
-    for (const ref of s.decisionRefs ?? []) placement.set(ref, (placement.get(ref) ?? 0) + 1)
+  for (const [id, count] of blockPlacements) {
+    if (count > 1) {
+      ctx.addIssue({ code: 'custom', message: `context block "${id}" is placed in ${count} sections (a block renders in at most one)`, path: ['sections'] })
+    }
   }
-  decisionIds.forEach((id, i) => {
-    const count = placement.get(id) ?? 0
+
+  nonVerdict.forEach(({ id, idx }) => {
+    const count = decidePlacements.get(id) ?? 0
     if (count !== 1) {
       ctx.addIssue({
         code: 'custom',
         message: count === 0
           ? `decision "${id}" is not placed in any decide-section`
-          : `decision "${id}" is placed in ${count} sections (must be exactly one)`,
-        path: ['decisions', i],
+          : `decision "${id}" is placed in ${count} decide-sections (must be exactly one)`,
+        path: ['decisions', idx],
       })
     }
   })

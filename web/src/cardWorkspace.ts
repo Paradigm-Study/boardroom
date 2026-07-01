@@ -98,12 +98,22 @@ function resolveSections(
 
   const decisionById = new Map(choiceDecisions.map(d => [d.id, d]))
   const indexById = new Map(choiceDecisions.map((d, i) => [d.id, i]))
-  // A section's context blocks resolve its blockRefs and DROP any linked block (it is
-  // already rendered scoped under its decision) and any unknown id.
-  const contextBlocks = (s: Section): Block[] =>
-    (s.blockRefs ?? [])
-      .map(id => blockById.get(id))
-      .filter((b): b is Block => b !== undefined && !linkedBlockIds.has(b.id))
+  // A section's context blocks resolve its blockRefs and DROP any linked block (already
+  // rendered scoped under its decision), any unknown id, and any block already emitted by
+  // an earlier section. That last belt keeps a context block to at most one section
+  // (validation enforces it too) so it can never mint a duplicate #block-<id> anchor.
+  const usedContextBlocks = new Set<string>()
+  const contextBlocks = (s: Section): Block[] => {
+    const out: Block[] = []
+    for (const id of s.blockRefs ?? []) {
+      const b = blockById.get(id)
+      if (b && !linkedBlockIds.has(b.id) && !usedContextBlocks.has(b.id)) {
+        usedContextBlocks.add(b.id)
+        out.push(b)
+      }
+    }
+    return out
+  }
 
   return card.sections.map(s => {
     if (s.kind === 'decide') {

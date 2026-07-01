@@ -267,7 +267,54 @@ describe('mixable sections', () => {
       ],
     })
     expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /placed in 2 decide-sections/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a context block placed in more than one section (anchor uniqueness)', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock, localBlock],
+      decisions: [decision],
+      sections: [
+        { id: 'decide', kind: 'decide', decisionRefs: ['d1'] },
+        { id: 'ctx1', kind: 'explain', blockRefs: ['global'] },
+        { id: 'ctx2', kind: 'report', blockRefs: ['global'] },
+      ],
+    })
+    expect(r.success).toBe(false)
     if (!r.success) expect(r.error.issues.some(i => /placed in 2 sections/.test(i.message))).toBe(true)
+  })
+
+  it('rejects decisionRefs on a non-decide section', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [
+        { id: 'decide', kind: 'decide', decisionRefs: ['d1'] },
+        { id: 'ctx', kind: 'explain', decisionRefs: ['d1'] },
+      ],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /only meaningful on a decide-section/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a duplicate section id', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [{ id: 's1', kind: 'decide', decisionRefs: ['d1'] }, { id: 's1', kind: 'explain' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate section id/.test(i.message))).toBe(true)
+  })
+
+  it('rejects a decision listed twice within one decide-section', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h', blocks: [globalBlock],
+      decisions: [decision],
+      sections: [{ id: 'decide', kind: 'decide', decisionRefs: ['d1', 'd1'] }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /listed more than once/.test(i.message))).toBe(true)
   })
 
   it('allows an unplaced block (lenient) but rejects refs to unknown ids', () => {

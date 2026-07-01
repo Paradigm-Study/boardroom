@@ -304,21 +304,25 @@ describe('BlockView new widgets', () => {
     expect(screen.queryByText('Explain more')).toBeNull()
   })
 
-  it('key_facts: renders each fact label, value, and delta', () => {
+  it('key_facts: renders every fact label, value, delta, and its tone class', () => {
     const block: Block = {
       id: 'k', type: 'key_facts',
       facts: [
         { label: 'Tests', value: '142', delta: '+12', tone: 'good' },
-        { label: 'Bundle', value: '211kb', delta: '−4', tone: 'good' },
+        { label: 'Bundle', value: '211kb', delta: '−4', tone: 'bad' },
       ],
     }
-    render(<BlockView block={block} />)
+    const { container } = render(<BlockView block={block} />)
 
     expect(screen.getByText('Tests')).toBeTruthy()
     expect(screen.getByText('142')).toBeTruthy()
     expect(screen.getByText('+12')).toBeTruthy()
     expect(screen.getByText('Bundle')).toBeTruthy()
     expect(screen.getByText('211kb')).toBeTruthy()
+    // both deltas render (not just the first) and tone is the styling signal
+    expect(screen.getByText('−4')).toBeTruthy()
+    expect(container.querySelector('.kf-delta.kf-good')).toBeTruthy()
+    expect(container.querySelector('.kf-delta.kf-bad')).toBeTruthy()
   })
 
   it('bar_list: renders each item label and its display value', () => {
@@ -378,21 +382,23 @@ describe('BlockView visual widget (sandboxed)', () => {
     expect(cspIdx).toBeLessThan(sourceIdx)
   })
 
-  it('keeps the CSP meta ahead of an author source that injects a stray </head>', () => {
+  it('assembles the srcdoc with the CSP meta before the body, so a stray </head> lands as inert body text', () => {
     const sneaky: Block = { id: 'vs', type: 'visual', format: 'html', height: 120, source: '<div>a</div></head>' }
     const { container } = render(<BlockView block={sneaky} />)
     const doc = (container.querySelector('iframe.visual-frame') as HTMLIFrameElement).getAttribute('srcdoc') ?? ''
     expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<div>a</div></head>'))
   })
 
-  it('sizes by aspectRatio when given, by height otherwise, defaulting to 240px', () => {
-    const a = render(<BlockView block={svgVisual} />)
-    expect((a.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.aspectRatio).toBeTruthy()
+  it('sizes by aspectRatio OR height (mutually exclusive), defaulting to 240px', () => {
+    const af = render(<BlockView block={svgVisual} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(af.style.aspectRatio).toBeTruthy()
+    expect(af.style.height).toBe('') // aspectRatio mode sets no pixel height
 
-    const withH = render(<BlockView block={{ id: 'vh', type: 'visual', format: 'html', height: 300, source: '<div>x</div>' }} />)
-    expect((withH.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.height).toBe('300px')
+    const hf = render(<BlockView block={{ id: 'vh', type: 'visual', format: 'html', height: 300, source: '<div>x</div>' }} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(hf.style.height).toBe('300px')
+    expect(hf.style.aspectRatio).toBe('') // height mode sets no aspect-ratio
 
-    const bare = render(<BlockView block={{ id: 'vb', type: 'visual', format: 'html', source: '<div>x</div>' }} />)
-    expect((bare.container.querySelector('iframe.visual-frame') as HTMLIFrameElement).style.height).toBe('240px')
+    const bf = render(<BlockView block={{ id: 'vb', type: 'visual', format: 'html', source: '<div>x</div>' }} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(bf.style.height).toBe('240px')
   })
 })

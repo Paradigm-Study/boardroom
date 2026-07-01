@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { Block } from './blocks.js'
 
 // The "dialbook": a callable registry of every widget the agent can author, with a
@@ -9,7 +10,9 @@ export interface WidgetCatalogEntry {
   name: string
   conveys: string
   whenToUse: string
-  example: Block
+  // The INPUT type (z.input), not z.infer/output: a minimal example may omit fields that
+  // carry a .default() (e.g. callout.tone) — exactly what Block.parse accepts at runtime.
+  example: z.input<typeof Block>
 }
 
 // Record over the discriminator union: adding a 14th block widens Block['type'] and
