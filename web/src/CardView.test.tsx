@@ -9,9 +9,14 @@ import { CardView } from './CardView.js'
 vi.mock('./api.js', () => ({
   decideCard: vi.fn(),
   uploadAttachment: vi.fn(),
+  // CardView mounts the SpecAffordance, which reads cards to recall a locked spec.
+  // No cards → no spec → the affordance renders nothing, leaving these tests intact.
+  fetchCards: vi.fn(() => Promise.resolve([])),
+  subscribeCards: vi.fn(() => () => {}),
 }))
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   localStorage.clear()
   vi.clearAllMocks()
@@ -180,6 +185,27 @@ describe('CardView pending plan actions', () => {
     expect(within(source).getByText('boardroom')).toBeTruthy()
   })
 
+  it('shows the selected card creation time in the source metadata', () => {
+    render(<CardView card={pendingPlan} />)
+
+    const source = screen.getByLabelText('Decision source')
+    const parts = new Intl.DateTimeFormat('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).formatToParts(new Date(pendingPlan.createdAt))
+    const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find(p => p.type === type)?.value ?? ''
+    const created = `${part('weekday')} ${part('month')} ${part('day')} ${part('hour')}:${part('minute')} ${part('dayPeriod')}`
+
+    expect(within(source).getByText('Created')).toBeTruthy()
+    const value = within(source).getByText(created)
+    expect(value).toBeTruthy()
+    expect(value.closest('span')?.getAttribute('title')).toContain(part('dayPeriod'))
+  })
+
   it('renders both send-back and proceed actions for pending plan cards', () => {
     render(<CardView card={pendingPlan} />)
 
@@ -229,22 +255,24 @@ describe('CardView pending plan actions', () => {
     }))
   })
 
-  it('renders the always-on add-on box and both finish actions for a results card', () => {
+  it('renders the always-on add-on box and ONE derived finish button for a results card', () => {
     render(<CardView card={pendingResults} />)
 
     expect(screen.getByLabelText('Add instructions for the agent')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Mark complete' })).toBeTruthy()
+    // Nothing reviewed yet, so the single button derives "Keep going" — never a manual pick.
     expect(screen.getByRole('button', { name: 'Keep going' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
   })
 
-  it('"Mark complete" is gated on every claim being reviewed, then submits a complete verdict', async () => {
+  it('the derived button becomes "Mark complete" once every claim is approved, and submits a complete verdict', async () => {
     vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
     render(<CardView card={pendingResults} />)
 
-    const complete = screen.getByRole('button', { name: 'Mark complete' })
-    expect((complete as HTMLButtonElement).disabled).toBe(true)
+    // Before review it is "Keep going"; approving all claims flips it to an enabled "Mark complete".
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
 
+    const complete = await screen.findByRole('button', { name: 'Mark complete' })
     await waitFor(() => expect((complete as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(complete)
 
@@ -316,6 +344,28 @@ describe('CardView pending plan actions', () => {
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
   })
 
+  it('falls back and confirms when the async clipboard write does not complete', async () => {
+    const writeText = vi.fn(() => new Promise<void>(() => {}))
+    const execCommand = vi.fn().mockReturnValue(true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingClarify, status: 'decided' }, summary: 'paste me', delivered: false })
+    render(<CardView card={pendingClarify} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detail A' }))
+    const submit = screen.getByRole('button', { name: 'Submit decisions' })
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(submit)
+
+    const copy = await screen.findByRole('button', { name: 'Copy to clipboard' })
+    vi.useFakeTimers()
+    fireEvent.click(copy)
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy()
+  })
+
   it('keeps compact submit-bar overrides after the base submit button rule', () => {
     const css = readFileSync('web/src/styles.css', 'utf8')
     const baseSubmit = css.lastIndexOf('\n.submit {')
@@ -356,5 +406,78 @@ describe('CardView pending plan actions', () => {
     expect(css).toContain('.decision-row {')
     expect(css).toContain('border: 1px solid var(--line);')
     expect(css).toContain('border-radius: var(--r);')
+  })
+})
+
+// GOLDEN: these snapshots are recorded against the pre-sections renderer and MUST stay
+// green through the sections rewrite — the byte-identical guarantee for every legacy
+// (no card.sections) card. If the cardWorkspace/CardView change alters the DOM of a
+// flat card, these fail. Icon geometry belongs to lucide-react, not CardView, so each
+// <svg> is collapsed to its class list — a routine icon-lib bump must not force a
+// baseline rewrite (which would invite a blanket `vitest -u` past a real regression).
+function goldenHtml(container: HTMLElement): string {
+  return container.innerHTML.replace(
+    /<svg\b([^>]*)>[\s\S]*?<\/svg>/g,
+    (_match, attrs: string) => `<svg class="${/class="([^"]*)"/.exec(attrs)?.[1] ?? ''}"></svg>`,
+  )
+}
+
+describe('CardView legacy render stays byte-identical (golden)', () => {
+  it('flat clarify card', () => {
+    const { container } = render(<CardView card={pendingClarify} />)
+    expect(goldenHtml(container)).toMatchSnapshot()
+  })
+
+  it('flat plan card', () => {
+    const { container } = render(<CardView card={pendingPlan} />)
+    expect(goldenHtml(container)).toMatchSnapshot()
+  })
+
+  it('flat results card', () => {
+    const { container } = render(<CardView card={pendingResults} />)
+    expect(goldenHtml(container)).toMatchSnapshot()
+  })
+
+  it('plan card with only the verdict decision (zero visible decisions)', () => {
+    const planOnlyVerdict: Card = {
+      ...pendingPlan,
+      id: 'plan-only-verdict',
+      blocks: [{ id: 'ph', type: 'phases', phases: [{ title: 'Phase 1' }] }],
+      decisions: [pendingPlan.decisions[1]],
+    }
+    const { container } = render(<CardView card={planOnlyVerdict} />)
+    expect(goldenHtml(container)).toMatchSnapshot()
+  })
+})
+
+describe('CardView sectioned render', () => {
+  const sectioned: Card = {
+    id: 'sec-1',
+    stage: 'clarify',
+    session: { agent: 'cc', project: 'boardroom' },
+    headline: 'A mixed card',
+    blocks: [
+      { id: 'ctx', type: 'markdown', text: 'why this matters' },
+      { id: 'q', type: 'markdown', text: 'question context' },
+    ],
+    decisions: [
+      { id: 'd1', prompt: 'Pick?', blockRefs: ['q'], options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+    ],
+    sections: [
+      { id: 'why', kind: 'explain', title: 'Why this matters', blockRefs: ['ctx'] },
+      { id: 'decide', kind: 'decide', decisionRefs: ['d1'] },
+    ],
+    status: 'pending',
+    createdAt: '2026-06-27T12:00:00.000Z',
+  }
+
+  it('renders a titled explain section, the decide row with its scoped anchor, and the explain block unscoped', () => {
+    const { container } = render(<CardView card={sectioned} />)
+    expect(screen.getByText('Why this matters')).toBeTruthy()
+    // the linked block renders scoped under its decision row
+    expect(container.querySelector('#block-d1-q')).toBeTruthy()
+    // the explain section block renders unscoped (and is NOT also scoped under a decision)
+    expect(container.querySelector('#block-ctx')).toBeTruthy()
+    expect(container.querySelector('#block-d1-ctx')).toBeNull()
   })
 })

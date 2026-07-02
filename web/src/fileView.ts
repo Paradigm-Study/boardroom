@@ -78,6 +78,10 @@ export type Route =
   | { kind: 'card'; id: string }
   | { kind: 'file'; url: string; name?: string; mime?: string }
   | { kind: 'folders' }
+  // An in-page block anchor (#block-…, from a decision's Evidence links): a scroll
+  // within the open card, NOT a route change. Without this kind it would parse as
+  // root and the auto-open would yank the view to a different card.
+  | { kind: 'anchor'; id: string }
 
 export function fileHash(file: { url: string; name?: string; mime?: string }): string {
   const q = new URLSearchParams({ u: file.url })
@@ -103,5 +107,6 @@ export function parseHash(hash: string): Route {
   if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
   const card = /^\/card\/(.+)$/.exec(raw)
   if (card) return { kind: 'card', id: card[1] }
+  if (raw.startsWith('block-')) return { kind: 'anchor', id: raw }
   return { kind: 'root' }
 }

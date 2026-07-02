@@ -146,6 +146,7 @@ a { color: inherit; }
 .t-state.pending { background: var(--pending); animation: pulse 1.8s ease-in-out infinite; }
 .t-state.decided { background: var(--ok); }
 .t-state.orphaned { background: transparent; border: 1.5px dashed var(--ink-3); }
+.t-state.reconnecting { background: transparent; border: 1.5px dashed var(--pending); animation: pulse 1.8s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .t-main { min-width: 0; flex: 1; }
 .t-title {
@@ -631,6 +632,9 @@ a { color: inherit; }
 /* Visual: agent-authored static SVG/HTML in a sandboxed iframe. The visible border is
    the non-spoofable boundary — a visual can never forge surrounding dashboard chrome. */
 .visual-frame { display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--r); background: transparent; }
+/* Fixed-height (html) visuals only: a native drag handle so the human can pull the
+   frame taller when content overflows — ratio-sized frames already fit exactly. */
+.visual-resize { resize: vertical; overflow: hidden; min-height: 40px; }
 
 .evidence summary { font-size: 13px; cursor: pointer; color: var(--ink-2); display: flex; align-items: center; gap: 7px; font-family: var(--mono); }
 .evidence pre {

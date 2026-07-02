@@ -1,4 +1,4 @@
-import { Bot, FileText, FolderGit2, Layers3, Moon, PanelRight, Workflow } from 'lucide-react'
+import { Bot, CalendarClock, FileText, FolderGit2, Layers3, Moon, PanelRight, Workflow } from 'lucide-react'
 import type { Card } from '../../src/shared/card.js'
 import type { CardWorkspace } from './cardWorkspace.js'
 import { STAGE } from './stage.js'
@@ -16,6 +16,7 @@ export function CardHeader({ card, workspace, readonly, pickupSummary }: {
   const orphaned = card.status === 'orphaned'
   const sessionTitle = card.session.title?.trim() || 'Untitled session'
   const choiceDecisions = workspace.choiceDecisions
+  const created = formatCreatedAt(card.createdAt)
 
   return (
     <div className="card-head">
@@ -39,6 +40,13 @@ export function CardHeader({ card, workspace, readonly, pickupSummary }: {
           <span className="source-label">Agent</span>
           <strong>{card.session.agent}</strong>
         </span>
+        {created && (
+          <span title={created.full}>
+            <CalendarClock size={14} aria-hidden />
+            <span className="source-label">Created</span>
+            <strong className="source-time">{created.short}</strong>
+          </span>
+        )}
         {card.planRef && (
           <span>
             <FileText size={14} aria-hidden />
@@ -69,4 +77,35 @@ export function CardHeader({ card, workspace, readonly, pickupSummary }: {
       )}
     </div>
   )
+}
+
+function formatCreatedAt(iso: string): { short: string; full: string } | null {
+  const date = new Date(iso)
+  if (!Number.isFinite(date.getTime())) return null
+  return {
+    short: shortWeekdayTime(date),
+    full: new Intl.DateTimeFormat(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date),
+  }
+}
+
+function shortWeekdayTime(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(date)
+  const get = (type: Intl.DateTimeFormatPartTypes): string => parts.find(p => p.type === type)?.value ?? ''
+  return `${get('weekday')} ${get('month')} ${get('day')} ${get('hour')}:${get('minute')} ${get('dayPeriod')}`.trim()
 }

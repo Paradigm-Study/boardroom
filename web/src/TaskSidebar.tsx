@@ -1,7 +1,7 @@
 import { Archive, Armchair, ChevronRight, FolderTree, Inbox } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
-import { age } from './helpers.js'
+import { age, isReconnecting, needsHuman } from './helpers.js'
 import { STAGE } from './stage.js'
 
 // How many sessions a folder shows before the "View more" control. A single
@@ -58,21 +58,29 @@ export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGrou
   return [...projects.values()]
 }
 
+// A boot-orphaned card inside the reattach window is "reconnecting" — still on the
+// human's plate (needsHuman), so it renders live, not done, and says so.
+function statusLabel(card: Card): string {
+  if (card.status === 'pending') return 'needs you'
+  if (isReconnecting(card)) return 'reconnecting'
+  return card.status
+}
+
 function Item({ card, selected }: { card: Card; selected: boolean }) {
   return (
     <a
       href={`#/card/${card.id}`}
-      className={`titem${selected ? ' on' : ''}${card.status !== 'pending' ? ' done' : ''}`}
+      className={`titem${selected ? ' on' : ''}${needsHuman(card) ? '' : ' done'}`}
       title={card.headline}
     >
-      <span className={`t-state ${card.status}`} />
+      <span className={`t-state ${isReconnecting(card) ? 'reconnecting' : card.status}`} />
       <span className="t-main">
         <p className="t-title">{card.headline}</p>
         <span className="t-meta">
           <span className="stage-dot" style={{ background: STAGE[card.stage].color }} />
           <span>{STAGE[card.stage].label}</span>
           <span>·</span>
-          <span>{card.status === 'pending' ? 'needs you' : card.status}</span>
+          <span>{statusLabel(card)}</span>
           <span>·</span>
           <span>{age(card.createdAt)}</span>
         </span>
@@ -120,6 +128,21 @@ function ProjectSection({
   const key = foldKey(section, project.key)
   const [folded, setFolded] = useState(() => readFolded(key))
   const [showAll, setShowAll] = useState(false)
+
+  // Navigating to a card must never land on an invisible selection: unfold the
+  // project and lift the session cap when the selected card lives behind them.
+  // Keyed on selectedId alone so a manual fold while the card stays selected
+  // isn't fought; the unfold is per-view state, not persisted.
+  const selectedInProject = selectedId != null && project.cards.some(c => c.id === selectedId)
+  const selectedSessionIndex = selectedId == null
+    ? -1
+    : project.sessions.findIndex(s => s.cards.some(c => c.id === selectedId))
+  useEffect(() => {
+    if (!selectedInProject) return
+    setFolded(false)
+    if (selectedSessionIndex >= SESSION_CAP) setShowAll(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to selection changes only
+  }, [selectedId])
 
   const projectHeadingId = `${section}-project-${projectIndex}`
   const overflow = project.sessions.length - SESSION_CAP
@@ -188,8 +211,10 @@ function GroupedCards({ cards, section, selectedId }: { cards: Card[]; section: 
 
 export function TaskSidebar({ cards, selectedId }: { cards: Card[]; selectedId: string | null }) {
   const byNewest = [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  const pending = byNewest.filter(c => c.status === 'pending')
-  const rest = byNewest.filter(c => c.status !== 'pending')
+  // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate
+  // is still awaiting the human and must not sink into History (see shared/needsHuman).
+  const pending = byNewest.filter(c => needsHuman(c))
+  const rest = byNewest.filter(c => !needsHuman(c))
 
   return (
     <aside className="sidebar">

@@ -1,5 +1,5 @@
 import { ArrowRight, Check, ClipboardCopy } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
 import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
 import { decideCard, uploadAttachment } from './api.js'
@@ -9,11 +9,53 @@ import { CardHeader } from './CardHeader.js'
 import { prepareCardWorkspace } from './cardWorkspace.js'
 import { DecisionSection } from './Decision.js'
 import { clearDrafts } from './drafts.js'
-import { answersComplete, attachmentsForField, claimNotesValid, decisionAnswered, emptyDraft, toApiAnswers, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
+import { answersComplete, attachmentsForField, claimNotesValid, decisionAnswered, deriveResultsVerdict, emptyDraft, toApiAnswers, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
 import { ResultsChecklist } from './ResultsChecklist.js'
 import { SendBackForm } from './SendBackForm.js'
+import { SpecAffordance } from './SpecAffordance.js'
 import { STAGE } from './stage.js'
 import { useCardAnswers } from './useCardAnswers.js'
+
+const CLIPBOARD_WRITE_TIMEOUT_MS = 750
+
+async function writeClipboardText(text: string): Promise<boolean> {
+  const clipboard = navigator.clipboard
+  if (clipboard?.writeText) {
+    let timeout: number | undefined
+    try {
+      await Promise.race([
+        clipboard.writeText(text),
+        new Promise<never>((_, reject) => {
+          timeout = window.setTimeout(() => reject(new Error('clipboard write timed out')), CLIPBOARD_WRITE_TIMEOUT_MS)
+        }),
+      ])
+      return true
+    } catch {
+      // Fall through to the selected-text copy path below.
+    } finally {
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }
+
+  if (typeof document.execCommand !== 'function') return false
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.append(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    textarea.remove()
+  }
+}
 
 function QuestionContext({ index, decisionId, blocks }: {
   index: number
@@ -34,6 +76,21 @@ function QuestionContext({ index, decisionId, blocks }: {
         ? blocks.map(b => <BlockView key={b.id} block={b} anchorScope={decisionId} highlighted />)
         : <p className="context-empty">No question-local context.</p>}
     </aside>
+  )
+}
+
+// A non-decision context region — the blocks of an explain/report section, or a decide
+// section's extra (non-linked) blocks. Reuses the global-context chrome so a legacy
+// card's single global section (title "Global context") renders byte-identically.
+function ContextSection({ title, blocks }: { title: string; blocks: Block[] }) {
+  return (
+    <section className="global-context" aria-label="Global card context">
+      <div className="global-context-head">
+        <span className="canvas-label">{title}</span>
+        <span className="canvas-count">{blocks.length} block{blocks.length === 1 ? '' : 's'}</span>
+      </div>
+      {blocks.map(b => <BlockView key={b.id} block={b} />)}
+    </section>
   )
 }
 
@@ -62,25 +119,27 @@ function SubmitBar({ state, label, ready, busy, onSubmit, className, leading }: 
 }
 
 // The results gate's footer. Unlike the binary clarify/plan submit, the human
-// always gets a free-text add-on (rides on the verdict's own note/attachments)
-// and an EXPLICIT completion choice: "Mark complete" (gated on every claim being
-// reviewed) or "Keep going" (the send-back analog — the agent acts on the notes
-// and re-submits). Either way the per-claim votes and the add-on are sent.
-function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, completeReady, continueReady, onNoteChange, onUpload, onRemoveAttachment, onComplete, onContinue }: {
+// always gets a free-text add-on (rides on the verdict's own note/attachments),
+// and ONE submit button whose verdict the per-claim states DERIVE — the human
+// never picks complete vs continue. It reads "Mark complete" only when every
+// claim is approved with no add-on; any reject/revise, unreviewed claim, or
+// add-on flips it to "Keep going" (the send-back analog — the agent acts and
+// re-submits). Either way the per-claim votes and the add-on are sent.
+function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, verdict, ready, onNoteChange, onUpload, onRemoveAttachment, onSubmit }: {
   note: string
   attachments: AttachmentRef[]
   reviewed: number
   total: number
   orphaned: boolean
   busy: boolean
-  completeReady: boolean
-  continueReady: boolean
+  verdict: ResultsVerdict
+  ready: boolean
   onNoteChange(note: string): void
   onUpload(file: File): Promise<AttachmentRef>
   onRemoveAttachment(id: string): void
-  onComplete(): void
-  onContinue(): void
+  onSubmit(): void
 }) {
+  const label = verdict === 'complete' ? 'Mark complete' : 'Keep going'
   return (
     <div className="results-finish">
       <textarea
@@ -100,9 +159,8 @@ function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, com
       />
       <div className="submit-bar results-submit">
         <span className="submit-state">{reviewed}/{total} reviewed</span>
-        <button className="submit ghost" disabled={!continueReady || busy} onClick={onContinue}>Keep going</button>
-        <button className="submit" disabled={!completeReady || busy} onClick={onComplete}>
-          {orphaned ? 'Mark complete (agent offline)' : 'Mark complete'}
+        <button className="submit" disabled={!ready || busy} onClick={onSubmit}>
+          {orphaned ? `${label} (agent offline)` : label}
           <ArrowRight size={16} aria-hidden />
         </button>
       </div>
@@ -123,15 +181,14 @@ function OfflinePickup({ summary }: { summary: string }) {
   }, [])
 
   async function copySummary(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(summary)
+    if (await writeClipboardText(summary)) {
       setCopied(true)
       if (resetCopiedTimer.current !== null) window.clearTimeout(resetCopiedTimer.current)
       resetCopiedTimer.current = window.setTimeout(() => {
         setCopied(false)
         resetCopiedTimer.current = null
       }, 2000)
-    } catch {
+    } else {
       setCopied(false)
     }
   }
@@ -148,7 +205,10 @@ function OfflinePickup({ summary }: { summary: string }) {
   )
 }
 
-export function CardView({ card }: { card: Card }) {
+// `cards` is the app shell's full card store, threaded down for read-models that
+// span the whole session (the spec-recall drawer) — optional so an isolated mount
+// (tests, storybook-style use) renders the card alone.
+export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
   const meta = STAGE[card.stage]
   const orphaned = card.status === 'orphaned'
   const readonly = card.status === 'decided'
@@ -177,7 +237,6 @@ export function CardView({ card }: { card: Card }) {
   const workspace = useMemo(() => prepareCardWorkspace(card), [card])
   const choiceDecisions = workspace.choiceDecisions
   const blockById = workspace.blockById
-  const globalBlocks = workspace.globalBlocks
 
   async function uploadFor(answerId: string, field: string, file: File): Promise<AttachmentRef> {
     return uploadAttachment(card.id, answerId, field, file)
@@ -207,7 +266,9 @@ export function CardView({ card }: { card: Card }) {
             chosen: [verb],
             note: verb === 'revise' ? sendBackNote : '',
             custom: '',
-            ...(sendBackAttachments.length ? { attachments: sendBackAttachments } : {}),
+            // Like the note, attachments belong to the send-back only: an abandoned
+            // revise draft must not ride along on an approve/lock verdict.
+            ...(verb === 'revise' && sendBackAttachments.length ? { attachments: sendBackAttachments } : {}),
           },
         }
       : answers)
@@ -229,9 +290,21 @@ export function CardView({ card }: { card: Card }) {
   const patchVerdict = (fn: (d: DraftAnswer) => DraftAnswer): void =>
     setAnswers(prev => ({ ...prev, [RESULTS_VERDICT_ID]: fn(prev[RESULTS_VERDICT_ID] ?? emptyDraft()) }))
 
+  // ONE finish button: the per-claim states + add-on DERIVE the verdict, so the
+  // human never picks complete vs continue. Readiness follows the derived verdict —
+  // complete needs every claim reviewed; continue only needs voted claims noted.
+  const resultsVerdict = deriveResultsVerdict(choiceDecisions, answers, verdictDraft)
+  const resultsReady = resultsVerdict === 'complete'
+    ? answersComplete(choiceDecisions, answers)
+    : claimNotesValid(choiceDecisions, answers)
+
   return (
     <div className="card-col" style={meta.vars}>
       <CardHeader card={card} workspace={workspace} readonly={readonly} pickupSummary={pickupSummary} />
+
+      {/* Recall the session's locked acceptance contract and cross-compare it
+          against results, any time — renders nothing until a spec is locked. */}
+      <SpecAffordance project={card.session.project} cards={cards} />
 
       {resultsMode
         ? (
@@ -252,8 +325,8 @@ export function CardView({ card }: { card: Card }) {
                 total={choiceDecisions.length}
                 orphaned={orphaned}
                 busy={busy}
-                completeReady={answersComplete(choiceDecisions, answers)}
-                continueReady={claimNotesValid(choiceDecisions, answers)}
+                verdict={resultsVerdict}
+                ready={resultsReady}
                 onNoteChange={note => patchVerdict(d => ({ ...d, note }))}
                 onUpload={async file => {
                   const attachment = await uploadFor(RESULTS_VERDICT_ID, 'note', file)
@@ -261,8 +334,7 @@ export function CardView({ card }: { card: Card }) {
                   return attachment
                 }}
                 onRemoveAttachment={id => patchVerdict(d => withoutAttachment(d, id))}
-                onComplete={() => void submitResults('complete')}
-                onContinue={() => void submitResults('continue')}
+                onSubmit={() => void submitResults(resultsVerdict)}
               />
             )}
           </>
@@ -278,34 +350,41 @@ export function CardView({ card }: { card: Card }) {
               <span className="dock-status">{card.status}</span>
             </div>
 
-            {choiceDecisions.map((d, i) => {
-              const questionBlocks = workspace.linkedBlocksFor(d.id)
-              return (
-                <div className="decision-row" key={d.id}>
-                  <DecisionSection
-                    card={card}
-                    decision={d}
-                    index={i}
-                    total={choiceDecisions.length}
-                    blocks={questionBlocks}
-                    answer={answers[d.id] ?? emptyDraft()}
-                    readonly={readonly || busy}
-                    onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
-                    onUploadAttachment={uploadFor}
-                  />
-                  <QuestionContext index={i} decisionId={d.id} blocks={questionBlocks} />
-                </div>
-              )
-            })}
-
-            {globalBlocks.length > 0 && (
-              <section className="global-context" aria-label="Global card context">
-                <div className="global-context-head">
-                  <span className="canvas-label">Global context</span>
-                  <span className="canvas-count">{globalBlocks.length} block{globalBlocks.length === 1 ? '' : 's'}</span>
-                </div>
-                {globalBlocks.map(b => <BlockView key={b.id} block={b} />)}
-              </section>
+            {workspace.sections.map(section =>
+              section.kind === 'decide'
+                ? (
+                  <Fragment key={section.id}>
+                    {section.title && (
+                      <div className="section-head"><span className="canvas-label">{section.title}</span></div>
+                    )}
+                    {section.rows.map(({ decision: d, index: i, blocks: questionBlocks }) => (
+                      <div className="decision-row" key={d.id}>
+                        <DecisionSection
+                          card={card}
+                          decision={d}
+                          index={i}
+                          total={choiceDecisions.length}
+                          blocks={questionBlocks}
+                          answer={answers[d.id] ?? emptyDraft()}
+                          readonly={readonly || busy}
+                          onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
+                          onUploadAttachment={uploadFor}
+                        />
+                        <QuestionContext index={i} decisionId={d.id} blocks={questionBlocks} />
+                      </div>
+                    ))}
+                    {section.blocks.length > 0 && (
+                      <ContextSection title={section.title ?? 'Global context'} blocks={section.blocks} />
+                    )}
+                  </Fragment>
+                )
+                : (
+                  <Fragment key={section.id}>
+                    {section.blocks.length > 0 && (
+                      <ContextSection title={section.title ?? 'Global context'} blocks={section.blocks} />
+                    )}
+                  </Fragment>
+                ),
             )}
 
             {!readonly && !pickupSummary && verdictGate && (

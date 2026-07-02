@@ -1,32 +1,11 @@
-import { OTHER_OPTION_ID, type AttachmentRef, type Card, type Decision, type DecisionAnswer } from '../../src/shared/card.js'
+import { OTHER_OPTION_ID, type AttachmentRef, type Decision, type DecisionAnswer, type ResultsVerdict } from '../../src/shared/card.js'
 
 export { OTHER_OPTION_ID }
 
-// Mirrors the daemon's default reattach window (config.ts reattachWindowMs /
-// store.findReattachable). The dashboard has no access to the configured value, so
-// it keys the "reconnecting" surfacing off the same 24h default.
-export const REATTACH_WINDOW_MS = 24 * 60 * 60_000
-
-// "Reconnecting": a card a daemon restart orphaned (orphanedReason 'boot') out from
-// under a live waiter while it was still awaiting a decision, still within the
-// reattach window. The dashboard surfaces these as actionable rather than burying
-// them in history, so a deploy/restart never silently drops a decision — deciding
-// one still reaches the agent via the existing reattach + waker (claude --resume).
-// Disconnect/park orphans are deliberately excluded (they stay in history).
-export function isReconnecting(card: Card, nowMs: number = Date.now()): boolean {
-  return (
-    card.status === 'orphaned' &&
-    card.orphanedReason === 'boot' &&
-    nowMs - new Date(card.orphanedAt ?? card.createdAt).getTime() < REATTACH_WINDOW_MS
-  )
-}
-
-// The single source of truth for "this card is still on the human's plate": live
-// pending, or reconnecting after a restart. Drives the Needs-you bucket, the count,
-// and which card the dashboard auto-opens.
-export function needsHuman(card: Card, nowMs: number = Date.now()): boolean {
-  return card.status === 'pending' || isReconnecting(card, nowMs)
-}
+// The "reconnecting"/"needs the human" predicate and the reattach window now live in
+// src/shared so the daemon's tray view-model and the dashboard share ONE definition.
+// Re-exported here so existing dashboard imports (from './helpers.js') keep working.
+export { REATTACH_WINDOW_MS, isReconnecting, needsHuman } from '../../src/shared/needsHuman.js'
 
 export interface DraftAnswer {
   chosen: string[]
@@ -85,6 +64,24 @@ export function claimNotesValid(claims: Decision[], answers: Record<string, Draf
     const a = answers[d.id]
     return !a || a.chosen.length === 0 || !noteMissing(d, a)
   })
+}
+
+// The results gate collapses to ONE submit button whose verdict is derived, never
+// hand-picked: the per-claim votes plus the card-level add-on already say whether
+// there is work left. It is "complete" ONLY when every claim is approved AND the
+// add-on carries no instruction (note or attachment); any reject/revise, any
+// unreviewed claim, or any add-on means "continue" (the agent acts and re-submits).
+export function deriveResultsVerdict(
+  claims: Decision[],
+  answers: Record<string, DraftAnswer>,
+  addon: DraftAnswer,
+): ResultsVerdict {
+  const allApproved = claims.length > 0 && claims.every(d => {
+    const a = answers[d.id]
+    return !!a && a.chosen.length === 1 && a.chosen[0] === 'approve'
+  })
+  const addonEmpty = addon.note.trim() === '' && (addon.attachments?.length ?? 0) === 0
+  return allApproved && addonEmpty ? 'complete' : 'continue'
 }
 
 // Draft-attachment helpers — the per-field filter and the immutable add/remove

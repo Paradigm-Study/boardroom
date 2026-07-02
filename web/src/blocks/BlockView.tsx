@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Block } from '../../../src/shared/blocks.js'
+import { WIDGET_CATALOG } from '../../../src/shared/widgetCatalog.js'
 import { basename, fileHash, viewableHref } from '../fileView.js'
+import { clampVisualRatio, intrinsicSvgRatio } from './visualSize.js'
 
 // Links inside agent prose: a file we can show (image/pdf/html/text or an
 // attachment url) opens in the in-app viewer so the window is never stranded;
@@ -22,21 +24,24 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   return <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>
 }
 
-const KIND: Record<Block['type'], { label: string; Icon: LucideIcon }> = {
-  markdown: { label: 'Context', Icon: FileText },
-  graph: { label: 'Structure', Icon: Network },
-  phases: { label: 'Phases', Icon: Milestone },
-  options_compare: { label: 'Trade-offs', Icon: Scale },
-  table: { label: 'Data', Icon: Table2 },
-  diff_stat: { label: 'Change footprint', Icon: FileDiff },
-  evidence: { label: 'Evidence', Icon: Terminal },
-  mermaid: { label: 'Diagram', Icon: GitFork },
-  acceptance: { label: 'Acceptance criteria', Icon: ListChecks },
-  callout: { label: 'Callout', Icon: Megaphone },
-  key_facts: { label: 'Key facts', Icon: Gauge },
-  bar_list: { label: 'Ranking', Icon: BarChart3 },
-  progress: { label: 'Progress', Icon: TrendingUp },
-  visual: { label: 'Visual', Icon: ImageIcon },
+// Icons only — the human-facing chrome LABEL comes from WIDGET_CATALOG.name, so the
+// dialbook (what the agent is told a widget is called) and the dashboard chrome
+// (what the human sees) can never drift: they define the shared vocabulary.
+const KIND_ICON: Record<Block['type'], LucideIcon> = {
+  markdown: FileText,
+  graph: Network,
+  phases: Milestone,
+  options_compare: Scale,
+  table: Table2,
+  diff_stat: FileDiff,
+  evidence: Terminal,
+  mermaid: GitFork,
+  acceptance: ListChecks,
+  callout: Megaphone,
+  key_facts: Gauge,
+  bar_list: BarChart3,
+  progress: TrendingUp,
+  visual: ImageIcon,
 }
 
 // Prose is clamped to a few lines with a Show more toggle so a verbose agent
@@ -322,7 +327,9 @@ function BarList({ block }: { block: Extract<Block, { type: 'bar_list' }> }) {
         <div key={i} className="bar-row">
           <span className="bar-label">{it.label}</span>
           <span className="bar-track">
-            <span className="bar-fill" style={{ width: `${Math.round((it.value / max) * 100)}%` }} />
+            {/* Clamped like Progress: an item above an explicit block.max must cap at
+                a full track, not overflow it. */}
+            <span className="bar-fill" style={{ width: `${Math.max(0, Math.min(100, Math.round((it.value / max) * 100)))}%` }} />
           </span>
           <span className="bar-val">{it.display ?? String(it.value)}</span>
         </div>
@@ -377,12 +384,15 @@ export function buildVisualSrcDoc(block: Extract<Block, { type: 'visual' }>): st
 // UI. sandbox="" = opaque origin, no scripts, no same-origin, no top-nav, no forms/popups.
 // NEVER add allow-scripts or allow-same-origin (same-origin would expose the dashboard's
 // real session — daemon serves frame and host from the same 127.0.0.1 origin).
+//
+// Sizing: the human must see the WHOLE visual — the page scrolls, the panel never does.
+// An svg's true shape is derived from its own viewBox (no script needed), an explicit
+// aspectRatio is honored uncropped, and only opaque html falls back to a fixed height —
+// wrapped in a resize:vertical box so the human can drag it taller if it still overflows.
 function Visual({ block }: { block: Extract<Block, { type: 'visual' }> }) {
   const srcDoc = useMemo(() => buildVisualSrcDoc(block), [block])
-  const style: CSSProperties = block.aspectRatio
-    ? { width: '100%', aspectRatio: String(block.aspectRatio), maxHeight: 720 }
-    : { width: '100%', height: `${block.height ?? 240}px` }
-  return (
+  const ratio = block.aspectRatio ?? (block.format === 'svg' ? intrinsicSvgRatio(block.source) : null)
+  const frame = (style: CSSProperties) => (
     <iframe
       className="visual-frame"
       title={block.title ?? 'visual'}
@@ -392,6 +402,14 @@ function Visual({ block }: { block: Extract<Block, { type: 'visual' }> }) {
       srcDoc={srcDoc}
       style={style}
     />
+  )
+  if (ratio !== null) {
+    return frame({ width: '100%', aspectRatio: String(clampVisualRatio(ratio)) })
+  }
+  return (
+    <div className="visual-resize" style={{ height: `${block.height ?? 240}px` }}>
+      {frame({ width: '100%', height: '100%' })}
+    </div>
   )
 }
 
@@ -405,7 +423,8 @@ export function BlockView({ block, highlighted, forceOpen, anchorScope }: {
   forceOpen?: boolean
   anchorScope?: string
 }) {
-  const kind = KIND[block.type]
+  const Icon = KIND_ICON[block.type]
+  const label = WIDGET_CATALOG[block.type].name
   let body: ReactNode
   switch (block.type) {
     case 'markdown': body = <Markdown text={block.text} />; break
@@ -429,8 +448,8 @@ export function BlockView({ block, highlighted, forceOpen, anchorScope }: {
       className={`block${highlighted ? ' highlight' : ''}`}
     >
       <div className="block-kind">
-        <kind.Icon size={13} strokeWidth={2} aria-hidden />
-        {kind.label}
+        <Icon size={13} strokeWidth={2} aria-hidden />
+        {label}
         {block.title && <span className="title">· {block.title}</span>}
       </div>
       {body}

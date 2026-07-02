@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Card, Decision } from '../../src/shared/card.js'
-import { answersComplete, claimNotesValid, isReconnecting, needsHuman, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice } from './helpers.js'
+import { answersComplete, claimNotesValid, deriveResultsVerdict, isReconnecting, needsHuman, noteMissing, OTHER_OPTION_ID, toApiAnswers, toggleChoice, type DraftAnswer } from './helpers.js'
+import type { AttachmentRef } from '../../src/shared/card.js'
 
 const decision: Decision = {
   id: 'd1', prompt: 'p',
@@ -93,6 +94,56 @@ describe('claimNotesValid', () => {
     expect(claimNotesValid([claim], { 'claim:a': { chosen: ['approve'], note: '', custom: '' } })).toBe(true)
     expect(claimNotesValid([claim], { 'claim:a': { chosen: ['reject'], note: '', custom: '' } })).toBe(false)
     expect(claimNotesValid([claim], { 'claim:a': { chosen: ['revise'], note: 'do x', custom: '' } })).toBe(true)
+  })
+})
+
+describe('deriveResultsVerdict', () => {
+  const claim = (id: string): Decision => ({
+    id, prompt: id,
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'revise', label: 'Revise' }, { id: 'reject', label: 'Reject' }],
+    noteRequiredOn: ['revise', 'reject'],
+  })
+  const addon = (note = '', attachments?: AttachmentRef[]): DraftAnswer => ({ chosen: [], note, custom: '', ...(attachments ? { attachments } : {}) })
+  const file: AttachmentRef = { id: 'f1', name: 'x.png', size: 1, path: '/x', uploadedAt: '2026-06-30T00:00:00.000Z' }
+
+  it('is "complete" only when every claim is approved and the add-on is empty', () => {
+    const claims = [claim('a'), claim('b')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' }, b: { chosen: ['approve'], note: '', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon())).toBe('complete')
+  })
+
+  it('is "continue" when any claim is rejected or revised', () => {
+    const claims = [claim('a'), claim('b')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' }, b: { chosen: ['reject'], note: 'drop it', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon())).toBe('continue')
+  })
+
+  it('is "continue" when any claim is still unreviewed', () => {
+    const claims = [claim('a'), claim('b')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon())).toBe('continue')
+  })
+
+  it('is "continue" when all approved but the human added an instruction note', () => {
+    const claims = [claim('a')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon('also bump the version'))).toBe('continue')
+  })
+
+  it('is "continue" when all approved but the add-on carries an attachment', () => {
+    const claims = [claim('a')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon('', [file]))).toBe('continue')
+  })
+
+  it('ignores a whitespace-only add-on note (still "complete")', () => {
+    const claims = [claim('a')]
+    const answers = { a: { chosen: ['approve'], note: '', custom: '' } }
+    expect(deriveResultsVerdict(claims, answers, addon('   '))).toBe('complete')
+  })
+
+  it('is "continue" for a degenerate results card with zero claims', () => {
+    expect(deriveResultsVerdict([], {}, addon())).toBe('continue')
   })
 })
 

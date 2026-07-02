@@ -10,6 +10,10 @@ import type { DraftAnswer } from './helpers.js'
 vi.mock('./api.js', () => ({
   decideCard: vi.fn(),
   uploadAttachment: vi.fn(),
+  // CardView mounts the SpecAffordance (reads cards to recall a locked spec); an
+  // empty card list keeps it hidden so these results-gate assertions are unaffected.
+  fetchCards: vi.fn(() => Promise.resolve([])),
+  subscribeCards: vi.fn(() => () => {}),
 }))
 
 afterEach(() => {
@@ -154,62 +158,68 @@ describe('CardView results gate — adversarial', () => {
     ],
   }
 
-  it('renders the always-on add-on box and both finish buttons; Mark complete starts disabled', () => {
+  it('renders the always-on add-on box and ONE derived finish button (no separate Mark complete)', () => {
     render(<CardView card={twoClaimResults} />)
 
     const addon = screen.getByLabelText('Add instructions for the agent')
     expect(addon.tagName).toBe('TEXTAREA')
-    expect(screen.getByRole('button', { name: 'Keep going' })).toBeTruthy()
-    const complete = screen.getByRole('button', { name: 'Mark complete' }) as HTMLButtonElement
-    expect(complete.disabled).toBe(true)
+    // Exactly one finish button — nothing reviewed yet, so it derives "Keep going" and is enabled.
+    expect(document.querySelectorAll('.results-submit button.submit')).toHaveLength(1)
+    const finish = screen.getByRole('button', { name: 'Keep going' }) as HTMLButtonElement
+    expect(finish.disabled).toBe(false)
+    // The human never picks "Mark complete" — it only appears once the state earns it.
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
   })
 
-  it('Mark complete stays disabled when only SOME claims are reviewed (off-by-one gate)', async () => {
+  it('the single button reads Keep going until EVERY claim is approved, then flips to Mark complete', async () => {
     render(<CardView card={twoClaimResults} />)
 
-    const complete = screen.getByRole('button', { name: 'Mark complete' }) as HTMLButtonElement
-    expect(complete.disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Keep going' })).toBeTruthy()
 
-    // Review exactly one of two claims.
+    // Review exactly one of two claims — still mid-flight, so still "Keep going".
     fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0])
     expect(screen.getByText('1/2 reviewed')).toBeTruthy()
-    // Still gated — one claim is unreviewed.
-    expect(complete.disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Keep going' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
 
-    // Review the second; now it unlocks.
+    // Approve the second; the derived label flips to Mark complete and is enabled.
     fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[1])
-    await waitFor(() => expect(complete.disabled).toBe(false))
+    const complete = await screen.findByRole('button', { name: 'Mark complete' }) as HTMLButtonElement
+    expect(complete.disabled).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Keep going' })).toBeNull()
   })
 
-  it('Mark complete is BLOCKED when a reviewed claim is Revise without a note (note-required gate)', async () => {
+  it('stays Keep going and DISABLED when a reviewed claim is Revise without a note (note-required gate)', async () => {
     render(<CardView card={twoClaimResults} />)
-
-    const complete = screen.getByRole('button', { name: 'Mark complete' }) as HTMLButtonElement
-    const keepGoing = screen.getByRole('button', { name: 'Keep going' }) as HTMLButtonElement
 
     // Approve claim 1, Revise claim 2 but leave the required note empty.
     fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0])
     fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[1])
 
-    // The revise claim has a verdict but no note, so it does NOT count as reviewed:
-    // the progress label reflects only the fully-answered approve claim.
+    // The revise claim has a verdict but no note, so it does NOT count as reviewed.
     expect(screen.getByText('1/2 reviewed')).toBeTruthy()
-    // Mark complete must stay disabled: an answered-but-noteless required claim is not "complete".
-    expect(complete.disabled).toBe(true)
-    // "Keep going" must ALSO be blocked: a claim the human voted on lacks its required note.
+    // A revise keeps the verdict at "continue" (never "complete"), and the missing
+    // required note disables the single button.
+    const keepGoing = screen.getByRole('button', { name: 'Keep going' }) as HTMLButtonElement
     expect(keepGoing.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
 
-    // Provide the note -> both unlock.
+    // Provide the note -> the button unlocks, still "Keep going" (a revise is not done).
     fireEvent.change(screen.getByLabelText('What to revise'), { target: { value: 'shorten it' } })
-    await waitFor(() => expect(complete.disabled).toBe(false))
-    expect(keepGoing.disabled).toBe(false)
+    await waitFor(() => expect(keepGoing.disabled).toBe(false))
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
   })
 
-  it('Keep going is allowed with NO claims reviewed (continue only needs the verdict)', () => {
+  it('stays Keep going when all claims are approved but the human added an instruction note', async () => {
     render(<CardView card={twoClaimResults} />)
-    // Nothing reviewed yet.
-    expect(screen.getByText('0/2 reviewed')).toBeTruthy()
-    const keepGoing = screen.getByRole('button', { name: 'Keep going' }) as HTMLButtonElement
-    expect(keepGoing.disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
+    // All approved -> would be "Mark complete"...
+    expect(await screen.findByRole('button', { name: 'Mark complete' })).toBeTruthy()
+
+    // ...but typing an add-on instruction means there is work left -> back to "Keep going".
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'also add a test' } })
+    expect(await screen.findByRole('button', { name: 'Keep going' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
   })
 })

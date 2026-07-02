@@ -389,16 +389,52 @@ describe('BlockView visual widget (sandboxed)', () => {
     expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<div>a</div></head>'))
   })
 
-  it('sizes by aspectRatio OR height (mutually exclusive), defaulting to 240px', () => {
+  it('sizes an explicit aspectRatio as an uncropped ratio box — no max-height, no pixel height', () => {
     const af = render(<BlockView block={svgVisual} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
     expect(af.style.aspectRatio).toBeTruthy()
-    expect(af.style.height).toBe('') // aspectRatio mode sets no pixel height
+    expect(af.style.height).toBe('') // ratio mode sets no pixel height
+    expect(af.style.maxHeight).toBe('') // the old 720px crop forced inner scrolling on tall visuals
+  })
 
-    const hf = render(<BlockView block={{ id: 'vh', type: 'visual', format: 'html', height: 300, source: '<div>x</div>' }} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
-    expect(hf.style.height).toBe('300px')
-    expect(hf.style.aspectRatio).toBe('') // height mode sets no aspect-ratio
+  it('derives the ratio from the svg viewBox when no aspectRatio is given, so the whole figure is always visible', () => {
+    const block: Block = { id: 'vd', type: 'visual', format: 'svg', source: '<svg viewBox="0 0 100 300"><rect/></svg>' }
+    const f = render(<BlockView block={block} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(parseFloat(f.style.aspectRatio)).toBeCloseTo(100 / 300)
+    expect(f.style.height).toBe('')
+  })
 
-    const bf = render(<BlockView block={{ id: 'vb', type: 'visual', format: 'html', source: '<div>x</div>' }} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
-    expect(bf.style.height).toBe('240px')
+  it('clamps hostile ratios (derived or explicit) so a visual cannot bury the card', () => {
+    const derived: Block = { id: 'vt', type: 'visual', format: 'svg', source: '<svg viewBox="0 0 10 1000"><rect/></svg>' }
+    const df = render(<BlockView block={derived} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(parseFloat(df.style.aspectRatio)).toBeCloseTo(0.1)
+
+    const explicit: Block = { id: 'vx', type: 'visual', format: 'svg', aspectRatio: 0.01, source: '<svg viewBox="0 0 16 9"></svg>' }
+    const xf = render(<BlockView block={explicit} />).container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(parseFloat(xf.style.aspectRatio)).toBeCloseTo(0.1)
+  })
+
+  it('html visuals keep explicit-height mode inside a drag-resizable wrapper (240px fallback)', () => {
+    const hr = render(<BlockView block={{ id: 'vh', type: 'visual', format: 'html', height: 300, source: '<div>x</div>' }} />).container
+    const wrap = hr.querySelector('.visual-resize') as HTMLDivElement
+    const hf = wrap.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(wrap.style.height).toBe('300px')
+    expect(hf.style.height).toBe('100%') // the wrapper owns the height so the human can drag it taller
+    expect(hf.style.aspectRatio).toBe('')
+
+    const br = render(<BlockView block={{ id: 'vb', type: 'visual', format: 'html', source: '<div>x</div>' }} />).container
+    expect((br.querySelector('.visual-resize') as HTMLDivElement).style.height).toBe('240px')
+  })
+
+  it('never derives a ratio for html visuals, even when the markup embeds an svg', () => {
+    const block: Block = { id: 'vm', type: 'visual', format: 'html', source: '<p>legend</p><svg viewBox="0 0 10 10"></svg>' }
+    const { container } = render(<BlockView block={block} />)
+    const f = container.querySelector('iframe.visual-frame') as HTMLIFrameElement
+    expect(f.style.aspectRatio).toBe('')
+    expect((container.querySelector('.visual-resize') as HTMLDivElement).style.height).toBe('240px')
+  })
+
+  it('aspect-ratio mode is not wrapped for resize — the frame already fits its content exactly', () => {
+    const { container } = render(<BlockView block={svgVisual} />)
+    expect(container.querySelector('.visual-resize')).toBeNull()
   })
 })
