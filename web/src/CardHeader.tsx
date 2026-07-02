@@ -84,7 +84,10 @@ function formatCreatedAt(iso: string): { short: string; full: string } | null {
   if (!Number.isFinite(date.getTime())) return null
   return {
     short: shortWeekdayTime(date),
-    full: new Intl.DateTimeFormat(undefined, {
+    // 'en-US' like shortWeekdayTime, not the system locale: the UI is English, and
+    // the golden snapshots embed this string — an ICU-locale-dependent render would
+    // make the suite pass or fail based on the developer's LANG.
+    full: new Intl.DateTimeFormat('en-US', {
       weekday: 'long',
       year: 'numeric',
       month: 'short',

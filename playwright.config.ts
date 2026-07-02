@@ -22,9 +22,11 @@ export default defineConfig({
     // call the tests need is fulfilled by page.route in the fixture.
     command: 'BOARDROOM_PROXY_TARGET=http://127.0.0.1:4949 npm run dev:web -- --host 127.0.0.1 --port 5177 --strictPort',
     url: 'http://127.0.0.1:5177',
-    // Reuse locally for iteration speed; in CI a stale/foreign server on the port
-    // must fail the run instead of being silently tested against.
-    reuseExistingServer: !process.env.CI,
+    // Never reuse: a server already on 5177 (e.g. a manually-started dev:web
+    // without the dead-port env) proxies to the REAL daemon, silently reopening
+    // the leak the hermetic command above closes. Vite starts in ~1s; pay it.
+    // (The e2e suite is currently local-only — CI runs vitest, not playwright.)
+    reuseExistingServer: false,
     timeout: 30_000,
   },
 })

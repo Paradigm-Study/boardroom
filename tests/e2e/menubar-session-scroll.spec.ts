@@ -64,18 +64,22 @@ test('menubar dashboard restores per-session scroll after wrapper reload', async
     })
 
     const page = await showMenubarWindow(app)
+    // The menubar preloads the dashboard at LAUNCH — before this test can attach its
+    // page.route mocks — so that first load's /api + /events requests hit the
+    // hermetic dead-daemon proxy (playwright.config webServer) and 502. That is
+    // deterministic startup noise, not the scroll behavior under test — but only
+    // until the mocks attach: after mocksReady flips, a 502 is a REAL failure (an
+    // API request the fixture forgot to cover) and must fail the run.
+    let mocksReady = false
     page.on('console', msg => {
       const text = msg.text()
       if (text.includes('[boardroom] card stream error')) return
-      // The menubar preloads the dashboard at LAUNCH — before this test can attach
-      // its page.route mocks — so that first load's /api + /events requests hit the
-      // hermetic dead-daemon proxy (playwright.config webServer) and 502. That is
-      // deterministic startup noise, not the scroll behavior under test.
-      if (text.includes('Failed to load resource') && text.includes('502')) return
+      if (!mocksReady && text.includes('Failed to load resource') && text.includes('502')) return
       if (msg.type() === 'warning' || msg.type() === 'error') logs.push(`page ${msg.type()}: ${text}`)
     })
     page.on('pageerror', err => logs.push(`pageerror: ${err.message}`))
     await mockBoardroomApi(page)
+    mocksReady = true
     const dashboardUrl = `http://127.0.0.1:5177/?e2e=${Date.now()}`
 
     await page.goto(`${dashboardUrl}#/card/${scrollCards[0].id}`, { waitUntil: 'domcontentloaded' })
