@@ -81,27 +81,31 @@ export class SessionCapturer {
       const project = basename(raw.cwd)
       if (!project) continue
       const ts = this.now()
-      const session: CapturedSession = {
-        sessionId: raw.sessionId,
-        machineId: this.machineId,
-        pid: raw.pid,
-        procStart: typeof raw.procStart === 'string' ? raw.procStart : undefined,
-        cwd: raw.cwd,
-        project,
-        claudeVersion: typeof raw.version === 'string' ? raw.version : undefined,
-        entrypoint: typeof raw.entrypoint === 'string' ? raw.entrypoint : undefined,
-        kind: typeof raw.kind === 'string' ? raw.kind : undefined,
-        startedAt: toIso(raw.startedAt),
-        status: this.isAlive(raw.pid) ? 'alive' : 'ended',
-        capturedAt: this.store.getCaptured(raw.sessionId)?.capturedAt ?? ts,
-        lastSeenAt: ts,
-        transcriptPath: this.findTranscript(raw.sessionId),
-        tasksDir: this.findTasksDir(raw.sessionId),
-      }
-      // Belt-and-suspenders: reconcile() runs on a setInterval with no global
-      // uncaughtException handler, so a schema/SQLITE error on ONE session must
-      // be contained here, never fatal to the daemon (the file's contract).
+      // Belt-and-suspenders: a schema/SQLITE error on ONE session must be contained
+      // here, never propagate. (The daemon now has a global uncaughtException handler
+      // that would gracefully exit on an escape — see shutdown.ts — so containing it
+      // locally is what keeps one bad session from taking the whole daemon down.)
+      // The store READ (getCaptured) lives inside the guard too: it can throw the
+      // same SQLITE_BUSY/IOERR class of errors as the write (e.g. a second daemon
+      // holding the write lock — the stale-daemon-skew setup).
       try {
+        const session: CapturedSession = {
+          sessionId: raw.sessionId,
+          machineId: this.machineId,
+          pid: raw.pid,
+          procStart: typeof raw.procStart === 'string' ? raw.procStart : undefined,
+          cwd: raw.cwd,
+          project,
+          claudeVersion: typeof raw.version === 'string' ? raw.version : undefined,
+          entrypoint: typeof raw.entrypoint === 'string' ? raw.entrypoint : undefined,
+          kind: typeof raw.kind === 'string' ? raw.kind : undefined,
+          startedAt: toIso(raw.startedAt),
+          status: this.isAlive(raw.pid) ? 'alive' : 'ended',
+          capturedAt: this.store.getCaptured(raw.sessionId)?.capturedAt ?? ts,
+          lastSeenAt: ts,
+          transcriptPath: this.findTranscript(raw.sessionId),
+          tasksDir: this.findTasksDir(raw.sessionId),
+        }
         this.store.upsertCaptured(session)
       } catch (err) {
         console.warn(`[capturer] skipping session ${raw.sessionId}: ${(err as Error).message}`)

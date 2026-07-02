@@ -26,8 +26,12 @@ if [ "$connected" = 1 ]; then
   if [ -n "$session_id" ] && [ -n "$cwd" ]; then
     body=$(jq -nc --arg s "$session_id" --arg c "$cwd" --arg p "$(basename "$cwd")" \
       '{sessionId:$s,cwd:$c,project:$p}')
-    curl -s -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
-      -H 'content-type: application/json' -d "$body" || true
+    # -f so an HTTP-level error (4xx/5xx) counts as failure too, and log to stderr
+    # (Claude Code's debug log) — a silently failed registration breaks auto-wake
+    # for the whole session with zero diagnostic otherwise. Still never blocks.
+    curl -sf -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
+      -H 'content-type: application/json' -d "$body" \
+      || echo "boardroom session-start: session registration POST failed — auto-wake (claude --resume) may not target this session" >&2
   fi
 fi
 
@@ -71,6 +75,16 @@ behalf — their approval lives in the cards.
   may also park on a long wait — wait for a real verdict, never infer approval. If
   a call fails because the server is unreachable, fall back to chat; do not retry
   in a loop.
+- RESTART / DISCONNECT recovery (the agent twin of PARKED): if a boardroom call
+  ERRORS OUT mid-wait with a transport/connection drop or a "re-initialize / mcp
+  session not found" error, the daemon was almost certainly restarted (it has no
+  hot reload, so every redeploy briefly kills it). That is NOT a verdict. STOP: do
+  NOT guess, infer, assume, or proceed on what the human "would have" chosen, and
+  do NOT auto-accept. The human's decision is never lost — the card is preserved
+  and reattachable. To recover the REAL decision, re-issue the EXACT same call
+  (identical project + headline) on your next turn; reattachment is automatic and
+  re-runs no work — it either hands you the verdict the human already made or hangs
+  again until they decide.
 EOF
 
 read -r -d '' FALLBACK <<'EOF'
@@ -100,6 +114,12 @@ human's behalf.
 - OFFLINE FALLBACK: if a mcp__boardroom__* call fails because the server is
   unreachable, fall back to asking the same questions natively in chat — do not
   retry in a loop.
+- RESTART / DISCONNECT recovery (if the daemon comes up later and a boardroom call
+  then drops mid-wait with a transport/connection error): that is NOT a verdict.
+  STOP — do NOT guess, infer, or auto-accept. The card is preserved; re-issue the
+  EXACT same call (identical project + headline) on your next turn to reattach and
+  claim the human's real decision. A PARKED result means the same: stop and
+  re-issue later to claim it.
 EOF
 
 if [ "$connected" = 1 ]; then ctx="$PROTOCOL"; else ctx="$FALLBACK"; fi

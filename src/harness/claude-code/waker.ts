@@ -5,7 +5,10 @@ import type { Card } from '../../shared/card.js'
 import { buildSummary } from '../../daemon/summary.js'
 import type { Store } from '../../daemon/store.js'
 
-export type SpawnFn = (bin: string, args: string[], cwd: string) => void
+// onSpawned fires once the child process actually started (Node's 'spawn' event) —
+// the waker uses it to mark the card delivered. A failed launch (ENOENT etc.) must
+// NOT mark: the decision then stays claimable via reattach instead of vanishing.
+export type SpawnFn = (bin: string, args: string[], cwd: string, onSpawned?: () => void) => void
 
 interface WakerOpts {
   spawn?: SpawnFn
@@ -60,7 +63,24 @@ export class Waker {
     }
     this.woken.add(card.id)
     const args = ['-p', '--resume', session.sessionId, resumeMessage(card), '--permission-mode', this.permissionMode]
-    this.spawnFn(this.claudeBin, args, session.cwd)
+    // Mark the card delivered once the resume actually launched: the decision now
+    // travels in that session's prompt (which is told NOT to re-call the tool), so
+    // leaving deliveredAt unset would keep the card claimable by ANY future call
+    // with the same fingerprint — handing a stale verdict to an unrelated session,
+    // the never-auto-accept violation. On a failed launch nothing is marked and the
+    // reattach path stays open. The dashboard copy-paste summary works either way.
+    this.spawnFn(this.claudeBin, args, session.cwd, () => this.markDelivered(card.id))
+  }
+
+  private markDelivered(cardId: string): void {
+    try {
+      const fresh = this.store.get(cardId)
+      if (fresh?.status === 'decided' && !fresh.deliveredAt) {
+        this.store.update({ ...fresh, deliveredAt: new Date().toISOString() })
+      }
+    } catch (err) {
+      console.warn(`[waker] could not mark card ${cardId} delivered: ${(err as Error).message}`)
+    }
   }
 }
 
@@ -81,10 +101,11 @@ function isExistingDir(p: string): boolean {
   }
 }
 
-function defaultSpawn(bin: string, args: string[], cwd: string): void {
+function defaultSpawn(bin: string, args: string[], cwd: string, onSpawned?: () => void): void {
   // Detached & stdio-ignored: the resumed turn outlives this request and must
   // never block or crash the daemon (e.g. if the claude binary isn't found).
   const child = spawn(bin, args, { cwd, stdio: 'ignore', detached: true })
+  child.on('spawn', () => onSpawned?.())
   child.on('error', err => console.warn(`[waker] could not spawn ${bin}: ${err.message}`))
   // Auto-wake is a convenience over the dashboard's copy-paste fallback; a failed
   // resume is otherwise invisible (stdio ignored, one-shot), so at least log it.
