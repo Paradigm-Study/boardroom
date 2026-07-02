@@ -39,6 +39,7 @@ export function createDaemon(config: Config): Daemon {
   app.use(buildApiRouter(queue, store, {
     attachmentDir: join(config.configDir, 'attachments'),
     configDir: config.configDir,
+    reattachWindowMs: config.reattachWindowMs,
   }))
 
   const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))

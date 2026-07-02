@@ -47,11 +47,15 @@ function envMs(name: string, fallback: number): number {
 
 // The opt-in park window. Returns the configured positive millisecond window, or
 // undefined when BOARDROOM_BLOCK_MS is unset / 0 / negative / non-numeric — and
-// undefined means "never park; hang until the human decides." Pure (env is passed
-// in) so the opt-in contract is unit-testable without spinning up the transport.
+// undefined means "never park; hang until the human decides." Values beyond Node's
+// 32-bit setTimeout ceiling are clamped to it: an oversized delay would otherwise
+// fire the timer after ~1ms and park the gate almost immediately — the opposite of
+// the "practically never park" the caller asked for. Pure (env is passed in) so the
+// opt-in contract is unit-testable without spinning up the transport.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1
 export function parkWindowMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
   const raw = Number(env.BOARDROOM_BLOCK_MS)
-  return Number.isFinite(raw) && raw > 0 ? raw : undefined
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_TIMEOUT_MS) : undefined
 }
 
 const GLANCEABLE =

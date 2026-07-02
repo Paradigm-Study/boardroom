@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 
 export interface Config {
   port: number
@@ -24,7 +25,7 @@ export function loadConfig(configDir?: string): Config {
     remindEveryMinutes: 10,
     notifications: true,
     openOnPending: false,
-    reattachWindowMs: 24 * 60 * 60_000, // how long an orphaned card stays reattachable (from orphan time)
+    reattachWindowMs: REATTACH_WINDOW_MS, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
     dbPath: join(dir, 'boardroom.sqlite'),
     configDir: dir,

@@ -73,6 +73,10 @@ let base: string
 
 beforeEach(async () => {
   process.env.BOARDROOM_STREAM_HEARTBEAT_MS = '150'
+  // Isolate from ambient shell state: an exported BOARDROOM_BLOCK_MS would make the
+  // FIRST test of a run park where the suite expects a hanging gate (afterEach only
+  // protects between tests).
+  delete process.env.BOARDROOM_BLOCK_MS
   dir = mkdtempSync(join(tmpdir(), 'boardroom-mcp-'))
   const config: Config = {
     port: 0,
@@ -365,15 +369,18 @@ describe('hanging tool calls keep their SSE stream warm', () => {
     )
     expect(callRes.status).toBe(200)
 
-    // Collect well past several keepalive beats; the call must still be hanging.
-    const messages = await collectMessages(callRes.body, 600)
-    ac.abort()
-
-    // The call has not resolved (no park, no return) and the card is still pending —
-    // an orphaned card here would mean it parked.
-    expect(messages.find(m => m.id === 11 && 'result' in m)).toBeUndefined()
+    // Wait well past several keepalive beats and assert the queue state while the
+    // call is STILL hanging — asserting after abort would race the disconnect
+    // handler, which orphans the card and could mask (or fake) a park.
+    await delay(600)
     expect(store.list('pending').length).toBe(1)
     expect(store.list('orphaned').length).toBe(0)
+
+    const messages = await collectMessages(callRes.body, 50)
+    ac.abort()
+
+    // The call has not resolved (no park, no return).
+    expect(messages.find(m => m.id === 11 && 'result' in m)).toBeUndefined()
   }, 15_000)
 
   it('registers present_spec: hangs as a spec gate and resolves with the locked contract', async () => {
@@ -479,5 +486,10 @@ describe('parkWindowMs — parking is opt-in (hang-until-decided by default)', (
     expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '0' })).toBeUndefined()
     expect(parkWindowMs({ BOARDROOM_BLOCK_MS: '-5' })).toBeUndefined()
     expect(parkWindowMs({ BOARDROOM_BLOCK_MS: 'nope' })).toBeUndefined()
+  })
+
+  it('clamps a window beyond Node\'s 32-bit setTimeout ceiling (an overflow would fire after ~1ms and park instantly)', () => {
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: String(2 ** 40) })).toBe(2 ** 31 - 1)
+    expect(parkWindowMs({ BOARDROOM_BLOCK_MS: String(2 ** 31 - 1) })).toBe(2 ** 31 - 1)
   })
 })

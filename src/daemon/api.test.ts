@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Card } from '../shared/card.js'
 import { CapturedSession } from '../shared/session.js'
 import { buildApiRouter, isWithinRoot, safeSegment } from './api.js'
+import { Block } from '../shared/blocks.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
 
@@ -39,6 +40,16 @@ beforeEach(() => {
 afterEach(() => {
   store.close()
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('GET /api/widgets', () => {
+  it('returns the widget catalog — one entry per block type', async () => {
+    const res = await request(app).get('/api/widgets')
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body).toHaveLength(Block.options.length)
+    expect(res.body.every((e: { type?: string; name?: string; whenToUse?: string }) => !!e.type && !!e.name && !!e.whenToUse)).toBe(true)
+  })
 })
 
 describe('GET /api/cards', () => {
@@ -222,6 +233,68 @@ describe('GET /api/cards/:id/attachments/:attachmentId', () => {
     const res = await request(app).get('/api/cards/..%2fsomething/attachments/secret').expect(404)
     expect(res.body.error).toMatch(/no attachment/)
   })
+
+  it('a valid ref whose underlying file is gone returns a clean JSON error, not an escaped sendFile throw', async () => {
+    const root = join(dir, 'attachments')
+    // A meta that passes the existsSync + isWithinRoot guards, but whose `path`
+    // points at a file that no longer exists on disk (deleted out from under us).
+    // res.sendFile is ASYNC, so its ENOENT fires AFTER the synchronous try/catch —
+    // without an error callback wired to sendError, it escapes to Express's default
+    // HTML handler. The handler must instead surface a JSON error and not 200/crash.
+    const inRoot = join(root, 'c1')
+    mkdirSync(inRoot, { recursive: true })
+    const gonePath = join(inRoot, 'gone.bin') // inside root → isWithinRoot passes; never written → missing
+    writeFileSync(
+      join(inRoot, 'ghost.json'),
+      JSON.stringify({ id: 'ghost', name: 'g', size: 0, path: gonePath, uploadedAt: 'now' }),
+    )
+
+    const res = await request(app).get('/api/cards/c1/attachments/ghost')
+    expect(res.status).toBe(404)
+    expect(res.headers['content-type']).toMatch(/json/)
+    expect(res.body.error).toMatch(/no attachment/)
+  })
+
+  // The stored mime is uploader-supplied (the agent is untrusted): serving it
+  // verbatim would execute a text/html upload at the daemon origin (stored XSS).
+  async function uploadAs(mime: string, body = '<h1>x</h1>'): Promise<string> {
+    queue.submit(card('att-mime'), noop)
+    const res = await request(app)
+      .post('/api/cards/att-mime/attachments')
+      .set('content-type', mime)
+      .set('x-answer-id', 'd1')
+      .send(Buffer.from(body))
+      .expect(201)
+    return res.body.url as string
+  }
+
+  it('serves passive types (png) inline under their declared mime', async () => {
+    const url = await uploadAs('image/png', 'fake-png')
+    const res = await request(app).get(url).expect(200)
+    expect(res.headers['content-type']).toMatch(/^image\/png/)
+    expect(res.headers['content-disposition']).toBeUndefined()
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+  })
+
+  it('serves active-content types (text/html) ONLY under a response-level CSP sandbox', async () => {
+    const url = await uploadAs('text/html; charset=utf-8', '<script>fetch("/api/cards")</script>')
+    const res = await request(app).get(url).expect(200)
+    expect(res.headers['content-type']).toMatch(/^text\/html/)
+    expect(res.headers['content-security-policy']).toBe('sandbox')
+  })
+
+  it('serves svg (scriptable on navigation) under the CSP sandbox too', async () => {
+    const url = await uploadAs('image/svg+xml', '<svg onload="x()"/>')
+    const res = await request(app).get(url).expect(200)
+    expect(res.headers['content-security-policy']).toBe('sandbox')
+  })
+
+  it('forces unknown/unlisted mimes to an opaque download (octet-stream + attachment)', async () => {
+    const url = await uploadAs('application/x-anything')
+    const res = await request(app).get(url).expect(200)
+    expect(res.headers['content-type']).toMatch(/^application\/octet-stream/)
+    expect(res.headers['content-disposition']).toBe('attachment')
+  })
 })
 
 describe('safeSegment / isWithinRoot — the attachment path-traversal guards', () => {
@@ -299,6 +372,55 @@ describe('GET /events', () => {
         res.on('data', () => { (res as unknown as { destroy(): void }).destroy(); done(null, null) })
       })
     expect(res.headers['content-type']).toContain('text/event-stream')
+  })
+
+  // The menu-bar tray subscribes to this same stream. It must receive a precomputed
+  // tray view-model on connect (so a tray connecting after a daemon restart sees the
+  // current state immediately) and a fresh one on every card transition.
+  // Collect tray-frame view-models off the SSE stream until `enough` of them arrive,
+  // optionally running `onFrame(n)` after the nth. Destroying the stream rejects the
+  // supertest promise, so capture into a local and assert after it settles.
+  async function collectTrayFrames(
+    enough: number,
+    onFrame?: (count: number) => void,
+  ): Promise<Record<string, unknown>[]> {
+    const frames: Record<string, unknown>[] = []
+    await request(app)
+      .get('/events')
+      .buffer(false)
+      .parse((res, done) => {
+        let buf = ''
+        res.on('data', (chunk: Buffer) => {
+          buf += chunk.toString()
+          let idx
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const frame = buf.slice(0, idx); buf = buf.slice(idx + 2)
+            if (!frame.includes('event: tray')) continue
+            const dataLine = frame.split('\n').find(l => l.startsWith('data:'))!
+            frames.push(JSON.parse(dataLine.slice(5).trim()))
+            onFrame?.(frames.length)
+            if (frames.length >= enough) { (res as unknown as { destroy(): void }).destroy(); done(null, null); return }
+          }
+        })
+      })
+      .catch(() => {})
+    return frames
+  }
+
+  it('writes an initial tray snapshot frame on connect', async () => {
+    queue.submit(card('c1'), noop) // one pending card before connecting
+    const [snapshot] = await collectTrayFrames(1)
+    expect(snapshot.total).toBe(1)
+    expect(snapshot.byStage).toMatchObject({ clarify: 1 })
+  })
+
+  it('pushes a fresh tray frame when a card is decided', async () => {
+    queue.submit(card('c1'), noop)
+    const frames = await collectTrayFrames(2, n => {
+      if (n === 1) queue.decide('c1', { d1: { chosen: ['a'] } })
+    })
+    expect(frames[0].total).toBe(1) // snapshot: one pending
+    expect(frames[1].total).toBe(0) // after decide: cleared
   })
 })
 

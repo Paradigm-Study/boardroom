@@ -1,6 +1,7 @@
 import { chmodSync, existsSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { Card, type CardStatus } from '../shared/card.js'
+import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { CapturedSession } from '../shared/session.js'
 
 export class Store {
@@ -185,16 +186,22 @@ export class Store {
   }
 
   // A retried/reconnecting tool call reattaches to a prior card with the same
-  // fingerprint when it is either decided-but-never-delivered (claim the answer
-  // made while the agent was away — any age) or orphaned within the window (the
-  // agent dropped, e.g. machine slept, and came back before a decision). Pending
-  // cards are never targets — they still have a live waiter; stealing it would be
-  // wrong. Most recent match wins.
-  findReattachable(fingerprint: string | undefined, nowMs: number, windowMs = 24 * 60 * 60_000): Card | undefined {
+  // fingerprint when it is either decided-but-never-delivered within the window
+  // measured from DECISION time (claim the answer made while the agent was away —
+  // a card parked for days stays claimable for a full window after the human
+  // finally decides) or orphaned within the window measured from orphan time (the
+  // agent dropped, e.g. machine slept, and came back before a decision). Decided
+  // claims are deliberately NOT unbounded: fingerprints are formulaic
+  // (project+stage+headline), so a stale undelivered verdict left claimable
+  // forever would eventually resolve an UNRELATED session's identical-looking gate
+  // with weeks-old answers — an auto-accept the human never made. Pending cards
+  // are never targets — they still have a live waiter; stealing it would be wrong.
+  // Most recent match wins.
+  findReattachable(fingerprint: string | undefined, nowMs: number, windowMs = REATTACH_WINDOW_MS): Card | undefined {
     if (!fingerprint) return undefined
     const matches = this.list().filter(c => c.fingerprint === fingerprint)
     const eligible = matches.filter(c =>
-      (c.status === 'decided' && !c.deliveredAt) ||
+      (c.status === 'decided' && !c.deliveredAt && nowMs - Date.parse(c.decidedAt ?? c.createdAt) < windowMs) ||
       (c.status === 'orphaned' && nowMs - Date.parse(c.orphanedAt ?? c.createdAt) < windowMs),
     )
     return eligible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]

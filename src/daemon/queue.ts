@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, SPEC_VERDICT_ID, SPEC_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
+import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
 
@@ -23,7 +24,7 @@ export class Queue extends EventEmitter {
   // stale close event can never collide with a revived card's new waiter.
   private gens = new Map<string, number>()
 
-  constructor(private store: Store, private reattachWindowMs = 24 * 60 * 60_000) {
+  constructor(private store: Store, private reattachWindowMs = REATTACH_WINDOW_MS) {
     super()
   }
 

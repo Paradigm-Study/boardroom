@@ -170,8 +170,20 @@ describe('Store.findReattachable', () => {
     expect(store.findReattachable('fp', now)?.id).toBe('c1')
   })
 
-  it('returns a decided-but-undelivered card at any age', () => {
-    store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z' }))
+  it('returns a decided-but-undelivered card, windowed on DECISION time (an old card decided recently stays claimable)', () => {
+    store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z', decidedAt: new Date(now - 60_000).toISOString() }))
+    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+  })
+
+  it('does NOT return a decided-but-undelivered card whose decision is older than the window (no forever-claimable verdicts)', () => {
+    // Fingerprints are formulaic; a weeks-old undelivered verdict must never
+    // resolve a future identical-looking gate from another session.
+    store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z', decidedAt: '2020-01-02T00:00:00.000Z' }))
+    expect(store.findReattachable('fp', now)).toBeUndefined()
+  })
+
+  it('windows a legacy decided card without decidedAt on createdAt', () => {
+    store.insert(fpCard('c1', 'decided', { createdAt: new Date(now - 60_000).toISOString() }))
     expect(store.findReattachable('fp', now)?.id).toBe('c1')
   })
 

@@ -6,10 +6,17 @@ import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type Decisi
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
+import { widgetCatalogList } from '../shared/widgetCatalog.js'
+import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
+import { buildTrayVM } from './trayView.js'
 
 interface ApiOptions {
   attachmentDir: string
   configDir: string
+  // The daemon's configured reattach window, so the tray view-model counts
+  // "reconnecting" cards against the SAME window the queue reattaches against.
+  // Optional → tests and legacy callers fall back to the 24h default.
+  reattachWindowMs?: number
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
@@ -17,6 +24,22 @@ const DEFAULT_ATTACHMENT_LIMIT = '25mb'
 // /api/device and /api/sessions payload, so cap it rather than accept a multi-MB
 // label (the only other limit is express's 4mb body cap).
 const MAX_DEVICE_LABEL = 200
+
+// Attachment serving policy (see the GET handler): passive types the dashboard
+// renders inline (img/pdf/text fetch) under their declared mime — none can script.
+const INLINE_PASSIVE_MIMES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp',
+  'application/pdf',
+  'text/plain', 'text/markdown', 'text/csv', 'application/json',
+])
+// Active-content types (can carry script or script-bearing markup): render inline
+// ONLY under a response-level `Content-Security-Policy: sandbox` — opaque origin,
+// scripts off — so the FileViewer's static preview works but a direct/new-tab open
+// cannot execute at the daemon origin. image/svg+xml lives here, not above: an
+// <img> load never scripts, but a navigation to the same bytes would.
+const INLINE_SANDBOXED_MIMES = new Set([
+  'text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml',
+])
 
 // Exported for direct unit testing — the attachment routes' only traversal guard
 // for URL-derived path segments, so it must be provably correct in isolation.
@@ -99,6 +122,12 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
 
   router.get('/api/sessions', (_req, res) => {
     try { res.json(store.listCaptured()) } catch (err) { sendError(res, err) }
+  })
+
+  // The widget dialbook: a read-only catalog of every block type the agent can author
+  // (name, what it conveys, when to use, a tiny example). Same body as the MCP resource.
+  router.get('/api/widgets', (_req, res) => {
+    res.json(widgetCatalogList())
   })
 
   router.get('/api/device', (_req, res) => {
@@ -206,11 +235,42 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       if (!ref || !isWithinRoot(options.attachmentDir, ref.path)) {
         throw new NotFoundError(`no attachment "${req.params.attachmentId}"`)
       }
-      // The stored mime is the uploader-supplied Content-Type; nosniff stops the
-      // browser from re-interpreting bytes as a more dangerous type (e.g. HTML).
+      // The stored mime is UPLOADER-SUPPLIED and the uploader (the agent) is
+      // untrusted: reflecting it verbatim would let a text/html upload execute at
+      // the daemon origin when opened in a new tab — stored XSS with full API
+      // reach (nosniff does not stop a DECLARED dangerous type). Serve by policy:
+      // passive types inline as declared; active-content types inline but under a
+      // response-level CSP sandbox (opaque origin, zero script capability — the
+      // in-app static preview keeps rendering, a new-tab open is inert); anything
+      // else downloads as an opaque attachment.
       res.setHeader('X-Content-Type-Options', 'nosniff')
-      if (ref.mime) res.type(ref.mime)
-      res.sendFile(ref.path)
+      const mime = ref.mime?.split(';')[0].trim().toLowerCase()
+      if (mime && INLINE_PASSIVE_MIMES.has(mime)) {
+        res.type(mime)
+      } else if (mime && INLINE_SANDBOXED_MIMES.has(mime)) {
+        res.type(mime)
+        res.setHeader('Content-Security-Policy', 'sandbox')
+      } else {
+        res.type('application/octet-stream')
+        res.setHeader('Content-Disposition', 'attachment')
+      }
+      // res.sendFile is ASYNC: a stream error (the file was deleted out from under
+      // a still-valid meta) fires AFTER this synchronous try/catch returns, so it
+      // would otherwise escape to Express's default HTML error handler. Route it
+      // through sendError for a consistent JSON error — but only if nothing has been
+      // sent yet (a mid-stream failure can't be re-headered).
+      res.sendFile(ref.path, (err: NodeJS.ErrnoException | undefined) => {
+        // ECONNABORTED / already-ended = the client went away mid-stream; there is
+        // nothing left to send and re-headering would throw write-after-end.
+        if (err && !res.headersSent && !res.writableEnded && err.code !== 'ECONNABORTED') {
+          // The file headers set above describe the body that never got sent —
+          // clear them so the JSON error isn't mislabeled octet-stream/attachment.
+          res.removeHeader('Content-Type')
+          res.removeHeader('Content-Disposition')
+          res.removeHeader('Content-Security-Policy')
+          sendError(res, err.code === 'ENOENT' ? new NotFoundError(`no attachment "${req.params.attachmentId}"`) : err)
+        }
+      })
     } catch (err) { sendError(res, err) }
   })
 
@@ -234,11 +294,33 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       Connection: 'keep-alive',
     })
     res.write(':connected\n\n')
+    // The menu-bar tray renders this precomputed view-model; the web dashboard
+    // ignores 'tray' frames (it only listens for 'card'). Register onCard BEFORE the
+    // snapshot so a card landing mid-snapshot still pushes its own frame, emit a
+    // snapshot on connect so a tray attaching after a daemon restart is immediately
+    // correct, then a fresh frame alongside every card transition.
+    const windowMs = options.reattachWindowMs ?? REATTACH_WINDOW_MS
+    // The tray VM is TIME-dependent (a "reconnecting" card ages out of the reattach
+    // window with no card event to announce it), so a card-event-only push leaves a
+    // stale badge on a long-lived connection. Recompute on every heartbeat too, and
+    // dedup identical frames so the steady state stays silent.
+    let lastTrayFrame: string | undefined
+    const sendTray = (): void => {
+      const frame = JSON.stringify(buildTrayVM(store, Date.now(), windowMs))
+      if (frame === lastTrayFrame) return
+      lastTrayFrame = frame
+      res.write(`event: tray\ndata: ${frame}\n\n`)
+    }
     const onCard = (card: Card): void => {
       res.write(`event: card\ndata: ${JSON.stringify(card)}\n\n`)
+      sendTray()
     }
     queue.on('card', onCard)
-    const heartbeat = setInterval(() => res.write(':hb\n\n'), 25_000)
+    sendTray()
+    const heartbeat = setInterval(() => {
+      res.write(':hb\n\n')
+      sendTray()
+    }, 25_000)
     req.on('close', () => {
       clearInterval(heartbeat)
       queue.off('card', onCard)
