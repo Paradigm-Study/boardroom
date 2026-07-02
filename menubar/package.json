@@ -27,6 +27,7 @@
     },
     "files": [
       "main.js",
+      "trayRender.js",
       "iconTemplate.png",
       "iconTemplate@2x.png",
       "package.json"
