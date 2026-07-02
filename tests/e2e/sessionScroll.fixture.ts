@@ -1,0 +1,111 @@
+import type { Page } from '@playwright/test'
+
+const repeated = Array.from(
+  { length: 32 },
+  (_, i) => `Paragraph ${i + 1}: scroll QA content keeps the decision flow tall enough to prove route-level scroll restoration.`,
+).join('\n\n')
+
+export interface BrowserCard {
+  id: string
+  stage: 'clarify'
+  session: { agent: string; project: string; title: string }
+  headline: string
+  blocks: Array<{ id: string; type: 'markdown'; title: string; text: string }>
+  decisions: Array<{
+    id: string
+    prompt: string
+    blockRefs: string[]
+    options: Array<{ id: string; label: string; recommended?: boolean }>
+  }>
+  status: 'pending'
+  createdAt: string
+}
+
+export const scrollCards: BrowserCard[] = [
+  browserCard('scroll-a', 'Session A', 'Session A scroll memory card', '2026-06-30T06:00:00.000Z'),
+  browserCard('scroll-b', 'Session B', 'Session B starts at top', '2026-06-30T05:59:00.000Z'),
+  browserCard('scroll-c', 'Session C', 'Session C keeps A in memory', '2026-06-30T05:58:00.000Z'),
+]
+
+export const sessionScrollStorageKey = 'boardroom.sessionScroll.v1'
+
+export function sessionScrollKey(card: BrowserCard): string {
+  return `${card.session.project}\u0000${card.session.title?.trim() || 'Untitled session'}\u0000${card.session.agent}`
+}
+
+export async function storedSessionScrollTop(page: Page, card: BrowserCard): Promise<number | undefined> {
+  const key = sessionScrollKey(card)
+  return page.evaluate(([storageKey, sessionKey]) => {
+    const parsed = JSON.parse(window.sessionStorage.getItem(storageKey) ?? '{}') as Record<string, { top?: unknown }>
+    const top = parsed[sessionKey]?.top
+    return typeof top === 'number' ? top : undefined
+  }, [sessionScrollStorageKey, key] as const)
+}
+
+export async function reachableScrollTop(page: Page, savedTop: number): Promise<number> {
+  return page.evaluate(top => {
+    const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+    return Math.round(Math.min(top, maxTop))
+  }, savedTop)
+}
+
+export async function safeScrollTarget(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+    return Math.round(Math.min(420, Math.max(0, maxTop - 80)))
+  })
+}
+
+export function browserCard(id: string, title: string, headline: string, createdAt: string): BrowserCard {
+  return {
+    id,
+    stage: 'clarify',
+    session: { agent: 'playwright-qa', project: 'scroll-memory-qa', title },
+    headline,
+    blocks: [
+      { id: 'ctx', type: 'markdown', title: `${title} context`, text: repeated },
+      { id: 'global', type: 'markdown', title: 'Global notes', text: repeated },
+    ],
+    decisions: [{
+      id: 'd',
+      prompt: `Decision for ${title}`,
+      blockRefs: ['ctx'],
+      options: [{ id: 'a', label: 'Option A', recommended: true }, { id: 'b', label: 'Option B' }],
+    }],
+    status: 'pending',
+    createdAt,
+  }
+}
+
+export async function mockBoardroomApi(page: Page, cards: BrowserCard[] = scrollCards): Promise<void> {
+  await page.addInitScript(() => {
+    window.EventSource = class {
+      onopen: ((event: Event) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+
+      constructor() {
+        window.setTimeout(() => this.onopen?.(new Event('open')), 0)
+      }
+
+      addEventListener(): void {}
+      removeEventListener(): void {}
+      close(): void {}
+    } as unknown as typeof EventSource
+  })
+  await page.route('**/api/cards', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(cards),
+  }))
+  await page.route('**/api/sessions', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: '[]',
+  }))
+  await page.route('**/api/device', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ machineId: 'qa-machine', deviceLabel: 'QA Mac' }),
+  }))
+}

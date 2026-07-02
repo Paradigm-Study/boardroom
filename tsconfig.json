@@ -11,5 +11,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "web/src", "tests"]
+  "include": ["src", "web/src", "tests", "*.config.ts", "web/*.config.ts"]
 }

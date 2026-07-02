@@ -14,7 +14,9 @@ const noUnusedVars = ['error', {
 }]
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', 'eslint.config.js'] },
+  // .claude/ holds session artifacts, including whole worktree copies of this repo —
+  // linting those doubles every finding and breaks the parser's project resolution.
+  { ignores: ['**/dist/**', '**/node_modules/**', 'eslint.config.js', '.claude/**'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
