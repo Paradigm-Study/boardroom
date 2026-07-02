@@ -9,6 +9,25 @@ const sessionFields = {
   title: z.string().optional().describe('Short human-readable session title'),
 }
 
+// Decision ids key the answers map and block ids key blockRefs + DOM anchors: a
+// duplicate silently shadows its twin — one answer covers two questions (or the
+// validator demands an answer the UI can never collect, a permanently undecidable
+// gate), one block renders where two were meant. Reject at the boundary, mirroring
+// the criterion/claim id checks below.
+function checkUniqueIds(
+  input: { blocks?: Block[]; decisions?: Decision[] },
+  ctx: z.RefinementCtx,
+): void {
+  const blockIds = (input.blocks ?? []).map(b => b.id)
+  if (new Set(blockIds).size !== blockIds.length) {
+    ctx.addIssue({ code: 'custom', message: 'duplicate block ids', path: ['blocks'] })
+  }
+  const decisionIds = (input.decisions ?? []).map(d => d.id)
+  if (new Set(decisionIds).size !== decisionIds.length) {
+    ctx.addIssue({ code: 'custom', message: 'duplicate decision ids', path: ['decisions'] })
+  }
+}
+
 function checkBlockRefs(
   input: { blocks?: Block[]; decisions?: Decision[] },
   ctx: z.RefinementCtx,
@@ -152,6 +171,7 @@ export const ClarifyInput = z.object({
   decisions: z.array(Decision).min(1).describe('The questions, as button decisions'),
   sections: z.array(Section).optional().describe('Optional mixable-sections layout — group decisions and blocks into decide/explain/report sections rendered in order. When present, every non-verdict decision must be placed in exactly one decide-section; blocks may be left unplaced.'),
 }).superRefine((input, ctx) => {
+  checkUniqueIds(input, ctx)
   checkBlockRefs(input, ctx)
   if (input.sections) checkSections(input, ctx)
   else checkQuestionAndGlobalContext(input, ctx)
@@ -185,6 +205,7 @@ export const PresentPlanInput = z.object({
       })
     }
   })
+  checkUniqueIds(input, ctx)
   checkBlockRefs(input, ctx)
   if (input.sections) checkSections(input, ctx)
   else checkQuestionAndGlobalContext(input, ctx)
@@ -218,6 +239,7 @@ export const SpecInput = z.object({
   specRef: z.string().optional().describe('Absolute path to the on-disk spec file; the agent writes the locked contract here and reads it back to verify/review'),
   blocks: z.array(Block).default([]).describe('Optional extra context blocks'),
 }).superRefine((input, ctx) => {
+  checkUniqueIds(input, ctx)
   checkCriterionIds(input.criteria, ctx, ['criteria'])
 })
 export type SpecInput = z.infer<typeof SpecInput>

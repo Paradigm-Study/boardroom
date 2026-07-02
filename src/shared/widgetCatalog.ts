@@ -89,7 +89,7 @@ export const WIDGET_CATALOG: WidgetCatalog = {
   },
   visual: {
     type: 'visual', name: 'Visual', conveys: 'an agent-authored static SVG/HTML figure the built-ins can\'t express',
-    whenToUse: 'a bespoke wireframe, badge, gauge, or custom diagram where graph/table/bar_list don\'t fit; STATIC only, no interactivity',
+    whenToUse: 'a bespoke wireframe, badge, gauge, or custom diagram where graph/table/bar_list don\'t fit; STATIC only, no interactivity. An svg sizes itself from its viewBox so the whole figure is always shown (aspectRatio optional); for html set height generously — the frame shows exactly that many pixels and taller content gets stuck behind an inner scrollbar',
     example: { id: 'ex', type: 'visual', format: 'svg', aspectRatio: 16 / 9, source: '<svg viewBox="0 0 160 90"><rect width="160" height="90" fill="var(--bg-2)"></rect><text x="80" y="48" text-anchor="middle" fill="var(--ink)" font-size="12">Wireframe</text></svg>' },
   },
 }

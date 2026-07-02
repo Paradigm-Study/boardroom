@@ -123,19 +123,29 @@ export const VisualBlock = z.object({
   type: z.literal('visual'),
   format: z.enum(['svg', 'html']),
   source: z.string().min(1).max(MAX_VISUAL_SOURCE)
-    .refine(s => !/<script[\s>]/i.test(s), { message: 'inline <script> is not allowed in a static visual' })
-    .refine(s => !/\son\w+\s*=/i.test(s), { message: 'inline event handlers (onload=, onclick=, …) are not allowed' })
+    // [\s/>] not [\s>]: HTML parsing also accepts '/' as an attribute separator, so
+    // <script/src=…> and <svg/onload=…> are live vectors the whitespace-only forms miss.
+    .refine(s => !/<script[\s/>]/i.test(s), { message: 'inline <script> is not allowed in a static visual' })
+    .refine(s => !/[\s/"'`]on\w+\s*=/i.test(s), { message: 'inline event handlers (onload=, onclick=, …) are not allowed' })
     .refine(s => !/javascript:/i.test(s), { message: 'javascript: URLs are not allowed' })
+    // Fragment-only links: sandbox="" still lets a click navigate the frame ITSELF, so a
+    // plain <a href="https://…"> would swap the visual for attacker-chosen remote content
+    // inside the trusted card (and leak the click). SVG's internal references
+    // (href="#grad", xlink:href="#id") remain valid.
+    .refine(s => !/\bhref\s*=\s*(?:"(?!#)|'(?!#)|(?!["'#]))/i.test(s), { message: 'links inside a visual must be fragment-only (href="#…") — external navigation is not allowed' })
     .refine(s => !/<meta\b/i.test(s), { message: '<meta> (incl. http-equiv refresh) is not allowed' })
     .refine(s => !/<base\b/i.test(s), { message: '<base> is not allowed' })
     .refine(s => !/<link\b/i.test(s), { message: '<link> is not allowed' })
     .refine(s => !/<(iframe|object|embed|applet)\b/i.test(s), { message: 'nested embedding elements are not allowed' })
     .refine(s => !/<(animate|animateTransform|animateMotion|set)\b/i.test(s), { message: 'SVG SMIL animation is not allowed (v1 is static)' })
     .refine(s => !/<!doctype|<!entity/i.test(s), { message: 'DOCTYPE / internal DTD entities are not allowed' }),
-  // Height WITHOUT scripts: aspectRatio (preferred) holds the box and content fills it;
-  // height is the explicit fallback. Both clamped (720 cap mitigates attention-hijack).
+  // Sizing WITHOUT scripts: aspectRatio (or, for svg, the viewBox the renderer derives
+  // it from) shapes the frame to show the WHOLE figure; height is the html fallback and
+  // should be generous enough to show all content — the panel never scrolls well. The
+  // renderer clamps ratios to a sane band; height is capped here so a hostile block
+  // can't bury the card under empty pixels.
   aspectRatio: z.number().positive().max(20).optional(),
-  height: z.number().int().min(40).max(720).optional(),
+  height: z.number().int().min(40).max(2000).optional(),
 })
 
 export const Block = z.discriminatedUnion('type', [

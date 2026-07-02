@@ -57,6 +57,28 @@ describe('ClarifyInput', () => {
     })
     expect(r.success).toBe(true)
   })
+
+  // Decision ids key the answers map: two decisions sharing an id would leave one
+  // answer silently covering both questions (or the gate permanently undecidable).
+  it('rejects duplicate decision ids', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [decisionWithContext, { ...decisionWithContext, prompt: 'A second question, same id' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate decision ids/.test(i.message))).toBe(true)
+  })
+
+  it('rejects duplicate block ids', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, { ...globalBlock, id: 'local' }],
+      decisions: [decisionWithContext],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate block ids/.test(i.message))).toBe(true)
+  })
 })
 
 describe('PresentPlanInput', () => {
