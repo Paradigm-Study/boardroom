@@ -120,6 +120,13 @@ function formatGateResult(card: Card, response: CardResponse): string {
 // Task-1 spike evidence (2026-07-02): Claude Code sends no session-identifying
 // header on MCP HTTP calls, so the agent-echoed sessionKey is the sole channel.
 // If a future CC version adds one, check it here between (1) and (2).
+//
+// Trust posture: sessionKey is honor-system by design, not a secret — any local
+// process can already reach this unauthenticated localhost API, so the machine
+// itself is the trust boundary, not the key. A wrong/guessed sessionKey can only
+// claim a card if the attacker's call ALSO produces an exact fingerprint match
+// (project + headline + decisions) — strictly narrower than the pre-spine
+// fingerprint-only steal this binding replaced.
 export function resolveClaudeSessionId(
   ctx: { sessionId?: string },
   input: { sessionKey?: string },

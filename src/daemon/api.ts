@@ -129,11 +129,15 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
     try {
       const cards = store.list()
       const nowMs = Date.now()
+      // Same window the tray VM uses below (options.reattachWindowMs ?? the 24h
+      // default) — a "reconnecting" boot-orphan card must count against the
+      // daemon's ACTUAL configured reattach window, not always the default.
+      const windowMs = options.reattachWindowMs ?? REATTACH_WINDOW_MS
       const vms = store.listCaptured().map(s => {
         const own = cards.filter(c => c.claudeSessionId === s.sessionId)
         return {
           ...s,
-          sessionStatus: deriveSessionStatus(s, own, nowMs),
+          sessionStatus: deriveSessionStatus(s, own, nowMs, windowMs),
           pendingCount: own.filter(c => c.status === 'pending').length,
           cardCount: own.length,
         }

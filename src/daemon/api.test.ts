@@ -502,6 +502,30 @@ describe('GET /api/sessions', () => {
     expect(s.cardCount).toBe(0)
     expect(s.sessionStatus).toBe('idle')
   })
+
+  // NEW: the route must thread options.reattachWindowMs into deriveSessionStatus —
+  // same requirement as the tray VM (buildTrayVM) right below it in api.ts — so a
+  // reconnecting boot-orphan card's status honors the daemon's CONFIGURED window,
+  // not always the 24h default.
+  it('honors options.reattachWindowMs for a reconnecting boot-orphan card', async () => {
+    const customApp = express()
+    customApp.use(express.json({ limit: '4mb' }))
+    customApp.use(buildApiRouter(queue, store, {
+      attachmentDir: join(dir, 'attachments'),
+      configDir: dir,
+      reattachWindowMs: 5 * 60_000, // 5 minutes — much shorter than the 24h default
+    }))
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-boot', status: 'alive' }))
+    store.insert(cardFixture({
+      id: 'k-boot', claudeSessionId: 'cc-boot', status: 'orphaned',
+      orphanedReason: 'boot', orphanedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10m ago
+    }))
+    const res = await request(customApp).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-boot')
+    // 10 minutes old vs a configured 5-minute window → already expired, so this must
+    // NOT be reported as needs-decision (it would be, under the 24h default).
+    expect(s.sessionStatus).not.toBe('needs-decision')
+  })
 })
 
 describe("GET /api/sessions/:id/cards", () => {

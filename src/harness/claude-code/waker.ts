@@ -56,7 +56,17 @@ export class Waker {
     const session = card.claudeSessionId
       ? this.store.getRegisteredSession(card.claudeSessionId)
       : this.store.getSessionByProject(card.session.project)
-    if (!session) return
+    if (!session) {
+      // The "offline-start" case: the SessionStart hook bound this claudeSessionId
+      // onto the card, but the daemon never saw a POST /api/session registering it
+      // (e.g. the daemon was offline/cold at session start and only came up later).
+      // Not a hard failure — the decision stays claimable via reattach — but silent
+      // otherwise, so at least log the miss.
+      if (card.claudeSessionId) {
+        console.warn(`[waker] skip card ${card.id}: claudeSessionId ${card.claudeSessionId} is bound but not registered (offline-start) — reattach still works`)
+      }
+      return
+    }
     // The registry is a trusted-but-unauthenticated write surface, and cwd is the
     // dir we launch `claude --resume` from. Refuse anything that isn't an existing
     // absolute directory rather than spawning into an unpredictable location.

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../shared/card.js'
 import { Queue } from '../../daemon/queue.js'
 import { Store } from '../../daemon/store.js'
@@ -142,6 +142,25 @@ describe('waker resume target across sessions', () => {
     waker.onCard(decided())                                    // no claudeSessionId on this card
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toContain('sid-B')                   // legacy fallback: whatever project resolves to now
+  })
+
+  it('[CORRECT] a bound-but-unregistered session (offline-start) skips auto-wake and warns, without crashing', () => {
+    // The "offline-start" case: a hook injected the claudeSessionId onto the card
+    // (binding it), but the daemon never saw a POST /api/session for that id — e.g.
+    // the daemon was down/offline at SessionStart and only came up later. No
+    // sessions_v3 row exists, so getRegisteredSession returns undefined. This must
+    // NOT crash and must NOT auto-wake — the decision stays claimable via reattach.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      waker.onCard(decided({ claudeSessionId: 'cc-never-registered' }))
+      expect(calls).toHaveLength(0)
+      expect(warnSpy).toHaveBeenCalled()
+      const message = warnSpy.mock.calls.map(args => args.join(' ')).join('\n')
+      expect(message).toContain('c1')
+      expect(message).toContain('cc-never-registered')
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })
 

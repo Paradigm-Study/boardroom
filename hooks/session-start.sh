@@ -25,7 +25,10 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 # Register this session so the daemon can `claude --resume` it from the correct
 # absolute cwd when a parked card for this project is later decided (Phase 2
 # auto-wake). Gated on the probe result (not on script flow): only attempt it when
-# the daemon answered. Fail-open; never block startup.
+# the daemon answered. Fail-open; never block startup. An "offline-start" session
+# (daemon unreachable here, so this block is skipped) still gets the session key
+# injected into context below and can bind a card to it — but gets no auto-wake
+# until a LATER connected start for the same session id registers it.
 if [ "$connected" = 1 ]; then
   if [ -n "$session_id" ] && [ -n "$cwd" ]; then
     body=$(jq -nc --arg s "$session_id" --arg c "$cwd" --arg p "$(basename "$cwd")" \
