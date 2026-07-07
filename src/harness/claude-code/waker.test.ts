@@ -124,7 +124,7 @@ describe('Waker', () => {
     expect(store.get('c1')?.deliveredAt).toBeTruthy()
     // The decision travelled in the resume prompt; a later same-fingerprint call
     // must NOT claim it (it would hand a stale verdict to an unrelated session).
-    expect(store.findReattachable('fp-wake', Date.now())).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp-wake' }, Date.now())).toBeUndefined()
   })
 
   it('does NOT mark delivered when the spawn fails — the decision stays claimable via reattach', () => {
@@ -135,7 +135,7 @@ describe('Waker', () => {
     store.insert(decided({ fingerprint: 'fp-fail' }))
     failing.onCard(decided({ fingerprint: 'fp-fail' }))
     expect(store.get('c1')?.deliveredAt).toBeUndefined()
-    expect(store.findReattachable('fp-fail', Date.now())?.id).toBe('c1')
+    expect(store.findReattachable({ fingerprint: 'fp-fail' }, Date.now())?.id).toBe('c1')
   })
 
   it('end-to-end via queue events: park then decide wakes the session exactly once', () => {

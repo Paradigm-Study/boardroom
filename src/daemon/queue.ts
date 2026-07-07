@@ -46,7 +46,7 @@ export class Queue extends EventEmitter {
   // newer connection has already taken over. If a prior decision is waiting to
   // be claimed, the waiter resolves immediately and gen is -1.
   submit(card: Card, waiter: Waiter): { cardId: string; gen: number } {
-    const existing = this.store.findReattachable(card.fingerprint, this.now(), this.reattachWindowMs)
+    const existing = this.store.findReattachable(card, this.now(), this.reattachWindowMs)
 
     if (existing?.status === 'decided' && existing.answers) {
       const delivered: Card = { ...existing, deliveredAt: new Date().toISOString() }

@@ -7,23 +7,23 @@ import { fingerprint } from './compile.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
 
-// CHARACTERIZATION TESTS — they document the ACTUAL behavior of cross-session
-// gate resolution, including the buggy parts. Each assertion is tagged:
-//   [BUG]     = current behavior is wrong (a gate crosses sessions)
-//   [CORRECT] = current behavior is the safe/intended one (a guardrail that holds)
-// Nothing here is a proposed fix; it pins down "what happens today" so a fix can be
-// designed against a known baseline. See memory: reconnect-most-recent-rootcause.
-//
-// The premise under test: the Queue/Store have NO notion of which Claude Code
-// session a call came from. A card's only "session" linkage is its fingerprint
-// (project + stage + headline) and its session: { agent, project, title } — none of
-// which is a unique session id. So "session A's gate" and "session B's identical
-// call" are INDISTINGUISHABLE to the daemon.
+// CHARACTERIZATION TESTS — they document the behavior of cross-session gate
+// resolution now that reattach is SESSION-SCOPED. Each assertion is tagged:
+//   [FIXED]   = this used to be a cross-session steal ([BUG]); it is now blocked
+//   [CORRECT] = the guardrail was already safe/intended and still holds
+// Session B — a DIFFERENT Claude Code session — can share project+stage+headline
+// with session A (e.g. the same repo, same clarify headline) and previously that
+// fingerprint collision let B claim A's card. Store.findReattachable now also
+// scopes on Card.claudeSessionId: a bound caller only reclaims its OWN session's
+// cards, and an unbound (legacy) caller only reclaims unbound cards. See memory:
+// reconnect-most-recent-rootcause.
 
 // A gate as a specific session would author it. `marker` is unique per session and
 // lives in the decision prompt, so after a reattach we can prove WHOSE content the
 // surviving card carries. project+stage+headline drive the fingerprint; agent/title
-// are deliberately excluded from it (see compile.ts fingerprint()).
+// are deliberately excluded from it (see compile.ts fingerprint()). `claudeSessionId`
+// is the new session-binding field (Task 2/6): omit it to simulate a legacy,
+// un-hooked agent.
 function gate(opts: {
   id: string
   project?: string
@@ -33,6 +33,7 @@ function gate(opts: {
   title?: string
   marker?: string
   createdAt?: string
+  claudeSessionId?: string
 }): Card {
   const project = opts.project ?? 'demo'
   const stage = opts.stage ?? 'clarify'
@@ -51,6 +52,7 @@ function gate(opts: {
     status: 'pending',
     createdAt: opts.createdAt ?? new Date().toISOString(),
     fingerprint: fingerprint(project, stage, headline),
+    ...(opts.claudeSessionId ? { claudeSessionId: opts.claudeSessionId } : {}),
   }
 }
 
@@ -72,107 +74,127 @@ afterEach(() => {
 })
 
 describe('cross-session reattach — two distinct Claude Code sessions, same project+stage+headline', () => {
-  it('[BUG] session B steals session A ORPHANED gate and receives A\'s content', () => {
+  it('[FIXED] session B does NOT steal session A\'s ORPHANED gate or receive A\'s content', () => {
     // Session A opens a gate, then drops (machine slept / daemon restart).
-    const a = queue.submit(gate({ id: 'A', marker: 'A-AUTHORED-QUESTION' }), noop)
+    const a = queue.submit(gate({ id: 'A', marker: 'A-AUTHORED-QUESTION', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a.cardId, a.gen)
     expect(store.get('A')?.status).toBe('orphaned')
 
     // Session B — a DIFFERENT Claude Code session — issues its own call that happens
     // to share project+stage+headline (e.g. the same repo, same clarify headline).
     const bResolve = vi.fn()
-    const b = queue.submit(gate({ id: 'B', marker: 'B-AUTHORED-QUESTION' }), { resolve: bResolve, reject: vi.fn() })
+    const b = queue.submit(gate({ id: 'B', marker: 'B-AUTHORED-QUESTION', claudeSessionId: 'cc-B' }), { resolve: bResolve, reject: vi.fn() })
 
-    // B does NOT get its own card — it is bound to A's card.
-    expect(b.cardId).toBe('A')                                 // [BUG] B reattached to A's gate
-    expect(store.get('B')).toBeUndefined()                     // [BUG] B's own gate was never inserted
-    // The surviving live card carries A's authored content, not B's.
-    expect(store.get('A')?.decisions[0].prompt).toBe('A-AUTHORED-QUESTION') // [BUG] content is A's
-    expect(store.get('A')?.status).toBe('pending')             // revived under B's waiter
+    // B gets its own fresh card — it is NOT bound to A's card.
+    expect(b.cardId).toBe('B')                                 // [FIXED] no steal — fresh card
+    expect(store.get('B')?.decisions[0].prompt).toBe('B-AUTHORED-QUESTION') // B's own content
+    expect(store.get('B')?.status).toBe('pending')
+    // A's card is untouched — still orphaned, still carries A's content.
+    expect(store.get('A')?.status).toBe('orphaned')
+    expect(store.get('A')?.decisions[0].prompt).toBe('A-AUTHORED-QUESTION')
   })
 
-  it('[BUG] session B claims a decision the human made on session A\'s gate', () => {
+  it('[FIXED] session B does NOT claim a decision the human made on session A\'s gate', () => {
     // A opens, drops; the human decides A's gate while A is away (undelivered).
-    const a = queue.submit(gate({ id: 'A', marker: 'A-QUESTION' }), noop)
+    const a = queue.submit(gate({ id: 'A', marker: 'A-QUESTION', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a.cardId, a.gen)
     queue.decide('A', { d1: { chosen: ['a'] } })
     expect(store.get('A')?.deliveredAt).toBeUndefined()
 
-    // B issues the identical-fingerprint call and is handed A's decision immediately.
+    // B issues the identical-fingerprint call but is a different session — it gets
+    // its own fresh card instead of A's undelivered decision.
     const bResolve = vi.fn()
-    const b = queue.submit(gate({ id: 'B', marker: 'B-QUESTION' }), { resolve: bResolve, reject: vi.fn() })
-    expect(b.gen).toBe(-1)                                      // [BUG] resolved instantly with A's answer
-    expect(bResolve).toHaveBeenCalledWith(expect.objectContaining({ cardId: 'A' }))
-    expect(store.get('B')).toBeUndefined()
-    expect(store.get('A')?.deliveredAt).toBeTruthy()           // delivered to B, marked delivered
+    const b = queue.submit(gate({ id: 'B', marker: 'B-QUESTION', claudeSessionId: 'cc-B' }), { resolve: bResolve, reject: vi.fn() })
+    expect(b.gen).not.toBe(-1)                                  // [FIXED] not resolved instantly with A's answer
+    expect(bResolve).not.toHaveBeenCalled()
+    expect(b.cardId).toBe('B')
+    expect(store.get('B')?.status).toBe('pending')
+    expect(store.get('A')?.deliveredAt).toBeUndefined()        // A's decision remains undelivered, untouched
   })
 
-  it('[BUG] a daemon-restart (boot) orphan is cross-claimed too — the user\'s actual trigger', () => {
+  it('[FIXED] a daemon-restart (boot) orphan is NOT cross-claimed — the user\'s original trigger, now fixed', () => {
     // The reported scenario: the daemon redeploys, orphanAllPending tags every live
-    // gate orphanedReason 'boot'. findReattachable does not filter on reason, so a
-    // foreign same-fingerprint call reattaches to a boot-orphaned gate just the same.
-    queue.submit(gate({ id: 'A', marker: 'A-CONTENT' }), noop)
+    // gate orphanedReason 'boot'. findReattachable is now session-scoped, so a
+    // foreign same-fingerprint call from a different session does not reattach.
+    queue.submit(gate({ id: 'A', marker: 'A-CONTENT', claudeSessionId: 'cc-A' }), noop)
     store.orphanAllPending()                                   // simulate the redeploy
     expect(store.get('A')?.orphanedReason).toBe('boot')
 
-    const b = queue.submit(gate({ id: 'B', marker: 'B-CONTENT' }), noop)
-    expect(b.cardId).toBe('A')                                 // [BUG] boot-orphan reattached cross-session
+    const b = queue.submit(gate({ id: 'B', marker: 'B-CONTENT', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] no cross-session reattach
     expect(store.get('A')?.decisions[0].prompt).toBe('A-CONTENT')
+    expect(store.get('B')?.decisions[0].prompt).toBe('B-CONTENT')
   })
 
-  it('[BUG] the fingerprint ignores agent, so even a DIFFERENT agent (codex) steals a claude-code gate', () => {
-    // compile.ts fingerprint() deliberately excludes session.agent. Consequence: the
-    // collision is not even scoped to the same agent/CLI.
-    const a = queue.submit(gate({ id: 'A', agent: 'claude-code', marker: 'A' }), noop)
+  it('[FIXED] a different agent (codex) does not steal a claude-code gate when sessions are bound', () => {
+    // compile.ts fingerprint() deliberately excludes session.agent, so the old
+    // collision was not even scoped to the same agent/CLI. Session binding closes
+    // that gap as long as both callers are bound to distinct sessions.
+    const a = queue.submit(gate({ id: 'A', agent: 'claude-code', marker: 'A', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a.cardId, a.gen)
-    const b = queue.submit(gate({ id: 'B', agent: 'codex', marker: 'B' }), noop)
-    expect(b.cardId).toBe('A')                                 // [BUG] cross-agent reattach
+    const b = queue.submit(gate({ id: 'B', agent: 'codex', marker: 'B', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] no cross-agent reattach
   })
 
-  it('[BUG] the fingerprint also ignores title, so a different session label still collides', () => {
+  it('[FIXED] a different session title does not collide when sessions are bound', () => {
     // compile.ts fingerprint() drops session.title too (only project+stage+headline).
-    // So even when the human-visible session labels differ, the gates collide.
-    const a = queue.submit(gate({ id: 'A', title: 'Session A', marker: 'A' }), noop)
+    // Session binding (not title) is what now prevents the collision.
+    const a = queue.submit(gate({ id: 'A', title: 'Session A', marker: 'A', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a.cardId, a.gen)
-    const b = queue.submit(gate({ id: 'B', title: 'Session B', marker: 'B' }), noop)
-    expect(b.cardId).toBe('A')                                 // [BUG] title difference doesn't prevent the steal
+    const b = queue.submit(gate({ id: 'B', title: 'Session B', marker: 'B', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] no steal
   })
 
-  it('[BUG] a PARK-orphaned gate is cross-claimed identically to a disconnect/boot one', () => {
-    // findReattachable ignores orphanedReason, so all three orphan sources (disconnect,
-    // park, boot) are equally stealable. Park is the opt-in-timeout path.
-    const a = queue.submit(gate({ id: 'A', marker: 'A' }), noop)
+  it('[FIXED] a PARK-orphaned gate is not cross-claimed either — same fix covers all orphan sources', () => {
+    // findReattachable ignores orphanedReason but now enforces session scope, so
+    // all three orphan sources (disconnect, park, boot) are equally protected.
+    const a = queue.submit(gate({ id: 'A', marker: 'A', claudeSessionId: 'cc-A' }), noop)
     expect(queue.park(a.cardId, a.gen)).toBe(true)
     expect(store.get('A')?.orphanedReason).toBe('park')
-    const b = queue.submit(gate({ id: 'B', marker: 'B' }), noop)
-    expect(b.cardId).toBe('A')                                 // [BUG] parked gate reattached cross-session
+    const b = queue.submit(gate({ id: 'B', marker: 'B', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] no cross-session reattach
   })
 
-  it('[BUG] results-stage gates collide too — the bug is not specific to clarify', () => {
-    const a = queue.submit(gate({ id: 'A', stage: 'results', headline: 'What I delivered', marker: 'A' }), noop)
+  it('[FIXED] results-stage gates do not collide across sessions either — the fix is not stage-specific', () => {
+    const a = queue.submit(gate({ id: 'A', stage: 'results', headline: 'What I delivered', marker: 'A', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a.cardId, a.gen)
-    const b = queue.submit(gate({ id: 'B', stage: 'results', headline: 'What I delivered', marker: 'B' }), noop)
-    expect(b.cardId).toBe('A')                                 // [BUG] same project+results+headline collides
+    const b = queue.submit(gate({ id: 'B', stage: 'results', headline: 'What I delivered', marker: 'B', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] same project+results+headline, different session
   })
 
-  it('[BEHAVIOR] same-fingerprint submits are STICKY: repeated calls collapse onto ONE card, never duplicate', () => {
+  it('[FIXED] the SAME session reattaches across a reconnect (park then decide)', () => {
+    const a = queue.submit(gate({ id: 'A', marker: 'A-CONTENT', claudeSessionId: 'cc-A' }), noop)
+    expect(queue.park(a.cardId, a.gen)).toBe(true)
+    queue.decide('A', { d1: { chosen: ['a'] } })
+    expect(store.get('A')?.deliveredAt).toBeUndefined()
+
+    // Same session (cc-A) retries the identical call — it IS the rightful owner.
+    const retryResolve = vi.fn()
+    const retry = queue.submit(gate({ id: 'A2', marker: 'A-RETRY', claudeSessionId: 'cc-A' }), { resolve: retryResolve, reject: vi.fn() })
+    expect(retry.gen).toBe(-1)                                  // resolved instantly — legitimate reattach
+    expect(retryResolve).toHaveBeenCalledWith(expect.objectContaining({ cardId: 'A' }))
+    expect(store.get('A2')).toBeUndefined()
+    expect(store.get('A')?.deliveredAt).toBeTruthy()
+  })
+
+  it('[BEHAVIOR] same-fingerprint, same-session submits are STICKY: repeated calls collapse onto ONE card', () => {
     // This corrects a tempting assumption: you can NOT accumulate two orphaned gates
-    // with the same fingerprint via submit. The 2nd submit reattaches to the 1st, so
-    // there is at most one live gate per fingerprint — and every same-fingerprint
-    // caller (re-issue OR a different session) lands on that single card.
+    // with the same fingerprint+session via submit. The 2nd submit reattaches to the
+    // 1st, so there is at most one live gate per (fingerprint, session) pair.
     const fp = fingerprint('demo', 'clarify', 'How should we do X?')
 
-    const a1 = queue.submit(gate({ id: 'A1', marker: 'FIRST' }), noop)
+    const a1 = queue.submit(gate({ id: 'A1', marker: 'FIRST', claudeSessionId: 'cc-A' }), noop)
     queue.disconnect(a1.cardId, a1.gen)
-    const a2 = queue.submit(gate({ id: 'A2', marker: 'SECOND' }), noop)
+    const a2 = queue.submit(gate({ id: 'A2', marker: 'SECOND', claudeSessionId: 'cc-A' }), noop)
     expect(a2.cardId).toBe('A1')                               // reattached, not a 2nd card
     expect(store.get('A2')).toBeUndefined()
     queue.disconnect(a2.cardId, a2.gen)
 
-    const b = queue.submit(gate({ id: 'B', marker: 'THIRD' }), noop)
-    expect(b.cardId).toBe('A1')                                // session B also lands on the one card
-    expect(store.list().filter(c => c.fingerprint === fp)).toHaveLength(1) // exactly one ever exists
-    expect(store.get('A1')?.decisions[0].prompt).toBe('FIRST') // and it keeps the FIRST author's content
+    // A DIFFERENT session (B) issuing the identical fingerprint now gets its own card.
+    const b = queue.submit(gate({ id: 'B', marker: 'THIRD', claudeSessionId: 'cc-B' }), noop)
+    expect(b.cardId).toBe('B')                                 // [FIXED] session B does not land on A's card
+    expect(store.list().filter(c => c.fingerprint === fp)).toHaveLength(2) // A's card + B's card
+    expect(store.get('A1')?.decisions[0].prompt).toBe('FIRST') // A's card still carries A's authored content
   })
 })
 
@@ -223,20 +245,51 @@ describe('cross-session reattach — the guardrails that DO hold (bounding the b
     const b = shortWindowQueue.submit(gate({ id: 'B', marker: 'B' }), noop)
     expect(b.cardId).toBe('B')                                 // too old → fresh card, no steal
   })
+
+  it('legacy: unbound caller still reattaches to unbound card (pre-spine agents)', () => {
+    // Neither session ever populated claudeSessionId (an un-hooked agent). This is
+    // exact legacy fingerprint-only behavior, preserved on purpose: with no session
+    // signal at all, the daemon still lets a re-issued call reclaim its own card.
+    const a = queue.submit(gate({ id: 'A', marker: 'A' }), noop)
+    queue.disconnect(a.cardId, a.gen)
+    const retry = queue.submit(gate({ id: 'A2', marker: 'A-RETRY' }), noop)
+    expect(retry.cardId).toBe('A')                             // reattached — legacy path intact
+    expect(store.get('A2')).toBeUndefined()
+  })
+
+  it('[FIXED] unbound caller does NOT claim a bound card, and vice versa', () => {
+    // Direction 1: A is bound (cc-A), B is unbound (legacy) — B must not claim A's card.
+    const a = queue.submit(gate({ id: 'A', marker: 'A', claudeSessionId: 'cc-A' }), noop)
+    queue.disconnect(a.cardId, a.gen)
+    const bUnbound = queue.submit(gate({ id: 'B', marker: 'B' }), noop)
+    expect(bUnbound.cardId).toBe('B')                          // fresh card — unbound caller can't claim a bound card
+    expect(store.get('A')?.status).toBe('orphaned')
+
+    // Direction 2: C is unbound, D is bound — D must not claim C's card either.
+    const c = queue.submit(gate({ id: 'C', marker: 'C' }), noop)
+    queue.disconnect(c.cardId, c.gen)
+    const dBound = queue.submit(gate({ id: 'D', marker: 'D', claudeSessionId: 'cc-D' }), noop)
+    expect(dBound.cardId).toBe('D')                            // fresh card — bound caller can't claim an unbound card
+    expect(store.get('C')?.status).toBe('orphaned')
+  })
 })
 
 describe('store.findReattachable — the raw matcher, isolated', () => {
-  // NOTE: two eligible same-fingerprint cards are not reachable through queue.submit
-  // (stickiness collapses them — see the [BEHAVIOR] test above); this inserts them
-  // directly to pin down the matcher's contract in isolation.
-  it('matches purely on fingerprint with a createdAt-desc tiebreak; carries no session identity', () => {
+  // NOTE: two eligible same-fingerprint-and-session cards are not reachable through
+  // queue.submit (stickiness collapses them — see the [BEHAVIOR] test above); this
+  // inserts them directly to pin down the matcher's contract in isolation.
+  it('matches on fingerprint scoped to the caller\'s session, with a createdAt-desc tiebreak', () => {
     const fp = fingerprint('demo', 'clarify', 'How should we do X?')
-    store.insert({ ...gate({ id: 'old', marker: 'old', createdAt: '2026-06-30T10:00:00.000Z' }), status: 'orphaned', orphanedAt: '2026-06-30T10:00:00.000Z' })
-    store.insert({ ...gate({ id: 'new', marker: 'new', createdAt: '2026-06-30T11:00:00.000Z' }), status: 'orphaned', orphanedAt: '2026-06-30T11:00:00.000Z' })
-    const hit = store.findReattachable(fp, Date.parse('2026-06-30T11:30:00.000Z'))
-    expect(hit?.id).toBe('new')                                // most recent of the fingerprint matches
+    store.insert({ ...gate({ id: 'old', marker: 'old', createdAt: '2026-06-30T10:00:00.000Z', claudeSessionId: 'cc-A' }), status: 'orphaned', orphanedAt: '2026-06-30T10:00:00.000Z' })
+    store.insert({ ...gate({ id: 'new', marker: 'new', createdAt: '2026-06-30T11:00:00.000Z', claudeSessionId: 'cc-A' }), status: 'orphaned', orphanedAt: '2026-06-30T11:00:00.000Z' })
+    const caller = { fingerprint: fp, claudeSessionId: 'cc-A' }
+    const hit = store.findReattachable(caller, Date.parse('2026-06-30T11:30:00.000Z'))
+    expect(hit?.id).toBe('new')                                // most recent of the same-session fingerprint matches
 
-    // There is no parameter for "which session is asking" — fingerprint is the only key.
-    expect(store.findReattachable(undefined, Date.now())).toBeUndefined()
+    // A caller from a DIFFERENT session with the identical fingerprint gets nothing.
+    expect(store.findReattachable({ fingerprint: fp, claudeSessionId: 'cc-B' }, Date.now())).toBeUndefined()
+
+    // No fingerprint at all → no candidates regardless of session.
+    expect(store.findReattachable({ fingerprint: undefined, claudeSessionId: 'cc-A' }, Date.now())).toBeUndefined()
   })
 })
