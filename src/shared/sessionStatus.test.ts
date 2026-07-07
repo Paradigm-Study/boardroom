@@ -27,4 +27,8 @@ describe('deriveSessionStatus', () => {
     expect(deriveSessionStatus({ status: 'alive' }, [mk({ status: 'decided', decidedAt: '2026-07-02T09:00:00.000Z' })], NOW)).toBe('idle')
     expect(deriveSessionStatus({ status: 'alive' }, [], NOW)).toBe('idle')
   })
+  it('ended session with a pending card still needs the human (obligation outranks liveness)', () => {
+    expect(deriveSessionStatus({ status: 'ended' }, [mk({})], NOW)).toBe('needs-decision')
+    expect(deriveSessionStatus({ status: 'ended' }, [mk({ stage: 'results' })], NOW)).toBe('awaiting-review')
+  })
 })
