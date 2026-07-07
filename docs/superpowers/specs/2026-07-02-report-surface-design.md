@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-02
 **Status:** Spec LOCKED on boardroom (2026-07-02); sequencing resolved same day — **session-stream spine pivot committed** (clarify card `9a064f50`).
+**P0 (session spine): IMPLEMENTED 2026-07-02** — commits `ad710db..6f07381` (12 tasks + final-review fixes; plan: `docs/superpowers/plans/2026-07-02-p0-session-spine.md`; per-task ledger: `.superpowers/sdd/progress.md`). Criterion 3 delivered: cards bind to their owning CC session via hook-injected `sessionKey`; reattach and waker route by binding (both cross-session steal bugs fixed, characterization suites flipped); web groups by real session id with `#/session/<id>` streams and inbox status tags. Criterion 6 preserved. Criteria 1, 2, 4, 5 remain for P1–P3.
 
 ## Vision
 
