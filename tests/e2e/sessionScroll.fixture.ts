@@ -19,6 +19,7 @@ export interface BrowserCard {
   }>
   status: 'pending'
   createdAt: string
+  claudeSessionId?: string
 }
 
 export const scrollCards: BrowserCard[] = [
@@ -56,7 +57,13 @@ export async function safeScrollTarget(page: Page): Promise<number> {
   })
 }
 
-export function browserCard(id: string, title: string, headline: string, createdAt: string): BrowserCard {
+export function browserCard(
+  id: string,
+  title: string,
+  headline: string,
+  createdAt: string,
+  overrides: Partial<Pick<BrowserCard, 'claudeSessionId'>> = {},
+): BrowserCard {
   return {
     id,
     stage: 'clarify',
@@ -74,6 +81,7 @@ export function browserCard(id: string, title: string, headline: string, created
     }],
     status: 'pending',
     createdAt,
+    ...overrides,
   }
 }
 
@@ -98,10 +106,31 @@ export async function mockBoardroomApi(page: Page, cards: BrowserCard[] = scroll
     contentType: 'application/json',
     body: JSON.stringify(cards),
   }))
+  // Derive one SessionVM per distinct claudeSessionId among the mocked cards — the
+  // dashboard polls this on every route (4s cadence on the session/folders routes)
+  // to feed the sidebar's status chips and the stream view's header. Cards without
+  // a claudeSessionId (legacy, unbound) contribute no session row.
+  const boundIds = [...new Set(cards.map(c => c.claudeSessionId).filter((id): id is string => Boolean(id)))]
+  const sessionVMs = boundIds.map(id => {
+    const ownCards = cards.filter(c => c.claudeSessionId === id)
+    return {
+      sessionId: id,
+      machineId: 'qa-machine',
+      pid: 1,
+      cwd: `/tmp/${id}`,
+      project: ownCards[0].session.project,
+      status: 'alive' as const,
+      capturedAt: '2026-07-02T10:00:00.000Z',
+      lastSeenAt: '2026-07-02T12:00:00.000Z',
+      sessionStatus: 'needs-decision' as const,
+      pendingCount: ownCards.filter(c => c.status === 'pending').length,
+      cardCount: ownCards.length,
+    }
+  })
   await page.route('**/api/sessions', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: '[]',
+    body: JSON.stringify(sessionVMs),
   }))
   await page.route('**/api/device', route => route.fulfill({
     status: 200,
