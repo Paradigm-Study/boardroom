@@ -66,6 +66,24 @@ export class Store {
       SELECT cwd, session_id, project, NULL, updated_at FROM sessions WHERE true
       ON CONFLICT(cwd) DO NOTHING
     `)
+    // Session-id-keyed registry (the session spine). Unlike sessions_v2 (cwd PK,
+    // where a re-launch in the same cwd overwrites the previous session's row —
+    // the cross-session steal), one row PER SESSION survives concurrent and
+    // sequential sessions sharing a cwd. The waker resolves resume targets here
+    // by the card's claudeSessionId.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions_v3 (
+        session_id TEXT PRIMARY KEY,
+        cwd        TEXT NOT NULL,
+        project    TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    this.db.exec(`
+      INSERT INTO sessions_v3 (session_id, cwd, project, updated_at)
+      SELECT session_id, cwd, project, updated_at FROM sessions_v2 WHERE true
+      ON CONFLICT(session_id) DO NOTHING
+    `)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS captured_sessions (
         session_id TEXT PRIMARY KEY,
@@ -77,8 +95,8 @@ export class Store {
 
   recordSession(project: string, sessionId: string, cwd: string, claudeSessionId?: string): void {
     const ts = new Date().toISOString()
-    // Both writes in one transaction so the legacy and cwd-keyed tables can never
-    // drift if the second INSERT throws (SQLITE_FULL/IOERR).
+    // All writes in one transaction so the legacy, cwd-keyed, and session-id-keyed
+    // tables can never drift if a later INSERT throws (SQLITE_FULL/IOERR).
     this.db.transaction(() => {
       // Legacy project-keyed table, preserved for back-compat (callers of getSession).
       this.db.prepare(
@@ -91,6 +109,11 @@ export class Store {
          ON CONFLICT(cwd) DO UPDATE SET session_id = excluded.session_id, project = excluded.project,
            claude_session_id = COALESCE(excluded.claude_session_id, claude_session_id), updated_at = excluded.updated_at`,
       ).run(cwd, sessionId, project, claudeSessionId ?? null, ts)
+      // Session-id-keyed registry: immune to same-cwd overwrite, one row per session.
+      this.db.prepare(
+        `INSERT INTO sessions_v3 (session_id, cwd, project, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET cwd = excluded.cwd, project = excluded.project, updated_at = excluded.updated_at`,
+      ).run(sessionId, cwd, project, ts)
     })()
   }
 
@@ -127,6 +150,15 @@ export class Store {
       .prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE project = ?')
       .all(project)
     return rows.length === 1 ? toSessionRow(rows[0]) : undefined
+  }
+
+  // Exact spine lookup: the card carries claudeSessionId, this returns where to
+  // `claude --resume` it. No ambiguity possible — session_id is the PK.
+  getRegisteredSession(claudeSessionId: string): { sessionId: string; cwd: string; project: string } | undefined {
+    const row = this.db
+      .prepare('SELECT session_id, cwd, project FROM sessions_v3 WHERE session_id = ?')
+      .get(claudeSessionId) as { session_id: string; cwd: string; project: string } | undefined
+    return row ? { sessionId: row.session_id, cwd: row.cwd, project: row.project } : undefined
   }
 
   // Validate on the way in so a malformed card can never reach SQLite — the read
