@@ -24,9 +24,17 @@ export async function fetchCards(): Promise<Card[]> {
   return check(await fetch('/api/cards'))
 }
 
+// A captured session plus the dashboard-facing rollup the daemon derives from its
+// cards: sessionStatus (the sidebar's status chip), and the pending/total card
+// counts. Read-only; the Folders view and the sidebar/stream view both consume it.
+export type SessionVM = CapturedSession & {
+  sessionStatus: 'needs-decision' | 'awaiting-review' | 'running' | 'idle' | 'ended'
+  pendingCount: number
+  cardCount: number
+}
+
 // Every Claude Code session the daemon has captured on this machine (alive + ended).
-// Read-only; the Folders view groups these by code folder.
-export async function fetchSessions(): Promise<CapturedSession[]> {
+export async function fetchSessions(): Promise<SessionVM[]> {
   return check(await fetch('/api/sessions'))
 }
 

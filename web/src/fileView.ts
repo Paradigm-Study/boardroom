@@ -78,6 +78,9 @@ export type Route =
   | { kind: 'card'; id: string }
   | { kind: 'file'; url: string; name?: string; mime?: string }
   | { kind: 'folders' }
+  // A real Claude Code session's stream view (#/session/<claudeSessionId>) — the
+  // spine view, cards in chronological order within that one session.
+  | { kind: 'session'; id: string }
   // An in-page block anchor (#block-…, from a decision's Evidence links): a scroll
   // within the open card, NOT a route change. Without this kind it would parse as
   // root and the auto-open would yank the view to a different card.
@@ -105,6 +108,8 @@ export function parseHash(hash: string): Route {
     }
   }
   if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
+  const session = /^\/session\/(.+)$/.exec(raw)
+  if (session) return { kind: 'session', id: decodeURIComponent(session[1]) }
   const card = /^\/card\/(.+)$/.exec(raw)
   if (card) return { kind: 'card', id: card[1] }
   if (raw.startsWith('block-')) return { kind: 'anchor', id: raw }

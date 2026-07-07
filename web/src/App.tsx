@@ -1,7 +1,7 @@
 import { Armchair, Bell } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
-import type { CapturedSession } from '../../src/shared/session.js'
+import type { SessionVM } from './api.js'
 import { fetchCards, fetchSessions, subscribeCards } from './api.js'
 import { CardView } from './CardView.js'
 import { FileViewer } from './FileViewer.js'
@@ -9,6 +9,7 @@ import { FolderColumns } from './FolderColumns.js'
 import { parseHash } from './fileView.js'
 import { needsHuman } from './helpers.js'
 import { notifyCard, notifyPermission, requestNotify } from './notify.js'
+import { SessionStream } from './SessionStream.js'
 import { TaskSidebar } from './TaskSidebar.js'
 
 function useHashRoute(): string {
@@ -22,7 +23,7 @@ function useHashRoute(): string {
 }
 
 function sessionScrollKey(card: Card): string {
-  return `${card.session.project}\u0000${card.session.title?.trim() || 'Untitled session'}\u0000${card.session.agent}`
+  return card.claudeSessionId ?? `${card.session.project}\u0000${card.session.title?.trim() || 'Untitled session'}\u0000${card.session.agent}`
 }
 
 interface SessionScrollEntry {
@@ -82,7 +83,7 @@ function saveSessionScroll(entries: Map<string, SessionScrollEntry>, key: string
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
-  const [sessions, setSessions] = useState<CapturedSession[] | null>(null)
+  const [sessions, setSessions] = useState<SessionVM[] | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
   const [loadError, setLoadError] = useState<string | null>(null)
   // False until the initial fetch settles: a deep link must show "loading", never a
@@ -195,13 +196,15 @@ export function App() {
     if (route.kind !== 'file' && route.kind !== 'folders') returnHash.current = hash
   }, [hash, route.kind])
 
-  // Sessions feed the Folders overlay only. Fetch when it opens and poll while it's
-  // up (the capturer reconciles every 5s); stop on close so the dashboard is idle.
+  // Sessions now feed the sidebar's status tags on every route, not just the Folders
+  // overlay — so this always polls. The Folders overlay and the session stream view
+  // both want fresher data (the capturer reconciles every 5s) while they're open;
+  // everywhere else a slower cadence is plenty since it's only feeding status chips.
   useEffect(() => {
-    if (route.kind !== 'folders') return
-    const load = (): void => { void fetchSessions().then(setSessions).catch(() => { /* overlay shows last-known */ }) }
+    const load = (): void => { void fetchSessions().then(setSessions).catch(() => { /* sidebar/overlay show last-known */ }) }
     load()
-    const timer = setInterval(load, 4000)
+    const fast = route.kind === 'folders' || route.kind === 'session'
+    const timer = setInterval(load, fast ? 4000 : 15000)
     return () => clearInterval(timer)
   }, [route.kind])
 
@@ -251,9 +254,24 @@ export function App() {
     )
   }
 
+  if (route.kind === 'session') {
+    const vm = sessions?.find(s => s.sessionId === route.id) ?? null
+    const own = all
+      .filter(c => c.claudeSessionId === route.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    return (
+      <div className="frame">
+        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} />
+        <main className="content"><div className="content-inner">
+          <SessionStream session={vm} cards={own} />
+        </div></main>
+      </div>
+    )
+  }
+
   return (
     <div className="frame">
-      <TaskSidebar cards={all} selectedId={shown?.id ?? null} />
+      <TaskSidebar cards={all} selectedId={shown?.id ?? null} sessions={sessions ?? undefined} />
       <main className="content">
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
         {perm === 'default' && (

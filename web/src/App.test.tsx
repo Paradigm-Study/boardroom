@@ -2,12 +2,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, subscribeCards } from './api.js'
+import { fetchCards, fetchSessions, subscribeCards } from './api.js'
 import { App } from './App.js'
 import { fileHash } from './fileView.js'
 
 vi.mock('./api.js', () => ({
   fetchCards: vi.fn(),
+  fetchSessions: vi.fn(),
   subscribeCards: vi.fn(),
 }))
 
@@ -89,6 +90,9 @@ beforeEach(() => {
     },
   })
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() })
+  // Sessions now poll on every route (feeds the sidebar's status tags) — default to
+  // an empty list so a test that doesn't care about sessions isn't forced to mock it.
+  vi.mocked(fetchSessions).mockResolvedValue([])
 })
 
 afterEach(() => {

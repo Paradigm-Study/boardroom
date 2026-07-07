@@ -2,7 +2,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { TaskSidebar } from './TaskSidebar.js'
+import type { SessionVM } from './api.js'
+import { groupCardsByProjectAndSession, TaskSidebar } from './TaskSidebar.js'
 
 afterEach(() => {
   cleanup()
@@ -132,6 +133,58 @@ describe('TaskSidebar reconnecting (restart-orphaned) cards', () => {
     expect(screen.getByText('History')).toBeTruthy()
     expect(screen.getByText('orphaned')).toBeTruthy()
     expect(screen.queryByText('reconnecting')).toBeNull()
+  })
+})
+
+describe('TaskSidebar session grouping by real session id', () => {
+  it('groups by claudeSessionId when present, pseudo-key only for unbound cards', () => {
+    const a = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const b = card({
+      id: 'b', headline: 'B', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-B',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const legacy = card({
+      id: 'l', headline: 'L', createdAt: '2026-06-16T12:02:00.000Z',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const groups = groupCardsByProjectAndSession([a, b, legacy])
+    // identical project/title/agent, but three distinct groups: cc-A, cc-B, pseudo
+    expect(groups.flatMap(p => p.sessions).length).toBe(3)
+  })
+})
+
+describe('TaskSidebar inbox status tags', () => {
+  const vm: SessionVM = {
+    sessionId: 'cc-A', machineId: 'm', pid: 1, cwd: '/tmp/p', project: 'p',
+    status: 'alive', capturedAt: '2026-07-02T10:00:00.000Z', lastSeenAt: '2026-07-02T12:00:00.000Z',
+    sessionStatus: 'needs-decision', pendingCount: 1, cardCount: 1,
+  }
+
+  it('shows the sessionStatus chip on a bound session group with a matching VM', () => {
+    render(
+      <TaskSidebar
+        selectedId={null}
+        sessions={[vm]}
+        cards={[card({
+          id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+        })]}
+      />,
+    )
+    expect(screen.getByText('needs-decision')).toBeTruthy()
+  })
+
+  it('never shows a status chip on an unbound (legacy pseudo-key) session group', () => {
+    render(
+      <TaskSidebar
+        selectedId={null}
+        sessions={[vm]}
+        cards={[card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z' })]}
+      />,
+    )
+    expect(screen.queryByText('needs-decision')).toBeNull()
   })
 })
 

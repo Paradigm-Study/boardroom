@@ -914,3 +914,12 @@ a { color: inherit; }
   font-family: var(--mono); font-size: 11px; color: var(--ink-3);
   word-break: break-all; user-select: all;
 }
+
+/* Session stream (spine view) */
+.session-stream { display: flex; flex-direction: column; gap: 18px; }
+.stream-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.stream-sub { font-size: 12.5px; color: var(--ink-3); margin: 2px 0 0; }
+.stream-status { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--ink-2); white-space: nowrap; }
+.stream-status-needs-decision, .stream-status-awaiting-review { color: var(--pending); background: var(--pending-soft); border-color: transparent; }
+.stream-status-running { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.stream-item { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; background: var(--bg-2); }

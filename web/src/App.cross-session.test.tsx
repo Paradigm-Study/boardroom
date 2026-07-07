@@ -2,7 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, subscribeCards } from './api.js'
+import { fetchCards, fetchSessions, subscribeCards } from './api.js'
 import { App } from './App.js'
 
 // CHARACTERIZATION TESTS for the dashboard's gate selection across sessions.
@@ -15,7 +15,7 @@ import { App } from './App.js'
 // most-recent PENDING card across ALL sessions, with no notion of a "current" session
 // to scope to — but it renders each card's OWN content faithfully (no mixing here).
 
-vi.mock('./api.js', () => ({ fetchCards: vi.fn(), subscribeCards: vi.fn() }))
+vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchSessions: vi.fn(), subscribeCards: vi.fn() }))
 vi.mock('./notify.js', () => ({
   notifyCard: vi.fn(),
   notifyPermission: () => 'granted',
@@ -37,6 +37,9 @@ beforeEach(() => {
   })
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() })
   window.location.hash = ''
+  // Sessions now poll on every route (feeds the sidebar's status tags) — default to
+  // an empty list so a test that doesn't care about sessions isn't forced to mock it.
+  vi.mocked(fetchSessions).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -96,6 +99,42 @@ function bootOrphan(id: string, headline: string, session: Card['session'], crea
     orphanedAt: new Date().toISOString(), // recent → within the 24h reattach window
   }
 }
+
+// Sidebar grouping: with the session spine, TWO Claude Code sessions that happen to
+// share project/title/agent are DISTINCT sessions (claudeSessionId is the real key).
+// The legacy pseudo-key (project+title+agent) is a fallback used ONLY for cards that
+// predate the spine (no claudeSessionId) — those still merge as before.
+describe('dashboard sidebar grouping by real session id', () => {
+  it('[FLIPPED] two sessions with identical project/title/agent but distinct claudeSessionIds render as TWO sidebar groups', async () => {
+    const a = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T10:00:00.000Z')
+    const b = gate('B', 'Session B decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T11:00:00.000Z')
+    const boundA = { ...a, claudeSessionId: 'cc-A' }
+    const boundB = { ...b, claudeSessionId: 'cc-B' }
+    vi.mocked(fetchCards).mockResolvedValue([boundA, boundB])
+    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
+
+    // Same project/title/agent, but bound to two different real sessions — the
+    // sidebar must show two distinct session groups, not collapse them into one.
+    expect(screen.getAllByRole('group', { name: 'Same Title' })).toHaveLength(2)
+  })
+
+  it('[LEGACY] two unbound (no claudeSessionId) card sets with identical pseudo-keys still merge into ONE group', async () => {
+    const a = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T10:00:00.000Z')
+    const b = gate('B', 'Session B decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T11:00:00.000Z')
+    vi.mocked(fetchCards).mockResolvedValue([a, b])
+    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
+
+    // Pre-spine behavior preserved: with no claudeSessionId on either card, the
+    // pseudo-key (project+title+agent) merges them into a single sidebar group.
+    expect(screen.getAllByRole('group', { name: 'Same Title' })).toHaveLength(1)
+  })
+})
 
 describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => {
   it('auto-open prefers the newest actionable gate, including a boot-orphaned "reconnecting" one', async () => {

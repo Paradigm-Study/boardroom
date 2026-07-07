@@ -345,7 +345,11 @@ export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
               <div>
                 <span className="canvas-label">Decision sheet</span>
                 <h2>{ready ? 'Ready to submit' : `${answeredCount}/${choiceDecisions.length} done`}</h2>
-                <p className="sheet-source">{card.session.title?.trim() || 'Untitled session'}</p>
+                <p className="sheet-source">
+                  {card.claudeSessionId
+                    ? <a href={`#/session/${encodeURIComponent(card.claudeSessionId)}`}>{card.session.title?.trim() || 'Untitled session'}</a>
+                    : (card.session.title?.trim() || 'Untitled session')}
+                </p>
               </div>
               <span className="dock-status">{card.status}</span>
             </div>

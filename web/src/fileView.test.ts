@@ -103,4 +103,9 @@ describe('parseHash / fileHash', () => {
     expect(parseHash('/folders')).toEqual({ kind: 'folders' })
     expect(parseHash('#/folders/')).toEqual({ kind: 'folders' })
   })
+  it('parses the session stream route, decoding a percent-encoded claudeSessionId', () => {
+    expect(parseHash('#/session/cc-A')).toEqual({ kind: 'session', id: 'cc-A' })
+    expect(parseHash('/session/cc-A')).toEqual({ kind: 'session', id: 'cc-A' })
+    expect(parseHash(`#/session/${encodeURIComponent('cc/weird id')}`)).toEqual({ kind: 'session', id: 'cc/weird id' })
+  })
 })

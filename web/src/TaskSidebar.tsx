@@ -1,6 +1,7 @@
 import { Archive, Armchair, ChevronRight, FolderTree, Inbox } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
+import type { SessionVM } from './api.js'
 import { age, isReconnecting, needsHuman } from './helpers.js'
 import { STAGE } from './stage.js'
 
@@ -16,8 +17,12 @@ function projectKey(card: Card): string {
   return card.session.project
 }
 
+// The real session key when the card is bound to a captured Claude Code session
+// (Task 2's spine); a pseudo-key (project+title+agent) ONLY for legacy/unbound
+// cards that predate the spine. Two sessions that happen to share project/title/
+// agent are still distinct groups once they carry real claudeSessionIds.
 function sessionKey(card: Card): string {
-  return `${projectKey(card)}\u0000${sessionLabel(card)}\u0000${card.session.agent}`
+  return card.claudeSessionId ?? `${projectKey(card)}\u0000${sessionLabel(card)}\u0000${card.session.agent}`
 }
 
 interface SidebarSessionGroup {
@@ -25,6 +30,9 @@ interface SidebarSessionGroup {
   label: string
   agent: string
   cards: Card[]
+  // True when this group's key is a real claudeSessionId (not the legacy pseudo-key)
+  // — only bound groups link to the #/session/<id> stream view or show a status chip.
+  bound: boolean
 }
 
 interface SidebarProjectGroup {
@@ -49,7 +57,7 @@ export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGrou
     const sKey = sessionKey(card)
     let session = project.sessions.find(s => s.key === sKey)
     if (!session) {
-      session = { key: sKey, label: sessionLabel(card), agent: card.session.agent, cards: [] }
+      session = { key: sKey, label: sessionLabel(card), agent: card.session.agent, cards: [], bound: !!card.claudeSessionId }
       project.sessions.push(session)
     }
     session.cards.push(card)
@@ -119,11 +127,13 @@ function ProjectSection({
   section,
   projectIndex,
   selectedId,
+  sessions,
 }: {
   project: SidebarProjectGroup
   section: string
   projectIndex: number
   selectedId: string | null
+  sessions?: SessionVM[]
 }) {
   const key = foldKey(section, project.key)
   const [folded, setFolded] = useState(() => readFolded(key))
@@ -170,12 +180,21 @@ function ProjectSection({
         <div className="side-project-body">
           {visibleSessions.map((session, sessionIndex) => {
             const sessionHeadingId = `${section}-session-${projectIndex}-${sessionIndex}`
+            // Only a bound group (a real claudeSessionId) links to the stream view or
+            // carries a status chip — the legacy pseudo-key has no session record to
+            // fetch cards for, and no SessionVM to look a status up on.
+            const vm = session.bound ? sessions?.find(s => s.sessionId === session.key) : undefined
             return (
               <section key={session.key} className="side-session" role="group" aria-labelledby={sessionHeadingId}>
                 <div className="side-session-head">
-                  <h4 id={sessionHeadingId}>{session.label}</h4>
+                  <h4 id={sessionHeadingId}>
+                    {session.bound
+                      ? <a href={`#/session/${encodeURIComponent(session.key)}`}>{session.label}</a>
+                      : session.label}
+                  </h4>
                   <span className="side-session-agent">{session.agent}</span>
                   <span>{session.cards.length} card{session.cards.length === 1 ? '' : 's'}</span>
+                  {vm && <span className={`stream-status stream-status-${vm.sessionStatus}`}>{vm.sessionStatus}</span>}
                 </div>
                 {session.cards.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
               </section>
@@ -193,7 +212,17 @@ function ProjectSection({
   )
 }
 
-function GroupedCards({ cards, section, selectedId }: { cards: Card[]; section: string; selectedId: string | null }) {
+function GroupedCards({
+  cards,
+  section,
+  selectedId,
+  sessions,
+}: {
+  cards: Card[]
+  section: string
+  selectedId: string | null
+  sessions?: SessionVM[]
+}) {
   return (
     <>
       {groupCardsByProjectAndSession(cards).map((project, projectIndex) => (
@@ -203,13 +232,14 @@ function GroupedCards({ cards, section, selectedId }: { cards: Card[]; section: 
           section={section}
           projectIndex={projectIndex}
           selectedId={selectedId}
+          sessions={sessions}
         />
       ))}
     </>
   )
 }
 
-export function TaskSidebar({ cards, selectedId }: { cards: Card[]; selectedId: string | null }) {
+export function TaskSidebar({ cards, selectedId, sessions }: { cards: Card[]; selectedId: string | null; sessions?: SessionVM[] }) {
   const byNewest = [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate
   // is still awaiting the human and must not sink into History (see shared/needsHuman).
@@ -232,12 +262,12 @@ export function TaskSidebar({ cards, selectedId }: { cards: Card[]; selectedId: 
 
       <div className="side-group"><Inbox size={12} aria-hidden />Needs you <span className="n">{pending.length}</span></div>
       {pending.length === 0 && <p className="side-empty">Nothing waiting on you.</p>}
-      <GroupedCards cards={pending} section="pending" selectedId={selectedId} />
+      <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} />
 
       {rest.length > 0 && (
         <div className="side-group"><Archive size={12} aria-hidden />History <span className="n">{rest.length}</span></div>
       )}
-      <GroupedCards cards={rest} section="history" selectedId={selectedId} />
+      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} />
     </aside>
   )
 }
