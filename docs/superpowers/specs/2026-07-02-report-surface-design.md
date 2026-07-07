@@ -1,7 +1,7 @@
 # Report Surface & Gate Loosening — Design
 
 **Date:** 2026-07-02
-**Status:** Plan approved on boardroom (card `cf7ea64f`). Spec lock pending (`present_spec`).
+**Status:** Spec LOCKED on boardroom (2026-07-02). Sequencing amendment pending: session-stream pivot (see open question below).
 
 ## Vision
 
@@ -54,14 +54,20 @@ Gate roles after this work: `clarify` = scoping, `present_plan` = plan approval,
 
 Direction locked, not designed. Seed sketch above (stage tags + history drawer). Prerequisite: P1–P3 have moved everything meaningful onto cards.
 
-## Acceptance criteria (candidates for spec lock)
+## Locked acceptance contract (2026-07-02, spec gate)
 
-1. A pure report reaches the human with **zero agent pause** — `present_report` returns immediately, never blocks, never parks.
-2. Reports never appear in the pending-decision queue or badge; they land in a distinct tray with unread state.
-3. Every card displays its origin session and trigger context; with multiple concurrent sessions in the same cwd, decisions and replies route to the **correct** session.
-4. A reply on a report arrives in the owning session and yields a threaded answer report without derailing the main task (subagent answers).
-5. All four gates accept the full block palette and sections; validation still enforces each gate's verdict semantics (no role drift).
-6. `review_results` remains the only completion path — a session cannot be closed via `present_report`.
+Locked via `present_spec`; human adjustments folded in. Criteria 1–3 carry a **pending sequencing amendment** (session-stream pivot — see open question below).
+
+1. **Report delivery is non-blocking, and cards are the media — not the gate.** *(adjusted at lock)* The CC session feeds real-time data from which report cards render; only human-needed information surfaces — mid-progress noise is discarded; decisions may be integrated into reports. The agent never freezes on a card that has nothing to decide.
+2. **Human-relevant reports only, never inflating the decision badge.** *(adjusted at lock)* Only information useful for the human to read is ported to the report surface; agent-only or result-irrelevant information stays hidden. Unread reports leave the pending-decision queue and badge untouched.
+3. **Provenance is structural.** *(human queried wording at lock — clarified)* Original intent: every card carries a pointer to the CC session that created it (NOT one-card-one-session), so with 2+ concurrent sessions in one cwd, decisions and replies route to the correct session. Under the session-stream pivot this becomes structural: a card lives inside its session's stream and cannot be mis-attributed.
+4. **A human reply on a report produces a threaded answer.** Reply reaches the owning session; a subagent with session context answers as a child report (`parent_report_id`); the main task continues undisturbed.
+5. **All four existing gates accept the full block palette and mixable sections.** spec/results cards can carry sections and any block; validation still enforces each gate's verdict semantics — no role drift.
+6. **`review_results` remains the only way to close a session.** Reports carry no verdict and cannot complete anything.
+
+## Open question at lock: session-stream pivot (2026-07-02)
+
+At lock, the human proposed unifying sessions: **one Claude Code session = one boardroom session**, everything human-relevant synced in real time, gates as continuous cards within one scrollable session stream — because bouncing between boardroom and Claude Code is inconvenient. This pivots boardroom's container model (inbox-of-cards → session streams). Sequencing verdict pending on the 2026-07-02 clarify card. Recommendation: pivot the spine now (sessions as first-class container; report ships as the first native stream entry), keep the inbox as a cross-session "needs me" filter, defer per-event mirroring.
 
 ## Non-goals
 
