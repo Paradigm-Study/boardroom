@@ -1,7 +1,7 @@
 # Report Surface & Gate Loosening — Design
 
 **Date:** 2026-07-02
-**Status:** Spec LOCKED on boardroom (2026-07-02). Sequencing amendment pending: session-stream pivot (see open question below).
+**Status:** Spec LOCKED on boardroom (2026-07-02); sequencing resolved same day — **session-stream spine pivot committed** (clarify card `9a064f50`).
 
 ## Vision
 
@@ -23,36 +23,41 @@ Boardroom becomes the primary surface for supervising agent sessions (Claude Cod
 
 Gate roles after this work: `clarify` = scoping, `present_plan` = plan approval, `present_spec` = scope lock, `review_results` = completion verdict, `present_report` = convey information (never a completion path).
 
-## Architecture
+## Architecture (amended 2026-07-02 — session-stream spine)
 
-### P0 · Card provenance & session binding
+### P0 · Session spine
 
-- Bind every card to its owning agent-session id at creation (revive the dead `claude_session_id` plumbing from Part 2).
-- Card header shows: origin session title, project, and a one-line trigger context ("what conversation produced this card").
-- Reattach, waker, and dashboard resolve cards **by binding** — never by fingerprint/most-recent, cwd, or `pending[0]`.
+- Sessions become first-class: **one Claude Code session = one boardroom session** (a scrollable stream), created at MCP handshake; every card, report, and tag is an entry in exactly one stream.
+- Real-time sync rides the existing SSE plumbing and session capture (PR #1); only human-relevant entries stream (curated v1 below).
+- Provenance is structural — reattach, waker, and dashboard route by stream membership; fingerprint/most-recent/cwd/`pending[0]` resolution is **deleted**, not patched.
+- Each session carries a **status tag** (running / needs-decision / awaiting-review / idle) surfaced in the inbox — "flag its role," per the human's note.
 
-### P1 · `present_report` + report tray
+### P1 · Report entries (`present_report`)
 
-- New MCP tool `present_report`: **strictly non-blocking** — posts and returns immediately (card id + dashboard URL). The agent never pauses.
-- Content: full block palette + report sections. The card is a glanceable executive summary; the full document opens in a drawer (SpecDrawer pattern — this is the "future report page" the `report` section kind reserved).
-- Tray: read/unread state, **separate from the pending-decision queue**. Reports never inflate the "needs you" badge.
-- Guardrail: tool description states a report is not a FINISH — `review_results` remains the only way to close a session.
+- New MCP tool `present_report`: **strictly non-blocking** — posts a report entry into the session stream and returns immediately (entry id + dashboard URL). The agent never pauses.
+- Report card = glanceable executive summary (full palette + report sections); the full document opens in a drawer (SpecDrawer pattern — the "future report page" the `report` section kind reserved).
+- Per-entry unread state; the inbox aggregates unread-report counts **separately from blockers** — reports never inflate the decision badge.
+- Guardrail: a report is not a FINISH — `review_results` remains the only way to close a session.
 
 ### P2 · Elaboration channel (two-way)
 
-- A human reply on a report routes back to the **owning session** (P0 binding) via the existing decision-injection/waker path.
-- Agent-side protocol: on receiving a report follow-up, dispatch a **subagent** with session context to answer; the answer posts as a new report threaded to the parent (`parent_report_id`). The main thread continues unharmed.
-- The tray renders report + follow-ups as a thread.
+- A human reply on a report routes to the **owning session** via its stream (structural binding from P0).
+- Agent-side protocol: a follow-up is handled by a **subagent** with session context; the answer posts as a child report (`parent_report_id`). The main thread continues unharmed.
+- The stream renders report + follow-ups as a thread.
 
 ### P3 · Loosen the gates
 
 - Mixable decide/explain/report sections on **all four** existing gates (today: clarify/plan only).
-- Full block palette everywhere; `report` sections on any decision card are **also collected into the report tray** (one tray, two feeders).
+- Full block palette everywhere; `report` sections on any decision card also surface as report entries in the stream (one reading surface, two feeders).
 - Tool descriptions rewritten from prescriptive shape rules to intent guidance ("give the reader what they need"), while keeping role isolation per gate.
 
-### P4 · Session progress view (deferred)
+### Stream v1 contents (curated — decided 2026-07-02)
 
-Direction locked, not designed. Seed sketch above (stage tags + history drawer). Prerequisite: P1–P3 have moved everything meaningful onto cards.
+Decision cards (all four gates, blocking entries) + report cards (non-blocking entries) + stage/event tags (the old P4 sketch, promoted). Full history and secondary information live behind an **explicitly-opened drawer**, never pushed. Live command/tool mirroring is **out of v1** — the filtering problem must prove out first.
+
+### Inbox → cross-session attention filter
+
+The inbox stops being the primary container: it shows pending blockers across all sessions, unread-report counts, and each session's status tag. Streams are depth; the inbox is attention.
 
 ## Locked acceptance contract (2026-07-02, spec gate)
 
@@ -65,10 +70,10 @@ Locked via `present_spec`; human adjustments folded in. Criteria 1–3 carry a *
 5. **All four existing gates accept the full block palette and mixable sections.** spec/results cards can carry sections and any block; validation still enforces each gate's verdict semantics — no role drift.
 6. **`review_results` remains the only way to close a session.** Reports carry no verdict and cannot complete anything.
 
-## Open question at lock: session-stream pivot (2026-07-02)
+## Sequencing verdict (resolved 2026-07-02, clarify card `9a064f50`)
 
-At lock, the human proposed unifying sessions: **one Claude Code session = one boardroom session**, everything human-relevant synced in real time, gates as continuous cards within one scrollable session stream — because bouncing between boardroom and Claude Code is inconvenient. This pivots boardroom's container model (inbox-of-cards → session streams). Sequencing verdict pending on the 2026-07-02 clarify card. Recommendation: pivot the spine now (sessions as first-class container; report ships as the first native stream entry), keep the inbox as a cross-session "needs me" filter, defer per-event mirroring.
+The human proposed at lock: **one Claude Code session = one boardroom session**, human-relevant events synced in real time, gates as continuous cards in one scrollable stream — because bouncing between boardroom and Claude Code is inconvenient. Verdict: **pivot the spine now** (not report-gate-first, not full event mirror); stream v1 is curated (gates + reports + stage tags); the inbox survives as a cross-session attention filter with per-session status tags. The Architecture section above reflects the amended shape.
 
 ## Non-goals
 
-Windows/cross-platform support (macOS-only by design), cloud transport (halted), the full session timeline (P4, deferred), renaming existing gates.
+Windows/cross-platform support (macOS-only by design), cloud transport (halted), live command/tool event mirroring (deferred until stream filtering proves out), renaming existing gates.
