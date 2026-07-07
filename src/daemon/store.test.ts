@@ -138,7 +138,7 @@ describe('Store persists a plan send-back (empty chosen)', () => {
 
   it('decides and reads back a revised plan with chosen: [] without throwing', () => {
     const queue = new Queue(store)
-    const card = compilePlan(planInput, 'claude-code')
+    const card = compilePlan(planInput, { agent: 'claude-code' })
     const noop = { resolve: () => {}, reject: () => {} }
     queue.submit(card, noop)
 

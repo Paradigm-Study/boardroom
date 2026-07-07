@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import type { Card, CardResponse } from '../shared/card.js'
 import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
-import { compileClarify, compilePlan, compileResults, compileSpec } from './compile.js'
+import { compileClarify, compilePlan, compileResults, compileSpec, type CompileMeta } from './compile.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import type { Queue } from './queue.js'
 
@@ -117,11 +117,12 @@ function formatGateResult(card: Card, response: CardResponse): string {
 function makeHangingHandler<I>(
   server: McpServer,
   queue: Queue,
-  compile: (input: I, agent: string) => Card,
+  compile: (input: I, meta: CompileMeta) => Card,
 ): (input: I, ctx: ServerContext) => Promise<ToolResult> {
   return async (input, ctx) => {
     const agent = server.server.getClientVersion()?.name ?? 'unknown'
-    const card = compile(input, agent)
+    // Stopgap: real claudeSessionId is wired in Task 5.
+    const card = compile(input, { agent })
 
     // Heartbeat the hanging response so its HTTP/SSE stream never goes silent.
     // The MCP SDK has no built-in keepalive, and a decision can take many minutes

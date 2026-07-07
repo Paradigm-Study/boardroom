@@ -161,7 +161,7 @@ describe('results gate — property / fuzz invariants', () => {
     let ran = 0
     for (let i = 0; i < N; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       // Invariant 1: the compiled card is a valid zod Card. A throw is a real bug.
       expect(() => Card.parse(card)).not.toThrow()
       // Invariant 2: exactly one results_verdict decision, and it is LAST.
@@ -186,7 +186,7 @@ describe('results gate — property / fuzz invariants', () => {
     const rng = mulberry32(SEED ^ 0x55555555)
     for (let i = 0; i < N; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       const answers = toAnswers(s)
       const out = buildSummary(card, answers)
 
@@ -215,7 +215,7 @@ describe('results gate — property / fuzz invariants', () => {
     let rejects = 0
     for (let i = 0; i < N; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       const cardId = card.id
       // submit reattaches by fingerprint; randomized headlines/projects keep these
       // distinct, but use a unique fingerprint per iteration to be safe.
@@ -243,7 +243,7 @@ describe('results gate — property / fuzz invariants', () => {
     const rng = mulberry32(SEED ^ 0x33333333)
     for (let i = 0; i < N; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       const answers = toAnswers(s)
       const a = buildSummary(card, answers)
       const b = buildSummary(card, answers)
@@ -259,7 +259,7 @@ describe('results gate — property / fuzz invariants', () => {
     let exercised = 0
     for (let i = 0; i < 120; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       const firstClaim = card.decisions.find(d => d.id !== RESULTS_VERDICT_ID)
       if (!firstClaim) continue
       const answers: Record<string, DecisionAnswer> = {
@@ -278,7 +278,7 @@ describe('results gate — property / fuzz invariants', () => {
     let exercised = 0
     for (let i = 0; i < 120; i++) {
       const s = genScenario(rng)
-      const card = compileResults(s.input, 'claude-code')
+      const card = compileResults(s.input, { agent: 'claude-code' })
       const claimDecisions = card.decisions.filter(d => d.id !== RESULTS_VERDICT_ID)
       if (claimDecisions.length < 2) continue // need at least one to leave unvoted
       // Vote-approve all but the last claim; leave the last unvoted; mark complete.
