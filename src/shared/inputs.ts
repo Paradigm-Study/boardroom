@@ -7,6 +7,11 @@ import { Section } from './section.js'
 const sessionFields = {
   project: z.string().min(1).describe('Project name or working directory — shown in the inbox'),
   title: z.string().optional().describe('Short human-readable session title'),
+  sessionKey: z.string().min(1).optional().describe(
+    'Your boardroom session key, injected into your context at session start ("Boardroom session key: …"). ' +
+    'Pass it on EVERY boardroom call — it binds this card to your session so decisions route back to you and ' +
+    'reattach/recovery works across daemon restarts. Omit only if no key was injected.',
+  ),
 }
 
 // Decision ids key the answers map and block ids key blockRefs + DOM anchors: a
