@@ -124,6 +124,22 @@ describe('Card', () => {
     // legacy cards without criteria still parse
     expect(Card.parse(card).criteria).toBeUndefined()
   })
+
+  it('parses a legacy card WITHOUT claudeSessionId (pre-migration rows must not vanish)', () => {
+    const parsed = Card.safeParse(card)
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.claudeSessionId).toBeUndefined()
+  })
+
+  it('round-trips a card WITH claudeSessionId', () => {
+    const parsed = Card.parse({ ...card, claudeSessionId: 'cc-session-1' })
+    expect(parsed.claudeSessionId).toBe('cc-session-1')
+    expect(Card.parse(JSON.parse(JSON.stringify(parsed))).claudeSessionId).toBe('cc-session-1')
+  })
+
+  it('rejects an empty-string claudeSessionId', () => {
+    expect(Card.safeParse({ ...card, claudeSessionId: '' }).success).toBe(false)
+  })
 })
 
 describe('DecisionAnswer', () => {

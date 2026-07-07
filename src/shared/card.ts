@@ -125,6 +125,9 @@ export const Card = z.object({
   id: z.string().min(1),
   stage: Stage,
   session: SessionInfo,
+  // Durable Claude Code session id that owns this card (the session spine key).
+  // OPTIONAL: pre-spine rows lack it, and Store.parseRow drops schema failures.
+  claudeSessionId: z.string().min(1).optional(),
   headline: z.string().min(1),
   blocks: z.array(Block),
   decisions: z.array(Decision).min(1),
