@@ -87,4 +87,33 @@ describe('SessionStart hook', () => {
     expect(posts).toHaveLength(0)       // registration gated on the probe
     expect(ms).toBeLessThan(4_000)      // one 2s probe, not a retry loop
   })
+
+  it('injects the session key line into additionalContext (connected)', async () => {
+    server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url?.startsWith('/api/cards')) { res.statusCode = 200; res.end('[]'); return }
+      if (req.method === 'POST' && req.url === '/api/session') {
+        req.resume()
+        req.on('end', () => { res.statusCode = 200; res.end('{}') })
+        return
+      }
+      res.statusCode = 404; res.end()
+    })
+    await new Promise<void>(r => server!.listen(0, '127.0.0.1', r))
+    const { stdout, status } = await runHook((server.address() as AddressInfo).port)
+    expect(status).toBe(0)
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(ctx).toContain('Boardroom session key: demo-123')
+    expect(ctx).toContain('sessionKey')
+    expect(ctx).not.toContain('identical project + headline') // stale protocol gone
+    expect(ctx).toContain('identical sessionKey, project and headline')
+  })
+
+  it('injects the session key line even when the daemon is offline', async () => {
+    const { stdout, status } = await runHook(59_999) // nothing listening → connection refused
+    expect(status).toBe(0)
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(ctx).toContain('Boardroom session key: demo-123')
+    expect(ctx).not.toContain('identical project + headline') // stale protocol gone
+    expect(ctx).toContain('identical sessionKey, project and headline')
+  })
 })
