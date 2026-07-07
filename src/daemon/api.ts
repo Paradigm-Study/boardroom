@@ -8,6 +8,7 @@ import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
+import { deriveSessionStatus } from '../shared/sessionStatus.js'
 import { buildTrayVM } from './trayView.js'
 
 interface ApiOptions {
@@ -120,8 +121,37 @@ function answersFrom(req: Request): Record<string, DecisionAnswer> {
 export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions): Router {
   const router = Router()
 
+  // Session inbox view-model: each captured session decorated with its aggregate
+  // status tag (deriveSessionStatus) and card counts, so the dashboard can render
+  // a session list without independently re-deriving status per row. Additive over
+  // CapturedSession — existing consumers reading only the base fields are unaffected.
   router.get('/api/sessions', (_req, res) => {
-    try { res.json(store.listCaptured()) } catch (err) { sendError(res, err) }
+    try {
+      const cards = store.list()
+      const nowMs = Date.now()
+      const vms = store.listCaptured().map(s => {
+        const own = cards.filter(c => c.claudeSessionId === s.sessionId)
+        return {
+          ...s,
+          sessionStatus: deriveSessionStatus(s, own, nowMs),
+          pendingCount: own.filter(c => c.status === 'pending').length,
+          cardCount: own.length,
+        }
+      })
+      res.json(vms)
+    } catch (err) { sendError(res, err) }
+  })
+
+  // That session's cards in stream order (createdAt ascending) — the per-session
+  // card feed backing a session's detail view. Distinct path from /api/sessions
+  // above (never shadows/is-shadowed by it); kept adjacent for readability.
+  router.get('/api/sessions/:id/cards', (req, res) => {
+    try {
+      const own = store.list()
+        .filter(c => c.claudeSessionId === req.params.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      res.json(own)
+    } catch (err) { sendError(res, err) }
   })
 
   // The widget dialbook: a read-only catalog of every block type the agent can author

@@ -7,6 +7,10 @@ export interface TrayItem {
   stage: Stage
   headline: string
   project: string
+  // The Claude Code session this card is bound to (session spine key), so the
+  // tray can deep-link a click into that session's view. Optional — pre-spine
+  // cards and legacy, un-hooked agents never set Card.claudeSessionId.
+  claudeSessionId?: string
 }
 
 export interface TrayVM {
@@ -30,7 +34,7 @@ export function buildTrayVM(store: Store, nowMs: number, windowMs: number): Tray
   const items: TrayItem[] = []
   for (const c of actionable) {
     byStage[c.stage]++
-    items.push({ id: c.id, stage: c.stage, headline: c.headline, project: c.session.project })
+    items.push({ id: c.id, stage: c.stage, headline: c.headline, project: c.session.project, claudeSessionId: c.claudeSessionId })
   }
 
   return { total: actionable.length, byStage, items }

@@ -21,6 +21,30 @@ function card(id: string): Card {
   }
 }
 
+// Small local factory for a fully-formed pending Card, with overrides — used by
+// the session view-model tests below where cards are inserted directly via
+// store.insert (not queue.submit) so they can carry a specific claudeSessionId
+// and createdAt without going through the queue's fingerprint/reattach machinery.
+function cardFixture(overrides: Partial<Card> & { id: string }): Card {
+  return {
+    stage: 'clarify',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h', blocks: [],
+    decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+    status: 'pending', createdAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+// Small local factory for a CapturedSession, with overrides.
+function capturedFixture(overrides: Partial<CapturedSession> & { sessionId: string }): CapturedSession {
+  return {
+    machineId: 'm', pid: 1, cwd: '/tmp/x', project: 'x',
+    status: 'alive', capturedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
 const noop = { resolve: () => {}, reject: () => {} }
 
 let dir: string
@@ -458,6 +482,40 @@ describe('GET /api/sessions', () => {
     const res = await request(app).get('/api/sessions').expect(200)
     expect(res.body).toHaveLength(1)
     expect(res.body[0].sessionId).toBe('s1')
+  })
+
+  it('decorates captured sessions with status + counts', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-1', status: 'alive' }))
+    store.insert(cardFixture({ id: 'k1', claudeSessionId: 'cc-1' })) // status 'pending'
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-1')
+    expect(s.sessionStatus).toBe('needs-decision')
+    expect(s.pendingCount).toBe(1)
+    expect(s.cardCount).toBe(1)
+  })
+
+  it('reports zero counts and an idle-ish status for a session with no cards', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-empty', status: 'alive' }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-empty')
+    expect(s.pendingCount).toBe(0)
+    expect(s.cardCount).toBe(0)
+    expect(s.sessionStatus).toBe('idle')
+  })
+})
+
+describe("GET /api/sessions/:id/cards", () => {
+  it("returns only that session's cards in stream order (createdAt ascending)", async () => {
+    store.insert(cardFixture({ id: 'k1', claudeSessionId: 'cc-1', createdAt: '2026-07-02T10:00:00.000Z' }))
+    store.insert(cardFixture({ id: 'k2', claudeSessionId: 'cc-1', createdAt: '2026-07-02T11:00:00.000Z' }))
+    store.insert(cardFixture({ id: 'other', claudeSessionId: 'cc-2' }))
+    const res = await request(app).get('/api/sessions/cc-1/cards').expect(200)
+    expect(res.body.map((c: { id: string }) => c.id)).toEqual(['k1', 'k2'])
+  })
+
+  it('returns an empty array for a session with no cards (not 404)', async () => {
+    const res = await request(app).get('/api/sessions/no-such-session/cards').expect(200)
+    expect(res.body).toEqual([])
   })
 })
 

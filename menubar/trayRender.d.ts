@@ -8,6 +8,7 @@ export interface TrayItem {
   stage: string
   headline: string
   project: string
+  claudeSessionId?: string
 }
 
 // Deliberately LOOSER than the daemon's TrayVM (src/daemon/trayView.ts): stage is a
