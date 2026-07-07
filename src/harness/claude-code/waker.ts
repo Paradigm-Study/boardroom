@@ -47,12 +47,15 @@ export class Waker {
     // agent into building on a late "approve", the exact auto-green-light the gate
     // exists to prevent. (present_plan now parks like clarify/review_results.)
     if (card.stage === 'plan') return
-    // Resolve the resume target FAIL-CLOSED: getSessionByProject returns a row only
-    // when exactly one worktree maps to this basename. Two same-basename worktrees →
-    // undefined → we decline to resume (dashboard copy-paste fallback) rather than
-    // risk `claude --resume` editing the wrong tree under acceptEdits. (Part 2 will
-    // prefer an exact match on the Claude session id when the card carries one.)
-    const session = this.store.getSessionByProject(card.session.project)
+    // Exact spine resolution first: the card knows its owning session. Only
+    // legacy cards (pre-spine, no claudeSessionId) fall back to the fail-closed
+    // project-basename guess. getSessionByProject returns a row only when exactly
+    // one worktree maps to this basename — two same-basename worktrees → undefined
+    // → we decline to resume (dashboard copy-paste fallback) rather than risk
+    // `claude --resume` editing the wrong tree under acceptEdits.
+    const session = card.claudeSessionId
+      ? this.store.getRegisteredSession(card.claudeSessionId)
+      : this.store.getSessionByProject(card.session.project)
     if (!session) return
     // The registry is a trusted-but-unauthenticated write surface, and cwd is the
     // dir we launch `claude --resume` from. Refuse anything that isn't an existing
