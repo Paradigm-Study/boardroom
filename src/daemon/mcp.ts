@@ -30,7 +30,7 @@ const STREAM_HEARTBEAT_MS = 120_000
 // hard stop: a coding agent that asked a gating question is otherwise biased to
 // guess and proceed, which would defeat the human-in-the-loop guarantee.
 const PARKED_TEXT =
-  '⏸ Boardroom: no decision yet — your turn is over. STOP here. Do NOT guess, infer, or proceed on an assumption about what the human would choose. The human will decide on the dashboard; the decision is not lost. To receive it, re-issue this EXACT same call (identical project + headline) on a later turn — reattachment is automatic and re-runs no work.'
+  '⏸ Boardroom: no decision yet — your turn is over. STOP here. Do NOT guess, infer, or proceed on an assumption about what the human would choose. The human will decide on the dashboard; the decision is not lost. To receive it, re-issue this EXACT same call (identical sessionKey, project and headline) on a later turn — reattachment is automatic and re-runs no work.'
 
 interface ParkedMarker {
   parked: true
@@ -63,13 +63,13 @@ const GLANCEABLE =
 
 const DESCRIPTIONS = {
   clarify:
-    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical arguments reattaches to the same card or returns the already-made decision.' + GLANCEABLE,
+    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical sessionKey, project and headline reattaches to the same card or returns the already-made decision. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical arguments reattaches to the same card." + GLANCEABLE,
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical sessionKey, project and headline reattaches to the same card. Always pass your sessionKey (injected at session start) — it binds the card to your session." + GLANCEABLE,
   present_spec:
-    'Lock in the acceptance contract AFTER the plan is approved and BEFORE you build: the behavior-driven definition of done. Pass `goal` plus `criteria` — each criterion a `good` outcome (the pass condition), a `bad` anti-goal (the failure to avoid), and `tracesTo` (the decision/goal it enforces). Boardroom owns the GATE, not the authoring: derive criteria from the locked plan decisions (or your own spec/acceptance skill) — do not over-engineer it. The human reviews each criterion (keep / adjust / drop), may add more, and locks the contract (or sends it back to revise). On lock you get the final contract back as your definition of done: write it to `specRef` so it survives later turns, build until every criterion is MET, then call review_results echoing the spec (read back from `specRef`) with each claim tagged by `criterionId`. This call blocks until the human decides; a PARKED result means STOP and re-issue the identical call later to claim the verdict. Idempotent on retry.' + GLANCEABLE,
+    'Lock in the acceptance contract AFTER the plan is approved and BEFORE you build: the behavior-driven definition of done. Pass `goal` plus `criteria` — each criterion a `good` outcome (the pass condition), a `bad` anti-goal (the failure to avoid), and `tracesTo` (the decision/goal it enforces). Boardroom owns the GATE, not the authoring: derive criteria from the locked plan decisions (or your own spec/acceptance skill) — do not over-engineer it. The human reviews each criterion (keep / adjust / drop), may add more, and locks the contract (or sends it back to revise). On lock you get the final contract back as your definition of done: write it to `specRef` so it survives later turns, build until every criterion is MET, then call review_results echoing the spec (read back from `specRef`) with each claim tagged by `criterionId`. This call blocks until the human decides; a PARKED result means STOP and re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict. Idempotent on retry. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
   review_results:
-    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this identical call later to claim the verdict (no work is re-run).' + GLANCEABLE,
+    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict (no work is re-run). Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
 } as const
 
 interface ToolResult {
@@ -114,15 +114,34 @@ function formatGateResult(card: Card, response: CardResponse): string {
   return `${formatGateContext(card, response.cardId, 'resolved')}\n\nHuman response:\n${response.summary}`
 }
 
+// Durable-identity resolution for a tool call. The mcpSessionId (ctx.sessionId)
+// is daemon-minted and per-connection — it churns on daemon restart and on every
+// waker respawn — so it is ONLY the cache key, never the identity itself.
+// Task-1 spike evidence (2026-07-02): Claude Code sends no session-identifying
+// header on MCP HTTP calls, so the agent-echoed sessionKey is the sole channel.
+// If a future CC version adds one, check it here between (1) and (2).
+export function resolveClaudeSessionId(
+  ctx: { sessionId?: string },
+  input: { sessionKey?: string },
+  bindings: Map<string, string>,
+): string | undefined {
+  if (input.sessionKey) {
+    if (ctx.sessionId) bindings.set(ctx.sessionId, input.sessionKey)
+    return input.sessionKey
+  }
+  return ctx.sessionId ? bindings.get(ctx.sessionId) : undefined
+}
+
 function makeHangingHandler<I>(
   server: McpServer,
   queue: Queue,
   compile: (input: I, meta: CompileMeta) => Card,
+  sessionBindings: Map<string, string>,
 ): (input: I, ctx: ServerContext) => Promise<ToolResult> {
   return async (input, ctx) => {
     const agent = server.server.getClientVersion()?.name ?? 'unknown'
-    // Stopgap: real claudeSessionId is wired in Task 5.
-    const card = compile(input, { agent })
+    const claudeSessionId = resolveClaudeSessionId(ctx, input as { sessionKey?: string }, sessionBindings)
+    const card = compile(input, { agent, claudeSessionId })
 
     // Heartbeat the hanging response so its HTTP/SSE stream never goes silent.
     // The MCP SDK has no built-in keepalive, and a decision can take many minutes
@@ -207,7 +226,7 @@ function makeHangingHandler<I>(
   }
 }
 
-function buildServer(queue: Queue): McpServer {
+function buildServer(queue: Queue, sessionBindings: Map<string, string>): McpServer {
   const server = new McpServer({ name: 'boardroom', version: '0.1.0' })
   // logging: so the keepalive may emit `notifications/message` to clients that didn't
   // request progress (see makeHangingHandler). resources: for the widget-catalog
@@ -216,7 +235,7 @@ function buildServer(queue: Queue): McpServer {
   server.registerTool(
     'clarify',
     { description: DESCRIPTIONS.clarify, inputSchema: ClarifyInput },
-    makeHangingHandler(server, queue, compileClarify),
+    makeHangingHandler(server, queue, compileClarify, sessionBindings),
   )
   // All three tools share one park policy (opt-in via BOARDROOM_BLOCK_MS). When a
   // park IS configured, present_plan parking is NOT auto-approval — it orphans the
@@ -226,7 +245,7 @@ function buildServer(queue: Queue): McpServer {
   server.registerTool(
     'present_plan',
     { description: DESCRIPTIONS.present_plan, inputSchema: PresentPlanInput },
-    makeHangingHandler(server, queue, compilePlan),
+    makeHangingHandler(server, queue, compilePlan, sessionBindings),
   )
   // The spec gate sits between plan approval and the work: the agent distills the
   // locked decisions into acceptance criteria, the human locks/steers them, and the
@@ -234,12 +253,12 @@ function buildServer(queue: Queue): McpServer {
   server.registerTool(
     'present_spec',
     { description: DESCRIPTIONS.present_spec, inputSchema: SpecInput },
-    makeHangingHandler(server, queue, compileSpec),
+    makeHangingHandler(server, queue, compileSpec, sessionBindings),
   )
   server.registerTool(
     'review_results',
     { description: DESCRIPTIONS.review_results, inputSchema: ReviewResultsInput },
-    makeHangingHandler(server, queue, compileResults),
+    makeHangingHandler(server, queue, compileResults, sessionBindings),
   )
   // The widget dialbook as an MCP resource: any session can read the full palette
   // (name / conveys / when-to-use / a valid example per block type) before composing a
@@ -278,6 +297,10 @@ function sessionMissing(res: Response): void {
 
 export function buildMcpRouter(queue: Queue): Router {
   const transports = new Map<string, NodeStreamableHTTPServerTransport>()
+  // Per-connection claudeSessionId cache, keyed by the daemon-minted mcp-session-id.
+  // Owned at router scope (outlives any single request) and cleaned up alongside
+  // its transport in onclose below, so a closed connection never leaks a binding.
+  const sessionBindings = new Map<string, string>()
   const router = Router()
 
   // Keep each client's STANDALONE GET SSE stream warm. The per-request keepalive
@@ -316,9 +339,12 @@ export function buildMcpRouter(queue: Queue): Router {
         onsessioninitialized: (id: string) => { transports.set(id, fresh) },
       })
       fresh.onclose = () => {
-        if (fresh.sessionId) transports.delete(fresh.sessionId)
+        if (fresh.sessionId) {
+          transports.delete(fresh.sessionId)
+          sessionBindings.delete(fresh.sessionId)
+        }
       }
-      const server = buildServer(queue)
+      const server = buildServer(queue, sessionBindings)
       await server.connect(fresh)
       transport = fresh
     }
