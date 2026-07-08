@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../shared/card.js'
 import { Queue } from '../../daemon/queue.js'
 import { Store } from '../../daemon/store.js'
-import { Waker } from './waker.js'
+import { makeDefaultSpawn, Waker } from './waker.js'
 
 function decided(over: Partial<Card> = {}): Card {
   return {
@@ -114,9 +114,9 @@ describe('Waker', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('marks the card delivered once the spawn succeeds, closing the reattach claim', () => {
+  it('marks the card delivered only when the resumed turn exits 0, closing the reattach claim', () => {
     const marked = new Waker(store, {
-      spawn: (_bin, _args, _cwd, onSpawned) => onSpawned?.(),
+      spawn: (_bin, _args, _cwd, hooks) => hooks?.onSuccess?.(),
       claudeBin: 'claude-test',
     })
     store.insert(decided({ fingerprint: 'fp-wake' }))
@@ -127,15 +127,62 @@ describe('Waker', () => {
     expect(store.findReattachable({ fingerprint: 'fp-wake' }, Date.now())).toBeUndefined()
   })
 
-  it('does NOT mark delivered when the spawn fails — the decision stays claimable via reattach', () => {
+  it('does NOT mark delivered when the child launches but the turn fails (the 401 case) — decision stays claimable, onWakeFailed fires', () => {
+    const failures: { cardId: string; detail: string }[] = []
     const failing = new Waker(store, {
-      spawn: () => { /* never calls onSpawned: launch failed (e.g. ENOENT) */ },
+      // Launches fine, then the resumed turn dies (e.g. 401 auth) — the exact
+      // sequence that used to consume the decision via spawn-event stamping.
+      spawn: (_bin, _args, _cwd, hooks) => hooks?.onFailure?.('claude-test exited 1'),
+      claudeBin: 'claude-test',
+      onWakeFailed: (card, detail) => failures.push({ cardId: card.id, detail }),
+    })
+    store.insert(decided({ fingerprint: 'fp-401' }))
+    failing.onCard(decided({ fingerprint: 'fp-401' }))
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp-401' }, Date.now())?.id).toBe('c1')
+    expect(failures).toHaveLength(1)
+    expect(failures[0].cardId).toBe('c1')
+    expect(failures[0].detail).toContain('exited 1')
+  })
+
+  it('does NOT mark delivered when the spawn never settles — the decision stays claimable via reattach', () => {
+    const failing = new Waker(store, {
+      spawn: () => { /* calls neither hook: launch failed silently */ },
       claudeBin: 'claude-test',
     })
     store.insert(decided({ fingerprint: 'fp-fail' }))
     failing.onCard(decided({ fingerprint: 'fp-fail' }))
     expect(store.get('c1')?.deliveredAt).toBeUndefined()
     expect(store.findReattachable({ fingerprint: 'fp-fail' }, Date.now())?.id).toBe('c1')
+  })
+
+  it('reports failure detail through onWakeFailed when the binary itself cannot spawn', () => {
+    const failures: string[] = []
+    const failing = new Waker(store, {
+      spawn: (_bin, _args, _cwd, hooks) => hooks?.onFailure?.('could not spawn claude-test: ENOENT'),
+      claudeBin: 'claude-test',
+      onWakeFailed: (_card, detail) => failures.push(detail),
+    })
+    failing.onCard(decided())
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('could not spawn')
+  })
+
+  it('a throwing onWakeFailed handler cannot take down the caller — the loud warn still lands', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const failing = new Waker(store, {
+        spawn: (_bin, _args, _cwd, hooks) => hooks?.onFailure?.('claude-test exited 1'),
+        claudeBin: 'claude-test',
+        onWakeFailed: () => { throw new Error('notifier blew up') },
+      })
+      expect(() => failing.onCard(decided())).not.toThrow()
+      const warned = warn.mock.calls.map(c => String(c[0])).join('\n')
+      expect(warned).toContain('wake FAILED')
+      expect(warned).toContain('notifier blew up')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('end-to-end via queue events: park then decide wakes the session exactly once', () => {
@@ -154,5 +201,95 @@ describe('Waker', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toContain('sid-1')
     expect(calls[0].cwd).toBe(dir)
+  })
+})
+
+// Real child processes: the production spawn implementation must settle success
+// strictly on exit 0 and surface the child's stderr on failure — the invisible-401
+// regression was a wake that spawned fine and died on its first API call.
+describe('makeDefaultSpawn', () => {
+  it('settles onSuccess only when the child exits 0, and removes the wake log', async () => {
+    const logDir = join(dir, 'wakelogs')
+    const outcome = await new Promise<string>(resolve => {
+      makeDefaultSpawn(logDir)('/bin/sh', ['-c', 'exit 0'], dir, {
+        label: 'card-ok',
+        onSuccess: () => resolve('success'),
+        onFailure: detail => resolve(`failure: ${detail}`),
+      })
+    })
+    expect(outcome).toBe('success')
+    expect(readdirSync(logDir)).toEqual([])
+  })
+
+  it('settles onFailure with the exit code and stderr tail, keeping the wake log for forensics', async () => {
+    const logDir = join(dir, 'wakelogs')
+    const detail = await new Promise<string>(resolve => {
+      makeDefaultSpawn(logDir)('/bin/sh', ['-c', 'echo auth-boom >&2; exit 1'], dir, {
+        label: 'card-401',
+        onSuccess: () => resolve('success'),
+        onFailure: resolve,
+      })
+    })
+    expect(detail).toContain('exited 1')
+    expect(detail).toContain('auth-boom')
+    const kept = readdirSync(logDir)
+    expect(kept).toHaveLength(1)
+    expect(kept[0]).toContain('card-401')
+  })
+
+  it('settles onFailure when the binary cannot be spawned at all', async () => {
+    const detail = await new Promise<string>(resolve => {
+      makeDefaultSpawn(join(dir, 'wakelogs'))(join(dir, 'no-such-bin'), [], dir, {
+        onSuccess: () => resolve('success'),
+        onFailure: resolve,
+      })
+    })
+    expect(detail).toContain('could not spawn')
+  })
+
+  it('still wakes when the log dir is unusable — capture degrades loudly, not silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const blocked = join(dir, 'not-a-dir')
+      writeFileSync(blocked, 'file where the log dir should be')
+      const outcome = await new Promise<string>(resolve => {
+        makeDefaultSpawn(blocked)('/bin/sh', ['-c', 'exit 0'], dir, {
+          onSuccess: () => resolve('success'),
+          onFailure: detail => resolve(`failure: ${detail}`),
+        })
+      })
+      expect(outcome).toBe('success')
+      const warned = warn.mock.calls.map(c => String(c[0])).join('\n')
+      expect(warned).toContain('stderr capture unavailable')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('failure detail still points at the log path when the kept log turned unreadable', async () => {
+    const logDir = join(dir, 'wakelogs')
+    const logPath = join(logDir, 'wake-card-gone.log') // deterministic: wake-<label>.log
+    const detail = await new Promise<string>(resolve => {
+      // The child deletes its own stderr file before dying, so the tail read ENOENTs.
+      makeDefaultSpawn(logDir)('/bin/sh', ['-c', 'rm -f "$1"; exit 7', '_', logPath], dir, {
+        label: 'card-gone',
+        onSuccess: () => resolve('success'),
+        onFailure: resolve,
+      })
+    })
+    expect(detail).toContain('exited 7')
+    expect(detail).toContain(logPath)
+  })
+
+  it('sweeps wake logs older than the retention horizon at construction, keeping recent ones', () => {
+    const logDir = join(dir, 'wakelogs')
+    mkdirSync(logDir, { recursive: true })
+    const old = join(logDir, 'wake-ancient.log')
+    writeFileSync(old, 'stale forensics')
+    writeFileSync(join(logDir, 'wake-recent.log'), 'recent forensics')
+    const past = (Date.now() - 40 * 24 * 60 * 60_000) / 1000
+    utimesSync(old, past, past)
+    makeDefaultSpawn(logDir)
+    expect(readdirSync(logDir)).toEqual(['wake-recent.log'])
   })
 })

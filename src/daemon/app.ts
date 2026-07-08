@@ -6,6 +6,7 @@ import { buildApiRouter } from './api.js'
 import type { Config } from './config.js'
 import { loadMachineIdentity } from './machine.js'
 import { buildMcpRouter } from './mcp.js'
+import { notifyWakeFailed } from './notify.js'
 import { Queue } from './queue.js'
 import { SessionCapturer } from '../harness/claude-code/sessionCapturer.js'
 import { Store } from './store.js'
@@ -29,8 +30,11 @@ export function createDaemon(config: Config): Daemon {
 
   // Phase 2 auto-wake: when a parked/orphaned card is decided, resume the
   // agent's Claude Code session (claude --resume) so the work continues. No-ops
-  // unless the SessionStart hook has registered that project's session.
-  const waker = new Waker(store)
+  // unless the SessionStart hook has registered that project's session. A failed
+  // wake leaves the decision claimable and tells the human via notification.
+  const waker = new Waker(store, {
+    onWakeFailed: config.notifications ? card => notifyWakeFailed(card, config.port) : undefined,
+  })
   queue.on('card', card => waker.onCard(card))
 
   const app = express()

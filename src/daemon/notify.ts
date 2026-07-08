@@ -31,6 +31,17 @@ function notify(opts: notifier.Notification & { open?: string; timeout?: number 
   })
 }
 
+// A failed auto-wake is the one notification that must not be missed: the human
+// decided, but the agent never received it — the card deep-link is the handover.
+export function notifyWakeFailed(card: Card, port: number): void {
+  notify({
+    title: `boardroom · wake failed · ${card.session.project}`,
+    message: `Auto-resume failed — "${card.headline}" decision NOT delivered. Open the card to hand it over.`,
+    open: cardUrl(port, card.id),
+    timeout: 10,
+  })
+}
+
 export function startNotifications(queue: Queue, config: Config): void {
   if (!config.notifications) return
 

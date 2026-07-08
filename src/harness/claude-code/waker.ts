@@ -1,19 +1,29 @@
 import { spawn } from 'node:child_process'
-import { statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import type { Card } from '../../shared/card.js'
 import { buildSummary } from '../../daemon/summary.js'
 import type { Store } from '../../daemon/store.js'
 
-// onSpawned fires once the child process actually started (Node's 'spawn' event) —
-// the waker uses it to mark the card delivered. A failed launch (ENOENT etc.) must
-// NOT mark: the decision then stays claimable via reattach instead of vanishing.
-export type SpawnFn = (bin: string, args: string[], cwd: string, onSpawned?: () => void) => void
+// The spawn implementation settles exactly one hook: onSuccess when the resumed
+// turn EXITS 0, onFailure with a human-readable detail otherwise (launch error,
+// non-zero exit, or signal). Delivery is gated on onSuccess — a wake that merely
+// launched proves nothing (the 401 era: every resume spawned fine, then died on
+// its first API call, and spawn-event stamping consumed the decision anyway).
+export interface WakeHooks {
+  label?: string
+  onSuccess?: () => void
+  onFailure?: (detail: string) => void
+}
+export type SpawnFn = (bin: string, args: string[], cwd: string, hooks?: WakeHooks) => void
 
 interface WakerOpts {
   spawn?: SpawnFn
   claudeBin?: string
   permissionMode?: string
+  onWakeFailed?: (card: Card, detail: string) => void
+  wakeLogDir?: string
 }
 
 // Resumes the agent's Claude Code session when a card it left behind (parked, or
@@ -29,11 +39,13 @@ export class Waker {
   private spawnFn: SpawnFn
   private claudeBin: string
   private permissionMode: string
+  private onWakeFailed?: (card: Card, detail: string) => void
 
   constructor(private store: Store, opts: WakerOpts = {}) {
-    this.spawnFn = opts.spawn ?? defaultSpawn
+    this.spawnFn = opts.spawn ?? makeDefaultSpawn(opts.wakeLogDir ?? join(homedir(), 'Library', 'Logs', 'boardroom-waker'))
     this.claudeBin = opts.claudeBin ?? process.env.BOARDROOM_CLAUDE_BIN ?? '/opt/homebrew/bin/claude'
     this.permissionMode = opts.permissionMode ?? process.env.BOARDROOM_RESUME_PERMISSION ?? 'acceptEdits'
+    this.onWakeFailed = opts.onWakeFailed
   }
 
   // Wire via queue.on('card', card => waker.onCard(card)).
@@ -76,13 +88,28 @@ export class Waker {
     }
     this.woken.add(card.id)
     const args = ['-p', '--resume', session.sessionId, resumeMessage(card), '--permission-mode', this.permissionMode]
-    // Mark the card delivered once the resume actually launched: the decision now
-    // travels in that session's prompt (which is told NOT to re-call the tool), so
-    // leaving deliveredAt unset would keep the card claimable by ANY future call
-    // with the same fingerprint — handing a stale verdict to an unrelated session,
-    // the never-auto-accept violation. On a failed launch nothing is marked and the
-    // reattach path stays open. The dashboard copy-paste summary works either way.
-    this.spawnFn(this.claudeBin, args, session.cwd, () => this.markDelivered(card.id))
+    // Mark the card delivered only when the resumed turn EXITS 0 — a launched
+    // process proves nothing (the 401 era: every resume spawned, then died on its
+    // first API call, and spawn-stamping consumed the decision unread). Leaving a
+    // failed wake undelivered is safe because reattach claims are scoped to the
+    // card's own claudeSessionId — the only session that can reclaim the verdict
+    // is the one we just failed to wake. Corollary: if the daemon restarts while
+    // the resumed turn is still running, the exit event is lost and the card stays
+    // claimable — worst case the same session receives its own verdict twice.
+    this.spawnFn(this.claudeBin, args, session.cwd, {
+      label: card.id,
+      onSuccess: () => this.markDelivered(card.id),
+      onFailure: detail => {
+        console.warn(`[waker] wake FAILED for card ${card.id} ("${card.headline}") — decision NOT delivered; still claimable via reattach and dashboard copy-paste. ${detail}`)
+        // The handler runs inside a ChildProcess event; letting it throw would be
+        // an uncaughtException that takes the daemon down over a lost toast.
+        try {
+          this.onWakeFailed?.(card, detail)
+        } catch (err) {
+          console.warn(`[waker] onWakeFailed handler failed: ${(err as Error).message}`)
+        }
+      },
+    })
   }
 
   private markDelivered(cardId: string): void {
@@ -114,16 +141,101 @@ function isExistingDir(p: string): boolean {
   }
 }
 
-function defaultSpawn(bin: string, args: string[], cwd: string, onSpawned?: () => void): void {
-  // Detached & stdio-ignored: the resumed turn outlives this request and must
-  // never block or crash the daemon (e.g. if the claude binary isn't found).
-  const child = spawn(bin, args, { cwd, stdio: 'ignore', detached: true })
-  child.on('spawn', () => onSpawned?.())
-  child.on('error', err => console.warn(`[waker] could not spawn ${bin}: ${err.message}`))
-  // Auto-wake is a convenience over the dashboard's copy-paste fallback; a failed
-  // resume is otherwise invisible (stdio ignored, one-shot), so at least log it.
-  child.on('exit', code => {
-    if (code) console.warn(`[waker] ${bin} exited ${code} — the resumed session may not have started`)
-  })
-  child.unref()
+const STDERR_TAIL_BYTES = 2048
+const WAKE_LOG_RETENTION_MS = 30 * 24 * 60 * 60_000
+
+// The child stays detached (the resumed turn outlives the daemon and must never
+// block or crash it), but its stderr goes to a per-wake FILE rather than a pipe:
+// a pipe back into this process would break on a daemon restart mid-turn (EPIPE
+// could kill the resumed session), and the file survives for forensics. The log
+// is removed on a clean exit and kept on failure — except when the daemon dies
+// before the exit event, which strands the log; the boot-time sweep below bounds
+// that accumulation.
+export function makeDefaultSpawn(logDir: string): SpawnFn {
+  sweepStaleWakeLogs(logDir)
+  return (bin, args, cwd, hooks) => {
+    let logPath: string | undefined
+    let fd: number | undefined
+    try {
+      mkdirSync(logDir, { recursive: true })
+      logPath = join(logDir, `wake-${hooks?.label ?? Date.now()}.log`)
+      fd = openSync(logPath, 'w')
+    } catch (err) {
+      // Best-effort (a wake without stderr capture beats no wake), but never
+      // silent: an amputated forensic channel must be visible in the daemon log.
+      console.warn(`[waker] stderr capture unavailable (${(err as Error).message}) — wake proceeds without forensics`)
+      logPath = undefined
+    }
+    const closeFd = () => {
+      if (fd === undefined) return
+      try { closeSync(fd) } catch { /* already closed */ }
+      fd = undefined
+    }
+    const removeLog = () => {
+      if (!logPath) return
+      try { unlinkSync(logPath) } catch { /* best-effort */ }
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(bin, args, { cwd, stdio: ['ignore', 'ignore', fd ?? 'ignore'], detached: true })
+    } catch (err) {
+      // A synchronous spawn throw would otherwise propagate through the queue's
+      // 'card' emit into the decide HTTP handler — 500ing a decision that was
+      // already persisted and resolved.
+      closeFd()
+      removeLog()
+      hooks?.onFailure?.(`could not spawn ${bin}: ${(err as Error).message}`)
+      return
+    }
+    let settled = false // 'error' may or may not be followed by 'exit'; first signal wins
+    child.on('spawn', closeFd)
+    child.on('error', err => {
+      if (settled) return
+      settled = true
+      closeFd()
+      removeLog() // nothing ran, nothing written
+      hooks?.onFailure?.(`could not spawn ${bin}: ${err.message}`)
+    })
+    child.on('exit', (code, signal) => {
+      if (settled) return
+      settled = true
+      closeFd()
+      if (code === 0) {
+        removeLog()
+        hooks?.onSuccess?.()
+        return
+      }
+      hooks?.onFailure?.(`${bin} exited ${code ?? `on signal ${signal}`}${stderrTail(logPath)}`)
+    })
+    child.unref()
+  }
+}
+
+function stderrTail(logPath: string | undefined): string {
+  if (!logPath) return ''
+  try {
+    const buf = readFileSync(logPath)
+    if (buf.length === 0) return ` (no stderr; log kept at ${logPath})`
+    const tail = buf.subarray(-STDERR_TAIL_BYTES).toString('utf8').trim()
+    return `; stderr tail (log kept at ${logPath}): ${tail}`
+  } catch (err) {
+    // The kept file is the whole forensic trail — even unreadable, point at it.
+    return ` (stderr log ${logPath} unreadable: ${(err as Error).message})`
+  }
+}
+
+// Bounds the accumulation of stranded wake logs (a daemon restart mid-turn loses
+// the exit event that would have cleaned a successful wake's log). Runs once per
+// construction; only touches files matching our own naming scheme.
+function sweepStaleWakeLogs(logDir: string): void {
+  try {
+    const cutoff = Date.now() - WAKE_LOG_RETENTION_MS
+    for (const name of readdirSync(logDir)) {
+      if (!name.startsWith('wake-') || !name.endsWith('.log')) continue
+      const path = join(logDir, name)
+      try {
+        if (statSync(path).mtimeMs < cutoff) unlinkSync(path)
+      } catch { /* best-effort per file */ }
+    }
+  } catch { /* dir absent on first boot — nothing to sweep */ }
 }
