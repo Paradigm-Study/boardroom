@@ -40,6 +40,14 @@ Gate roles after this work: `clarify` = scoping, `present_plan` = plan approval,
 - Per-entry unread state; the inbox aggregates unread-report counts **separately from blockers** — reports never inflate the decision badge.
 - Guardrail: a report is not a FINISH — `review_results` remains the only way to close a session.
 
+### P1 design decisions (resolved on clarify card `efb851aa`, post-P0)
+
+- **Typed stream entries:** one feed of typed entries (`card` ref | `report` | `tag`); the cards table is untouched — no verdict-less-card hack, no role drift.
+- **Report body:** summary entry in the stream (glanceable blocks) + full document in a drawer (SpecDrawer pattern).
+- **Stage tags: auto-derived by the daemon from gate calls** (scoping → planned → spec locked → results) — zero agent burden. Explicit event tags deferred until auto-tags prove insufficient.
+- **Sidebar UX (human's notes):** per-session groups render as accordions (like Claude Code's own detail accordions); detected cards/gates/tags for a session stack **FIFO — first-in at top**; the full session stream can open as a side drawer, **default closed**.
+- **Transport: no new mechanism in P1.** The hybrid already exists and each signal rides what fits it: hook push announces the session at start; the capturer poll tracks liveness; agent-raised MCP calls carry all semantic entries — the agent IS the curation filter the stream-v1 decision requires. Listener/hook-per-event vs transcript-polling only becomes a real question at P4 (event mirror), and gets its own design round there.
+
 ### P2 · Elaboration channel (two-way)
 
 - A human reply on a report routes to the **owning session** via its stream (structural binding from P0).
