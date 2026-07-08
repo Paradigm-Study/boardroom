@@ -473,6 +473,71 @@ describe('TaskSidebar stream drawer affordance', () => {
     const sessionGroup = screen.getByRole('group', { name: 't' })
     expect(within(sessionGroup).queryByRole('button', { name: /stream/i })).toBeTruthy()
   })
+
+  // The drawer is a fixed right-anchored overlay — two of them just stack. Opening
+  // a stream anywhere must close whichever stream was open before, across projects
+  // AND across the pending/history sections (state must live in TaskSidebar, not
+  // per ProjectSection instance).
+  it('keeps at most one StreamDrawer open when streams are opened in two different sessions', () => {
+    const a = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p1', title: 'tA' },
+    })
+    const b = card({
+      id: 'b', headline: 'B', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-B',
+      session: { agent: 'x', project: 'p2', title: 'tB' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[a, b]} entries={[]} />)
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'tA' })).getByRole('button', { name: /stream/i }))
+    fireEvent.click(within(screen.getByRole('group', { name: 'tB' })).getByRole('button', { name: /stream/i }))
+
+    expect(screen.getAllByLabelText('Session stream')).toHaveLength(1)
+    expect(within(screen.getByLabelText('Session stream')).getByText('B')).toBeTruthy()
+  })
+
+  it('keeps at most one StreamDrawer open for the SAME session split across pending and history', () => {
+    const pendingCard = card({
+      id: 'p1', headline: 'Pending gate', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const decidedCard = card({
+      id: 'd1', headline: 'Decided gate', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A', status: 'decided',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[pendingCard, decidedCard]} entries={[]} />)
+
+    // The session appears once under Needs-you and once under History.
+    const groups = screen.getAllByRole('group', { name: 't' })
+    expect(groups).toHaveLength(2)
+    fireEvent.click(within(groups[0]).getByRole('button', { name: /stream/i }))
+    fireEvent.click(within(groups[1]).getByRole('button', { name: /stream/i }))
+
+    expect(screen.getAllByLabelText('Session stream')).toHaveLength(1)
+  })
+
+  // The drawer promises "the SAME SessionStream the #/session/<id> route renders"
+  // (StreamDrawer.tsx) — the FULL session, not the subset of cards that happens to
+  // sit in the section the affordance was clicked in.
+  it('shows the full session stream — history cards included — when opened from the pending section', () => {
+    const pendingCard = card({
+      id: 'p1', headline: 'Pending gate', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const decidedCard = card({
+      id: 'd1', headline: 'Decided gate', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A', status: 'decided',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[pendingCard, decidedCard]} entries={[]} />)
+
+    // Open the stream from the PENDING section's group (rendered first).
+    const groups = screen.getAllByRole('group', { name: 't' })
+    fireEvent.click(within(groups[0]).getByRole('button', { name: /stream/i }))
+
+    const stream = screen.getByLabelText('Session stream')
+    expect(within(stream).getByText('Pending gate')).toBeTruthy()
+    expect(within(stream).getByText('Decided gate')).toBeTruthy()
+  })
 })
 
 describe('TaskSidebar unbound entries (no claudeSessionId) surface under their project', () => {

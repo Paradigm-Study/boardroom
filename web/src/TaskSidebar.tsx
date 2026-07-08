@@ -145,7 +145,10 @@ function ProjectSection({
   selectedId,
   sessions,
   entriesBySession,
+  cardsBySession,
   readIds,
+  openStreamKey,
+  onOpenStream,
 }: {
   project: SidebarProjectGroup
   section: string
@@ -153,12 +156,14 @@ function ProjectSection({
   selectedId: string | null
   sessions?: SessionVM[]
   entriesBySession: Map<string, Entry[]>
+  cardsBySession: Map<string, Card[]>
   readIds: Set<string>
+  openStreamKey: string | null
+  onOpenStream: (key: string | null) => void
 }) {
   const key = foldKey(section, project.key)
   const [folded, setFolded] = useState(() => readFolded(key))
   const [showAll, setShowAll] = useState(false)
-  const [openStreamKey, setOpenStreamKey] = useState<string | null>(null)
 
   // Navigating to a card must never land on an invisible selection: unfold the
   // project and lift the session cap when the selected card lives behind them.
@@ -217,7 +222,11 @@ function ProjectSection({
             // report older than readState.READ_TTL_MS counts as read even if its id
             // fell out of (or never entered) storage — see isImplicitlyRead.
             const hasUnreadReport = sessionEntries.some(e => e.type === 'report' && !isImplicitlyRead(e) && !readIds.has(e.id))
-            const streamOpen = openStreamKey === session.key
+            // Section-scoped: the SAME session can render once under Needs-you and
+            // once under History; the open-drawer key must tell those apart or both
+            // instances render a (stacked) drawer at once.
+            const streamKey = `${section}:${session.key}`
+            const streamOpen = openStreamKey === streamKey
 
             return (
               <section key={session.key} className="side-session" role="group" aria-labelledby={sessionHeadingId}>
@@ -239,7 +248,7 @@ function ProjectSection({
                     className="side-stream-btn"
                     aria-label="Open session stream"
                     title="Open session stream"
-                    onClick={() => setOpenStreamKey(session.key)}
+                    onClick={() => onOpenStream(streamKey)}
                   >
                     <MessagesSquare size={12} aria-hidden />
                   </button>
@@ -266,9 +275,12 @@ function ProjectSection({
                 {streamOpen && (
                   <StreamDrawer
                     session={vm ?? null}
-                    cards={session.cards}
+                    // The FULL session's cards (cardsBySession spans both sidebar
+                    // sections), not this section's subset — the drawer promises the
+                    // same stream the #/session/<id> route renders.
+                    cards={cardsBySession.get(session.key) ?? session.cards}
                     entries={sessionEntries}
-                    onClose={() => setOpenStreamKey(null)}
+                    onClose={() => onOpenStream(null)}
                   />
                 )}
               </section>
@@ -292,14 +304,20 @@ function GroupedCards({
   selectedId,
   sessions,
   entriesBySession,
+  cardsBySession,
   readIds,
+  openStreamKey,
+  onOpenStream,
 }: {
   cards: Card[]
   section: string
   selectedId: string | null
   sessions?: SessionVM[]
   entriesBySession: Map<string, Entry[]>
+  cardsBySession: Map<string, Card[]>
   readIds: Set<string>
+  openStreamKey: string | null
+  onOpenStream: (key: string | null) => void
 }) {
   return (
     <>
@@ -312,7 +330,10 @@ function GroupedCards({
           selectedId={selectedId}
           sessions={sessions}
           entriesBySession={entriesBySession}
+          cardsBySession={cardsBySession}
           readIds={readIds}
+          openStreamKey={openStreamKey}
+          onOpenStream={onOpenStream}
         />
       ))}
     </>
@@ -328,7 +349,7 @@ function GroupedCards({
 // construction or an unbound entry silently stops matching its group.
 function entrySessionKey(entry: Entry): string {
   return entry.claudeSessionId
-    ?? `${entry.session.project} ${entry.session.title?.trim() || 'Untitled session'} ${entry.session.agent}`
+    ?? `${entry.session.project}\u0000${entry.session.title?.trim() || 'Untitled session'}\u0000${entry.session.agent}`
 }
 
 // Groups entries by session key (real claudeSessionId, or the unbound pseudo-key
@@ -346,12 +367,32 @@ function groupEntriesBySession(entries: Entry[]): Map<string, Entry[]> {
   return bySession
 }
 
+// ALL of a session's cards keyed the same way the sidebar groups them — the
+// pending/history sections each see only their own subset, but the StreamDrawer
+// must render the whole session regardless of which section it was opened from.
+// FIFO (createdAt ASC) to match stream order.
+function groupAllCardsBySession(cards: Card[]): Map<string, Card[]> {
+  const bySession = new Map<string, Card[]>()
+  for (const card of [...cards].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    const key = sessionKey(card)
+    const list = bySession.get(key)
+    if (list) list.push(card)
+    else bySession.set(key, [card])
+  }
+  return bySession
+}
+
 export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
   cards: Card[]
   selectedId: string | null
   sessions?: SessionVM[]
   entries?: Entry[]
 }) {
+  // ONE open stream drawer for the whole sidebar (the drawer is a fixed overlay —
+  // per-section state would let two stack). Keys are section-scoped ProjectSection
+  // stream keys, so the same session under Needs-you and History can't both open.
+  const [openStreamKey, setOpenStreamKey] = useState<string | null>(null)
+
   const byNewest = [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate
   // is still awaiting the human and must not sink into History (see shared/needsHuman).
@@ -359,6 +400,7 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
   const rest = byNewest.filter(c => !needsHuman(c))
 
   const entriesBySession = groupEntriesBySession(entries)
+  const cardsBySession = groupAllCardsBySession(cards)
   // ONE localStorage read for the whole render pass (see readState.readEntrySet) —
   // every session's unread-dot check below is then a plain Set lookup, not a
   // localStorage re-parse per session or per entry.
@@ -387,12 +429,12 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
 
       <div className="side-group"><Inbox size={12} aria-hidden />Needs you <span className="n">{pending.length}</span></div>
       {pending.length === 0 && <p className="side-empty">Nothing waiting on you.</p>}
-      <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} readIds={readIds} />
+      <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} cardsBySession={cardsBySession} readIds={readIds} openStreamKey={openStreamKey} onOpenStream={setOpenStreamKey} />
 
       {rest.length > 0 && (
         <div className="side-group"><Archive size={12} aria-hidden />History <span className="n">{rest.length}</span></div>
       )}
-      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} readIds={readIds} />
+      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} cardsBySession={cardsBySession} readIds={readIds} openStreamKey={openStreamKey} onOpenStream={setOpenStreamKey} />
     </aside>
   )
 }
