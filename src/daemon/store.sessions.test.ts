@@ -41,9 +41,12 @@ describe('sessions_v3 age-based pruning', () => {
     store.recordSession('demo', 'cc-fresh', '/tmp/demo-fresh')
     const path = join(dir, 'test.sqlite')
     const raw = new Database(path)
-    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(31), 'cc-stale')
-    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(29), 'cc-fresh')
-    raw.close()
+    try {
+      raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(31), 'cc-stale')
+      raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(29), 'cc-fresh')
+    } finally {
+      raw.close()
+    }
     store.close()
 
     const rebooted = new Store(path)
@@ -59,8 +62,11 @@ describe('sessions_v3 age-based pruning', () => {
     const path = join(dir, 'test.sqlite')
     store.recordSession('demo', 'cc-back', '/tmp/demo')
     const raw = new Database(path)
-    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(40), 'cc-back')
-    raw.close()
+    try {
+      raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(40), 'cc-back')
+    } finally {
+      raw.close()
+    }
     store.close()
 
     const rebooted = new Store(path)
@@ -81,20 +87,23 @@ describe('sessions_v3 backfill on upgrade', () => {
   it('a sessions_v2-only DB (pre-v3 daemon) surfaces its rows via getRegisteredSession', () => {
     const path = join(dir, 'v2-only.sqlite')
     const raw = new Database(path)
-    raw.exec(`
-      CREATE TABLE sessions_v2 (
-        cwd TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        claude_session_id TEXT,
-        updated_at TEXT NOT NULL
-      )
-    `)
-    // A recent timestamp: backfilled rows past SESSION_RETENTION_MS are (by
-    // design) swept by the boot prune — retention has its own describe above.
-    raw.prepare('INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run('/tmp/old-proj', 'cc-old', 'old-proj', null, new Date().toISOString())
-    raw.close()
+    try {
+      raw.exec(`
+        CREATE TABLE sessions_v2 (
+          cwd TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          claude_session_id TEXT,
+          updated_at TEXT NOT NULL
+        )
+      `)
+      // A recent timestamp: backfilled rows past SESSION_RETENTION_MS are (by
+      // design) swept by the boot prune — retention has its own describe above.
+      raw.prepare('INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run('/tmp/old-proj', 'cc-old', 'old-proj', null, new Date().toISOString())
+    } finally {
+      raw.close()
+    }
 
     const upgraded = new Store(path)
     try {
@@ -108,17 +117,20 @@ describe('sessions_v3 backfill on upgrade', () => {
   it('a legacy sessions-only DB (pre-v2 daemon) chains through both backfills into v3', () => {
     const path = join(dir, 'v1-only.sqlite')
     const raw = new Database(path)
-    raw.exec(`
-      CREATE TABLE sessions (
-        project TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        cwd TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `)
-    raw.prepare('INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)')
-      .run('ancient-proj', 'cc-ancient', '/tmp/ancient-proj', new Date().toISOString())
-    raw.close()
+    try {
+      raw.exec(`
+        CREATE TABLE sessions (
+          project TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `)
+      raw.prepare('INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)')
+        .run('ancient-proj', 'cc-ancient', '/tmp/ancient-proj', new Date().toISOString())
+    } finally {
+      raw.close()
+    }
 
     const upgraded = new Store(path)
     try {
@@ -131,12 +143,21 @@ describe('sessions_v3 backfill on upgrade', () => {
 
   it('the backfill never clobbers a fresher v3 row for the same session id', () => {
     // Same session id present in BOTH v2 (stale cwd) and v3 (fresh cwd): the
-    // ON CONFLICT DO NOTHING must keep the v3 row authoritative.
+    // ON CONFLICT DO NOTHING must keep the v3 row authoritative. The legacy
+    // `sessions` row must go stale TOO: leaving it at /tmp/fresh lets the boot
+    // sessions→v2 backfill re-seed a fresh-cwd v2 row (the rename vacated the
+    // cwd PK slot), which a clobbering v3 backfill would apply LAST in rowid
+    // order — landing back on /tmp/fresh and masking the exact regression this
+    // test exists to catch (mutation-verified).
     store.recordSession('demo', 'cc-live', '/tmp/fresh')
     const path = join(dir, 'test.sqlite')
     const raw = new Database(path)
-    raw.prepare('UPDATE sessions_v2 SET cwd = ? WHERE session_id = ?').run('/tmp/stale', 'cc-live')
-    raw.close()
+    try {
+      raw.prepare('UPDATE sessions_v2 SET cwd = ? WHERE session_id = ?').run('/tmp/stale', 'cc-live')
+      raw.prepare('UPDATE sessions SET cwd = ? WHERE session_id = ?').run('/tmp/stale', 'cc-live')
+    } finally {
+      raw.close()
+    }
     store.close()
 
     const reopened = new Store(path)
