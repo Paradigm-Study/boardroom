@@ -5,6 +5,13 @@ import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { CapturedSession } from '../shared/session.js'
 
+// How long a sessions_v3 row outlives its last SessionStart before the boot
+// sweep drops it. Far beyond REATTACH_WINDOW_MS (24h, measured from decision
+// time): a card can park for days before the human decides, and the waker still
+// needs the row then. 30 idle days safely exceeds any real park while keeping
+// the one-row-per-session table from growing forever.
+export const SESSION_RETENTION_MS = 30 * 24 * 60 * 60_000
+
 export class Store {
   private db: Database.Database
 
@@ -85,6 +92,14 @@ export class Store {
       SELECT session_id, cwd, project, updated_at FROM sessions_v2 WHERE true
       ON CONFLICT(session_id) DO NOTHING
     `)
+    // One row per session id means unbounded growth (unlike the project/cwd-keyed
+    // tables, which upsert in place). Sweep rows idle past the retention window at
+    // boot — after the backfill, so ancient migrated rows are pruned too. ISO-8601
+    // UTC strings compare correctly as text. Losing a row only disables auto-wake
+    // (`claude --resume`) for that session; reattach-by-fingerprint still works,
+    // and a session that starts again simply re-registers.
+    this.db.prepare('DELETE FROM sessions_v3 WHERE updated_at < ?')
+      .run(new Date(Date.now() - SESSION_RETENTION_MS).toISOString())
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS captured_sessions (
         session_id TEXT PRIMARY KEY,

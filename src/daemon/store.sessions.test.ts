@@ -33,6 +33,47 @@ describe('sessions_v3 — session-id-keyed registry', () => {
   })
 })
 
+describe('sessions_v3 age-based pruning', () => {
+  const daysAgo = (n: number): string => new Date(Date.now() - n * 24 * 60 * 60_000).toISOString()
+
+  it('boot prunes rows idle past the retention window; fresh rows survive', () => {
+    store.recordSession('demo', 'cc-stale', '/tmp/demo-stale')
+    store.recordSession('demo', 'cc-fresh', '/tmp/demo-fresh')
+    const path = join(dir, 'test.sqlite')
+    const raw = new Database(path)
+    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(31), 'cc-stale')
+    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(29), 'cc-fresh')
+    raw.close()
+    store.close()
+
+    const rebooted = new Store(path)
+    try {
+      expect(rebooted.getRegisteredSession('cc-stale')).toBeUndefined()
+      expect(rebooted.getRegisteredSession('cc-fresh')?.cwd).toBe('/tmp/demo-fresh')
+    } finally {
+      rebooted.close()
+    }
+  })
+
+  it('a pruned session that starts again simply re-registers', () => {
+    const path = join(dir, 'test.sqlite')
+    store.recordSession('demo', 'cc-back', '/tmp/demo')
+    const raw = new Database(path)
+    raw.prepare('UPDATE sessions_v3 SET updated_at = ? WHERE session_id = ?').run(daysAgo(40), 'cc-back')
+    raw.close()
+    store.close()
+
+    const rebooted = new Store(path)
+    try {
+      expect(rebooted.getRegisteredSession('cc-back')).toBeUndefined()
+      rebooted.recordSession('demo', 'cc-back', '/tmp/demo')
+      expect(rebooted.getRegisteredSession('cc-back')?.cwd).toBe('/tmp/demo')
+    } finally {
+      rebooted.close()
+    }
+  })
+})
+
 // The constructor's one-time backfills: a DB written by a pre-spine daemon must
 // keep auto-wake working immediately after upgrade, without waiting for each
 // session's next SessionStart hook to re-register it.
@@ -49,8 +90,10 @@ describe('sessions_v3 backfill on upgrade', () => {
         updated_at TEXT NOT NULL
       )
     `)
+    // A recent timestamp: backfilled rows past SESSION_RETENTION_MS are (by
+    // design) swept by the boot prune — retention has its own describe above.
     raw.prepare('INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run('/tmp/old-proj', 'cc-old', 'old-proj', null, '2026-01-01T00:00:00.000Z')
+      .run('/tmp/old-proj', 'cc-old', 'old-proj', null, new Date().toISOString())
     raw.close()
 
     const upgraded = new Store(path)
@@ -74,7 +117,7 @@ describe('sessions_v3 backfill on upgrade', () => {
       )
     `)
     raw.prepare('INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)')
-      .run('ancient-proj', 'cc-ancient', '/tmp/ancient-proj', '2026-01-01T00:00:00.000Z')
+      .run('ancient-proj', 'cc-ancient', '/tmp/ancient-proj', new Date().toISOString())
     raw.close()
 
     const upgraded = new Store(path)
