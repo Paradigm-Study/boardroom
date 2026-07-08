@@ -75,6 +75,9 @@ describe('present_report — non-blocking MCP tool', () => {
     const text = result.content.map(c => c.text).join('\n')
     expect(text).toContain('NOT a completion')
     expect(text).toContain('session stream')
+    // Stream anchor: a BOUND post's return text points at the exact stream the
+    // report landed in, not just a generic "your session stream" claim.
+    expect(text).toContain('Stream: #/session/cc-report-1')
 
     // Poll the queue-emitted entry (no queue.submit / waiter involved for reports).
     expect(entries).toHaveLength(1)

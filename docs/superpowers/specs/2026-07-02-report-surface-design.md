@@ -35,7 +35,7 @@ Gate roles after this work: `clarify` = scoping, `present_plan` = plan approval,
 
 ### P1 · Report entries (`present_report`)
 
-- New MCP tool `present_report`: **strictly non-blocking** — posts a report entry into the session stream and returns immediately (entry id + dashboard URL). The agent never pauses.
+- New MCP tool `present_report`: **strictly non-blocking** — posts a report entry into the session stream and returns immediately (entry id + stream anchor). The agent never pauses.
 - Report card = glanceable executive summary (full palette + report sections); the full document opens in a drawer (SpecDrawer pattern — the "future report page" the `report` section kind reserved).
 - Per-entry unread state; the inbox aggregates unread-report counts **separately from blockers** — reports never inflate the decision badge.
 - Guardrail: a report is not a FINISH — `review_results` remains the only way to close a session.

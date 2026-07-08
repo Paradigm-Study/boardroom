@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
@@ -339,6 +339,17 @@ describe('TaskSidebar unread report dot (tray-separation guarded)', () => {
     session: { agent: 'x', project: 'p', title: 't' },
   })
 
+  // Pin "now" close to the fixtures' createdAt so age-implies-read (readState's
+  // READ_TTL_MS) doesn't treat these fixed-date reports as implicitly read —
+  // these tests are about the unread-dot mechanism, not entry age.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('shows an unread dot on a session head when it has an unread report entry', () => {
     const report = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
     render(<TaskSidebar selectedId={null} cards={[bound]} entries={[report]} />)
@@ -347,16 +358,80 @@ describe('TaskSidebar unread report dot (tray-separation guarded)', () => {
     expect(within(sessionGroup).getByLabelText(/unread/i)).toBeTruthy()
   })
 
-  it('never changes the side-count "N waiting" number when a session has unread reports', () => {
+  it('never changes the side-count "N waiting" number when a session has unread reports, while side-unread-count shows separately', () => {
     const report = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
     const { container, rerender } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
     const sideCount = () => container.querySelector('.side-count')?.textContent
+    const sideUnreadCount = () => container.querySelector('.side-unread-count')?.textContent
     expect(sideCount()).toBe('1 waiting') // one pending card, queried directly by class
+    expect(sideUnreadCount()).toBeUndefined() // no unread reports yet — element absent, not empty
 
     rerender(<TaskSidebar selectedId={null} cards={[bound]} entries={[report]} />)
 
-    // Adding an unread report (and its dot) must not touch the tray count at all.
+    // Adding an unread report (and its dot) must not touch the tray count at all —
+    // it appears as a SEPARATE element instead (HARD constraint: byte-unchanged).
     expect(sideCount()).toBe('1 waiting')
+    expect(sideUnreadCount()).toBe('1 unread')
+  })
+})
+
+describe('TaskSidebar side-unread-count aggregate', () => {
+  it('is absent when there are no unread reports', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+    expect(container.querySelector('.side-unread-count')).toBeNull()
+  })
+
+  it('aggregates unread reports across multiple sessions', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
+    const bound1 = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 'session A' },
+    })
+    const bound2 = card({
+      id: 'b', headline: 'B', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-B',
+      session: { agent: 'x', project: 'p', title: 'session B' },
+    })
+    const r1 = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    const r2 = reportEntry({ id: 'r2', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-B' })
+    const { container } = render(<TaskSidebar selectedId={null} cards={[bound1, bound2]} entries={[r1, r2]} />)
+    expect(container.querySelector('.side-unread-count')?.textContent).toBe('2 unread')
+    vi.useRealTimers()
+  })
+
+  it('does not count a report older than the read TTL (age-implies-read)', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z')) // 15 days after createdAt below
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const oldReport = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[oldReport]} />)
+    expect(container.querySelector('.side-unread-count')).toBeNull()
+    vi.useRealTimers()
+  })
+})
+
+describe('TaskSidebar age-implies-read (no false re-lighting)', () => {
+  it('does not show an unread dot for a report older than the read TTL, even unread', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    // 15 days after the report's createdAt — past readState's 14-day TTL.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-01T12:00:00.000Z'))
+    const oldReport = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[oldReport]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    expect(within(sessionGroup).queryByLabelText(/unread/i)).toBeNull()
+    vi.useRealTimers()
   })
 })
 
@@ -392,10 +467,71 @@ describe('TaskSidebar stream drawer affordance', () => {
     expect(screen.queryByLabelText('Session stream')).toBeNull()
   })
 
-  it('does not show the stream affordance on an unbound (legacy pseudo-key) session', () => {
+  it('shows the stream affordance on an unbound (legacy pseudo-key) session too — SessionStream accepts session={null}', () => {
     const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'p', title: 't' } })
     render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[]} />)
     const sessionGroup = screen.getByRole('group', { name: 't' })
-    expect(within(sessionGroup).queryByRole('button', { name: /stream/i })).toBeNull()
+    expect(within(sessionGroup).queryByRole('button', { name: /stream/i })).toBeTruthy()
+  })
+})
+
+describe('TaskSidebar unbound entries (no claudeSessionId) surface under their project', () => {
+  // Mirrors groupCardsByProjectAndSession's pseudo-key: an unbound entry joins the
+  // session group sharing its (project, title, agent) triple, exactly like an
+  // unbound CARD already does — the Global Constraint says an unbound report
+  // "renders under its project, outside any session stream."
+  const legacy = card({
+    id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z',
+    session: { agent: 'x', project: 'p', title: 't' },
+  })
+
+  // Pin "now" close to the fixtures' createdAt so age-implies-read doesn't treat
+  // these fixed-date reports as implicitly read (these tests are about grouping,
+  // not entry age).
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders an unbound report under its (project, title, agent) session group with an unread dot', () => {
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined,
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+
+    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[report]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    expect(within(sessionGroup).getByLabelText(/unread/i)).toBeTruthy()
+  })
+
+  it('renders an unbound tag as a chip under its (project, title, agent) session group', () => {
+    const tag = tagEntry({
+      id: 't1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined, tag: 'stage:plan:decided', cardId: 'l',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+
+    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[tag]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    expect(within(sessionGroup).getByText(/plan.*decided/i)).toBeTruthy()
+  })
+
+  it('opens the StreamDrawer for an unbound group and shows the report inside it', () => {
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined, headline: 'unbound findings',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+
+    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[report]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
+
+    expect(screen.getByLabelText('Session stream')).toBeTruthy()
+    expect(screen.getByText('unbound findings')).toBeTruthy()
   })
 })

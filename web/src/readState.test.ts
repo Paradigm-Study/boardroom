@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Entry } from '../../src/shared/entry.js'
-import { isRead, markRead, unreadCount } from './readState.js'
+import { isImplicitlyRead, isRead, markRead, READ_TTL_MS, unreadCount } from './readState.js'
 
 const STORAGE_KEY = 'boardroom.readEntries.v1'
 
@@ -140,5 +140,40 @@ describe('unreadCount', () => {
 
   it('returns 0 for an empty entries list', () => {
     expect(unreadCount([])).toBe(0)
+  })
+
+  it('does NOT re-light a report older than the read TTL, even with empty storage (age-implies-read)', () => {
+    const now = new Date('2026-07-07T00:00:00.000Z').getTime()
+    const old = report('old', { createdAt: new Date(now - READ_TTL_MS - 1).toISOString() })
+    // Storage is empty (never explicitly marked read) — the old TTL-expiry
+    // behavior would have flipped this back to "unread forever". Age alone
+    // must imply read for entries this old.
+    expect(unreadCount([old], now)).toBe(0)
+  })
+
+  it('still counts a fresh unread report within the TTL window', () => {
+    const now = new Date('2026-07-07T00:00:00.000Z').getTime()
+    const fresh = report('fresh', { createdAt: new Date(now - 1000).toISOString() })
+    expect(unreadCount([fresh], now)).toBe(1)
+  })
+})
+
+describe('isImplicitlyRead (age-implies-read)', () => {
+  it('treats an entry older than READ_TTL_MS as read regardless of stored state', () => {
+    const now = new Date('2026-07-07T00:00:00.000Z').getTime()
+    const old = report('old', { createdAt: new Date(now - READ_TTL_MS - 1).toISOString() })
+    expect(isImplicitlyRead(old, now)).toBe(true)
+  })
+
+  it('does not implicitly mark a fresh entry as read', () => {
+    const now = new Date('2026-07-07T00:00:00.000Z').getTime()
+    const fresh = report('fresh', { createdAt: new Date(now - 1000).toISOString() })
+    expect(isImplicitlyRead(fresh, now)).toBe(false)
+  })
+
+  it('an entry exactly at the TTL boundary is not yet implicitly read', () => {
+    const now = new Date('2026-07-07T00:00:00.000Z').getTime()
+    const boundary = report('boundary', { createdAt: new Date(now - READ_TTL_MS).toISOString() })
+    expect(isImplicitlyRead(boundary, now)).toBe(false)
   })
 })

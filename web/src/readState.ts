@@ -5,7 +5,10 @@ import type { Entry } from '../../src/shared/entry.js'
 // everywhere, so a full or unavailable localStorage never breaks the dashboard —
 // it just means nothing is remembered as read.
 const STORAGE_KEY = 'boardroom.readEntries.v1'
-const READ_TTL_MS = 14 * 24 * 60 * 60_000
+// Exported: also the age-implies-read threshold (see isImplicitlyRead below) — a
+// single constant governs both "how long we remember an explicit read" and "how
+// old before we stop caring whether it was ever explicitly read".
+export const READ_TTL_MS = 14 * 24 * 60 * 60_000
 const READ_MAX_ENTRIES = 200
 
 function readStore(now = Date.now()): Map<string, number> {
@@ -61,13 +64,26 @@ export function readEntrySet(): Set<string> {
   return new Set(readStore().keys())
 }
 
+// Age-implies-read: the read-tracking store below has a READ_TTL_MS cap (both a
+// TTL and a 200-id cap), so it forgets explicit reads over time — but entries
+// themselves are permanent. Without this, a report read >14 days ago would fall
+// out of storage and flip back to "unread" forever, re-lighting old dots. Once an
+// entry is older than READ_TTL_MS, treat it as read regardless of stored state —
+// nothing that old should still be nagging the human as fresh/unread.
+export function isImplicitlyRead(entry: Entry, now = Date.now()): boolean {
+  const createdAt = Date.parse(entry.createdAt)
+  if (!Number.isFinite(createdAt)) return false
+  return now - createdAt > READ_TTL_MS
+}
+
 // Unread count for the report feed. Tag entries are ambient annotations on a card
 // (not a standalone item the human must act on or dismiss) — they never count
 // toward "unread", regardless of read-state.
-export function unreadCount(entries: Entry[]): number {
+export function unreadCount(entries: Entry[], now = Date.now()): number {
   let count = 0
   for (const entry of entries) {
     if (entry.type !== 'report') continue
+    if (isImplicitlyRead(entry, now)) continue
     if (!isRead(entry.id)) count++
   }
   return count

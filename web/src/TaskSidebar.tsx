@@ -4,7 +4,7 @@ import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { age, isReconnecting, needsHuman } from './helpers.js'
-import { readEntrySet } from './readState.js'
+import { isImplicitlyRead, readEntrySet, unreadCount } from './readState.js'
 import { STAGE } from './stage.js'
 import { StreamDrawer } from './StreamDrawer.js'
 import { parseTag } from './tagLabel.js'
@@ -201,18 +201,22 @@ function ProjectSection({
         <div className="side-project-body">
           {visibleSessions.map((session, sessionIndex) => {
             const sessionHeadingId = `${section}-session-${projectIndex}-${sessionIndex}`
-            // Only a bound group (a real claudeSessionId) links to the stream view or
-            // carries a status chip — the legacy pseudo-key has no session record to
-            // fetch cards for, and no SessionVM to look a status up on.
+            // Only a bound group (a real claudeSessionId) has a SessionVM to look a
+            // status up on — the legacy pseudo-key has no session record. Entries,
+            // though, are keyed the same way for both (entrySessionKey mirrors
+            // sessionKey's pseudo-key), so an unbound group's reports/tags are found
+            // here too — they must surface under their project like unbound cards do.
             const vm = session.bound ? sessions?.find(s => s.sessionId === session.key) : undefined
-            const sessionEntries = session.bound ? entriesBySession.get(session.key) ?? [] : []
+            const sessionEntries = entriesBySession.get(session.key) ?? []
             // Already FIFO (createdAt ASC) — entriesBySession is built that way once
             // at the top of TaskSidebar, so no re-sort needed per session render.
             const tags = sessionEntries.filter((e): e is Extract<Entry, { type: 'tag' }> => e.type === 'tag')
             // Unread dot: readIds is read from localStorage exactly ONCE per render
             // pass (in TaskSidebar), so this is a plain Set lookup per report — O(1)
-            // per entry, not a localStorage re-read per entry.
-            const hasUnreadReport = sessionEntries.some(e => e.type === 'report' && !readIds.has(e.id))
+            // per entry, not a localStorage re-read per entry. Age-implies-read: a
+            // report older than readState.READ_TTL_MS counts as read even if its id
+            // fell out of (or never entered) storage — see isImplicitlyRead.
+            const hasUnreadReport = sessionEntries.some(e => e.type === 'report' && !isImplicitlyRead(e) && !readIds.has(e.id))
             const streamOpen = openStreamKey === session.key
 
             return (
@@ -227,17 +231,18 @@ function ProjectSection({
                   <span className="side-session-agent">{session.agent}</span>
                   <span>{session.cards.length} card{session.cards.length === 1 ? '' : 's'}</span>
                   {vm && <span className={`stream-status stream-status-${vm.sessionStatus}`}>{vm.sessionStatus}</span>}
-                  {session.bound && (
-                    <button
-                      type="button"
-                      className="side-stream-btn"
-                      aria-label="Open session stream"
-                      title="Open session stream"
-                      onClick={() => setOpenStreamKey(session.key)}
-                    >
-                      <MessagesSquare size={12} aria-hidden />
-                    </button>
-                  )}
+                  {/* The stream affordance opens StreamDrawer for BOTH bound and unbound
+                      groups — SessionStream already accepts session={null}, so an unbound
+                      (legacy pseudo-key) group's cards+entries render the same way. */}
+                  <button
+                    type="button"
+                    className="side-stream-btn"
+                    aria-label="Open session stream"
+                    title="Open session stream"
+                    onClick={() => setOpenStreamKey(session.key)}
+                  >
+                    <MessagesSquare size={12} aria-hidden />
+                  </button>
                 </div>
                 {tags.length > 0 && (
                   <div className="side-session-tags">
@@ -314,17 +319,29 @@ function GroupedCards({
   )
 }
 
-// Groups entries by claudeSessionId, each list kept FIFO (createdAt ASC) — computed
-// ONCE per render pass rather than per session, so a sidebar with many sessions
-// doesn't re-filter/re-sort the whole entries array per group (O(sessions), not
-// O(sessions × entries)).
+// The entry-side counterpart of TaskSidebar's `sessionKey(card)`: a bound entry
+// (real claudeSessionId) keys by that id; an UNBOUND entry (no claudeSessionId —
+// e.g. a legacy agent's present_report call) keys by the same pseudo-key
+// (project, title, agent) that groupCardsByProjectAndSession already uses for
+// unbound CARDS, so an unbound report/tag joins the matching legacy session group
+// instead of vanishing. Must stay byte-identical to `sessionKey`'s pseudo-key
+// construction or an unbound entry silently stops matching its group.
+function entrySessionKey(entry: Entry): string {
+  return entry.claudeSessionId
+    ?? `${entry.session.project} ${entry.session.title?.trim() || 'Untitled session'} ${entry.session.agent}`
+}
+
+// Groups entries by session key (real claudeSessionId, or the unbound pseudo-key
+// above), each list kept FIFO (createdAt ASC) — computed ONCE per render pass
+// rather than per session, so a sidebar with many sessions doesn't re-filter/
+// re-sort the whole entries array per group (O(sessions), not O(sessions × entries)).
 function groupEntriesBySession(entries: Entry[]): Map<string, Entry[]> {
   const bySession = new Map<string, Entry[]>()
   for (const entry of [...entries].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-    if (!entry.claudeSessionId) continue
-    const list = bySession.get(entry.claudeSessionId)
+    const key = entrySessionKey(entry)
+    const list = bySession.get(key)
     if (list) list.push(entry)
-    else bySession.set(entry.claudeSessionId, [entry])
+    else bySession.set(key, [entry])
   }
   return bySession
 }
@@ -346,6 +363,10 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
   // every session's unread-dot check below is then a plain Set lookup, not a
   // localStorage re-parse per session or per entry.
   const readIds = readEntrySet()
+  // Aggregated unread-report count for the side-head (spec: the inbox aggregates
+  // unread-report counts). unreadCount already applies age-implies-read and skips
+  // tag entries — tray-separation: this NEVER folds into side-count/pending.length.
+  const unread = unreadCount(entries)
 
   return (
     <aside className="sidebar">
@@ -355,6 +376,9 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
           boardroom
         </a>
         <span className="side-count">{pending.length > 0 ? `${pending.length} waiting` : 'idle'}</span>
+        {/* Separate element from .side-count (tray-separation): unread reports never
+            fold into the "N waiting" gate count — see readState.unreadCount. */}
+        {unread > 0 && <span className="side-unread-count">{unread} unread</span>}
       </div>
 
       <a href="#/folders" className="side-folders">

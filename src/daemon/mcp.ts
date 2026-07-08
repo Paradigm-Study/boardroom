@@ -284,14 +284,21 @@ function buildServer(queue: Queue, sessionBindings: Map<string, string>): McpSer
     async (input, ctx): Promise<ToolResult> => {
       try {
         const agent = server.server.getClientVersion()?.name ?? 'unknown'
+        // A sessionKey on this fire-and-forget call also (re)binds the connection for
+        // subsequent key-less gate calls — intentional symmetry with makeHangingHandler's
+        // gates; revisit if P2 replies raise the stakes of a wrong binding here.
         const claudeSessionId = resolveClaudeSessionId(ctx, input as { sessionKey?: string }, sessionBindings)
         const entry = compileReport(input as never, { agent, claudeSessionId })
         queue.postReport(entry)
+        // Stream anchor: a BOUND post points at exactly where it landed (the
+        // dashboard's #/session/<id> route) rather than a vague "your session
+        // stream" claim — matches the spec's "entry id + stream anchor" return.
+        const anchor = claudeSessionId ? ` Stream: #/session/${claudeSessionId}` : ''
         return {
           content: [{
             type: 'text' as const,
             text: `Report posted (entry ${entry.id})${claudeSessionId ? ' to your session stream' : ' (unbound — no sessionKey)'}. ` +
-                  'This is NOT a completion: review_results remains the only way to close out a session.',
+                  `This is NOT a completion: review_results remains the only way to close out a session.${anchor}`,
           }],
         }
       } catch (error) {
