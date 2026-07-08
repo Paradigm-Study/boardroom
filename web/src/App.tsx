@@ -94,6 +94,7 @@ export function App() {
   // premature "Card not found." while the card list is still in flight.
   const [initialLoadDone, setInitialLoadDone] = useState(false)
   const seenPending = useRef<Set<string> | null>(null) // null until first load → no launch burst
+  const wasOffline = useRef(false) // arms the reconnect refetch in subscribeStream's status callback
   const sessionScroll = useRef<Map<string, SessionScrollEntry>>(readSessionScroll())
   const activeSessionKey = useRef<string | null>(null)
   const routeSavedSessionKey = useRef<string | null>(null)
@@ -158,7 +159,51 @@ export function App() {
         setEntries(prev => new Map(prev).set(entry.id, entry))
       },
       // Stream connectivity drives the same banner; it clears on reconnect ('open').
-      online => setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…'),
+      online => {
+        setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…')
+        if (!online) {
+          wasOffline.current = true
+          return
+        }
+        if (!wasOffline.current) return // first connect — the initial load below covers it
+        wasOffline.current = false
+        // Refetch after a drop: frames emitted while disconnected are gone for good
+        // (the SSE stream has no replay), so the daemon's snapshot is now the
+        // authority — REPLACE fetched ids, unlike the initial-load merge where an
+        // SSE-delivered copy is at least as fresh as the GET. Ids missing from the
+        // fetch stay: cards and entries are never deleted server-side.
+        void fetchCards().then(list => {
+          const seen = seenPending.current
+          if (seen) {
+            // Same notify discipline as the live card handler: a card that went
+            // pending during the gap is a real new obligation — toast it once.
+            for (const c of list) {
+              if (c.status === 'pending' && !seen.has(c.id)) {
+                seen.add(c.id)
+                notifyCard(c)
+              } else if (c.status !== 'pending') {
+                seen.delete(c.id)
+              }
+            }
+          }
+          setCards(prev => {
+            const merged = new Map(prev)
+            for (const c of list) merged.set(c.id, c)
+            return merged
+          })
+        }).catch((err: unknown) => {
+          console.warn('[boardroom] reconnect card refetch failed', err)
+        })
+        void fetchEntries().then(list => {
+          setEntries(prev => {
+            const merged = new Map(prev)
+            for (const e of list) merged.set(e.id, e)
+            return merged
+          })
+        }).catch((err: unknown) => {
+          console.warn('[boardroom] reconnect entry refetch failed', err)
+        })
+      },
     )
   }, [])
 
@@ -256,6 +301,18 @@ export function App() {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [shownSessionKey])
+
+  // The stream view (#/session/<id>) renders a different document than the card
+  // view the user came from; without a reset the browser keeps the old offset and
+  // lands mid-stream. Card views restore their own per-session offset above.
+  const streamRouteId = route.kind === 'session' ? route.id : null
+  useLayoutEffect(() => {
+    if (streamRouteId == null) return
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [streamRouteId])
 
   if (route.kind === 'file') {
     return (

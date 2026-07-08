@@ -127,6 +127,49 @@ describe('App initial-fetch / SSE race', () => {
   })
 })
 
+describe('App SSE reconnect', () => {
+  it('refetches cards and entries when the stream reconnects after a drop', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([card('k1', 'Original headline')])
+    let onStatus: ((online: boolean) => void) | undefined
+    vi.mocked(subscribeStream).mockImplementation((_onCard, _onEntry, statusCb) => {
+      onStatus = statusCb
+      return () => {}
+    })
+
+    render(<App />)
+    expect((await screen.findAllByText('Original headline')).length).toBeGreaterThan(0)
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(1)
+
+    // Frames emitted while the tab is disconnected are gone for good — the SSE
+    // stream has no replay — so reconnect must refetch, and the refetched copy
+    // must REPLACE the stale one (unlike the initial-load merge).
+    vi.mocked(fetchCards).mockResolvedValue([{ ...card('k1', 'Decided while offline'), status: 'decided' as const }])
+    await act(async () => { onStatus?.(false) })
+    await act(async () => { onStatus?.(true) })
+
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(fetchEntries)).toHaveBeenCalledTimes(2)
+    expect((await screen.findAllByText('Decided while offline')).length).toBeGreaterThan(0)
+  })
+
+  it('does not refetch on the initial open (no prior drop)', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([])
+    let onStatus: ((online: boolean) => void) | undefined
+    vi.mocked(subscribeStream).mockImplementation((_onCard, _onEntry, statusCb) => {
+      onStatus = statusCb
+      return () => {}
+    })
+
+    render(<App />)
+    // EventSource fires 'open' on the very first connect too — that must not
+    // double the initial load.
+    await act(async () => { onStatus?.(true) })
+
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fetchEntries)).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('session navigation scroll memory', () => {
   it('starts first-time sessions at top and restores each session on return', async () => {
     const scroll = mockWindowScroll()
@@ -171,6 +214,27 @@ describe('session navigation scroll memory', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Session A decision' })).toBeTruthy()
     await waitFor(() => expect(scroll.lastScrollTop()).toBe(640))
+  })
+
+  it('lands the #/session/<id> stream view at the top, not the previous view\'s offset', async () => {
+    const scroll = mockWindowScroll()
+    const bound = { ...card('k1', 'Bound decision', { agent: 'codex', project: 'boardroom', title: 'Spine session' }), claudeSessionId: 'cc-A' }
+    vi.mocked(fetchCards).mockResolvedValue([bound])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/card/k1'
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Bound decision' })).toBeTruthy()
+
+    scroll.scrollTo.mockClear()
+    scroll.setScrollY(640) // deep in the card view when the stream link is clicked
+    act(() => {
+      window.location.hash = '#/session/cc-A'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+
+    expect(await screen.findByLabelText('Session stream')).toBeTruthy()
+    await waitFor(() => expect(scroll.lastScrollTop()).toBe(0))
   })
 
   it('keeps session scroll memory across a dashboard reload in the same window', async () => {
