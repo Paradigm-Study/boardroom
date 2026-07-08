@@ -326,10 +326,15 @@ describe('TaskSidebar tag chips in bound session bodies', () => {
     expect(idxRaised).toBeLessThan(idxDecided)
   })
 
-  it('shows no tag chips for an unbound (legacy pseudo-key) session', () => {
+  it('shows another session\'s tag chip on ITS OWN group, never on the unbound legacy group', () => {
     const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'p', title: 't' } })
     render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[tagEntry({ id: 't1', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-other' })]} />)
-    expect(screen.queryByText(/plan.*decided/i)).toBeNull()
+    // Not on the legacy group…
+    const legacyGroup = screen.getByRole('group', { name: 't' })
+    expect(within(legacyGroup).queryByText(/plan.*decided/i)).toBeNull()
+    // …but surfaced under the tag's own (entry-only) session group, not dropped.
+    const own = screen.getByRole('group', { name: 'Untitled session' })
+    expect(within(own).getByText(/plan.*decided/i)).toBeTruthy()
   })
 })
 
@@ -414,6 +419,94 @@ describe('TaskSidebar side-unread-count aggregate', () => {
     const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[oldReport]} />)
     expect(container.querySelector('.side-unread-count')).toBeNull()
     vi.useRealTimers()
+  })
+})
+
+describe('TaskSidebar entry-only sessions (no cards) still surface', () => {
+  // The unread badge counts EVERY report entry, so every report must have a
+  // surface: a session that has entries but no cards yet (e.g. present_report
+  // fired before the session's first gate) gets its own sidebar group — dot,
+  // stream affordance and (when bound) session link — instead of being counted
+  // by the badge while rendered nowhere and unclearable.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('surfaces a BOUND report whose session has no cards, with an unread dot and openable stream', () => {
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-lonely',
+      headline: 'pre-gate findings',
+      session: { agent: 'claude-code', project: 'p', title: 'Lonely session' },
+    })
+
+    const { container } = render(<TaskSidebar selectedId={null} cards={[]} entries={[report]} />)
+
+    // Badge and surface must agree: 1 unread AND a visible group with the dot.
+    expect(container.querySelector('.side-unread-count')?.textContent).toBe('1 unread')
+    const sessionGroup = screen.getByRole('group', { name: 'Lonely session' })
+    expect(within(sessionGroup).getByLabelText(/unread/i)).toBeTruthy()
+
+    // The stream affordance opens the drawer showing the report — the read path exists.
+    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
+    expect(screen.getByText('pre-gate findings')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /open report/i }))
+    expect(container.querySelector('.side-unread-count')).toBeNull() // read → badge clears
+  })
+
+  it('links a bound entry-only group to its #/session/<id> stream view', () => {
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-lonely',
+      session: { agent: 'claude-code', project: 'p', title: 'Lonely session' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[]} entries={[report]} />)
+    const sessionGroup = screen.getByRole('group', { name: 'Lonely session' })
+    const link = within(sessionGroup).getByRole('link', { name: 'Lonely session' })
+    expect(link.getAttribute('href')).toBe('#/session/cc-lonely')
+  })
+
+  it('surfaces an UNBOUND report with no matching legacy card under its project', () => {
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined,
+      headline: 'orphan unbound findings',
+      session: { agent: 'claude-code', project: 'p', title: 'Legacy run' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[]} entries={[report]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 'Legacy run' })
+    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
+    expect(screen.getByText('orphan unbound findings')).toBeTruthy()
+  })
+
+  it('does NOT duplicate a session that already has cards (entry joins the card group)', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const report = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[report]} />)
+    expect(screen.getAllByRole('group', { name: 't' })).toHaveLength(1)
+  })
+
+  it('merges an entry-only session into an existing project group instead of duplicating the project', () => {
+    const historyCard = card({
+      id: 'h', headline: 'H', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-H', status: 'decided',
+      session: { agent: 'x', project: 'p', title: 'Done session' },
+    })
+    const report = reportEntry({
+      id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-lonely',
+      session: { agent: 'claude-code', project: 'p', title: 'Lonely session' },
+    })
+    const { container } = render(<TaskSidebar selectedId={null} cards={[historyCard]} entries={[report]} />)
+
+    // One project folder holding both the card session and the entry-only session.
+    const projects = [...container.querySelectorAll('.side-project')]
+    expect(projects).toHaveLength(1)
+    expect(within(projects[0] as HTMLElement).getByRole('group', { name: 'Done session' })).toBeTruthy()
+    expect(within(projects[0] as HTMLElement).getByRole('group', { name: 'Lonely session' })).toBeTruthy()
   })
 })
 

@@ -38,8 +38,10 @@ export function SessionStream({ session, cards, entries }: { session: SessionVM 
       <header className="stream-head">
         <div>
           <span className="canvas-label">Session</span>
-          <h2>{session?.project ?? ordered[0]?.session.project ?? 'Unknown session'}</h2>
-          <p className="stream-sub">{ordered[0]?.session.title?.trim() || session?.cwd || ''}</p>
+          {/* Entry-only sessions (a report before any gate) have no cards to name
+              the header from — fall back to the entries' session meta. */}
+          <h2>{session?.project ?? ordered[0]?.session.project ?? entries[0]?.session.project ?? 'Unknown session'}</h2>
+          <p className="stream-sub">{ordered[0]?.session.title?.trim() || session?.cwd || entries[0]?.session.title?.trim() || ''}</p>
         </div>
         {session && <span className={`stream-status stream-status-${session.sessionStatus}`}>{session.sessionStatus}</span>}
       </header>

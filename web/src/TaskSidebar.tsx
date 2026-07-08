@@ -46,7 +46,7 @@ interface SidebarProjectGroup {
   sessions: SidebarSessionGroup[]
 }
 
-export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGroup[] {
+export function groupCardsByProjectAndSession(cards: Card[], orphanEntries: Entry[] = []): SidebarProjectGroup[] {
   const projects = new Map<string, SidebarProjectGroup>()
 
   // Group-level ordering (which project/session appears first) stays newest-first —
@@ -77,6 +77,31 @@ export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGrou
   // untouched, this only reorders inside a single session's own card list.
   for (const project of projects.values()) {
     for (const session of project.sessions) session.cards.reverse()
+  }
+
+  // Entry-only session groups: a report/tag whose session opened no gate yet still
+  // needs a surface (the unread badge counts every report — an invisible one would
+  // be uncleareable). Callers prefilter to entries matching NO card session key
+  // ANYWHERE (not just this call's card subset), so nothing renders twice. Groups
+  // merge into their existing project folder or append a new one; within a project
+  // they land AFTER card sessions — informational, never above a gate.
+  for (const entry of [...orphanEntries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+    const pKey = entry.session.project
+    let project = projects.get(pKey)
+    if (!project) {
+      project = { key: pKey, label: entry.session.project, cards: [], sessions: [] }
+      projects.set(pKey, project)
+    }
+    const sKey = entrySessionKey(entry)
+    if (!project.sessions.some(s => s.key === sKey)) {
+      project.sessions.push({
+        key: sKey,
+        label: entry.session.title?.trim() || 'Untitled session',
+        agent: entry.session.agent,
+        cards: [],
+        bound: !!entry.claudeSessionId,
+      })
+    }
   }
 
   return [...projects.values()]
@@ -308,6 +333,7 @@ function GroupedCards({
   readIds,
   openStreamKey,
   onOpenStream,
+  orphanEntries = [],
 }: {
   cards: Card[]
   section: string
@@ -318,10 +344,11 @@ function GroupedCards({
   readIds: Set<string>
   openStreamKey: string | null
   onOpenStream: (key: string | null) => void
+  orphanEntries?: Entry[]
 }) {
   return (
     <>
-      {groupCardsByProjectAndSession(cards).map((project, projectIndex) => (
+      {groupCardsByProjectAndSession(cards, orphanEntries).map((project, projectIndex) => (
         <ProjectSection
           key={project.key}
           project={project}
@@ -401,6 +428,12 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
 
   const entriesBySession = groupEntriesBySession(entries)
   const cardsBySession = groupAllCardsBySession(cards)
+  // Entries whose session has NO cards anywhere (pending or history): they get
+  // synthesized entry-only groups in the History section below, so every counted
+  // report has a surface. Keyed against ALL cards — an entry matching a pending
+  // session must not also spawn a history twin.
+  const cardSessionKeys = new Set(cards.map(c => sessionKey(c)))
+  const orphanEntries = entries.filter(e => !cardSessionKeys.has(entrySessionKey(e)))
   // Re-render when a ReportDrawer (possibly deep inside this sidebar's own
   // StreamDrawer) marks an entry read — the dot and the aggregate count below
   // read localStorage during render and would otherwise stay stale.
@@ -435,10 +468,10 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
       {pending.length === 0 && <p className="side-empty">Nothing waiting on you.</p>}
       <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} cardsBySession={cardsBySession} readIds={readIds} openStreamKey={openStreamKey} onOpenStream={setOpenStreamKey} />
 
-      {rest.length > 0 && (
+      {(rest.length > 0 || orphanEntries.length > 0) && (
         <div className="side-group"><Archive size={12} aria-hidden />History <span className="n">{rest.length}</span></div>
       )}
-      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} cardsBySession={cardsBySession} readIds={readIds} openStreamKey={openStreamKey} onOpenStream={setOpenStreamKey} />
+      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} cardsBySession={cardsBySession} readIds={readIds} openStreamKey={openStreamKey} onOpenStream={setOpenStreamKey} orphanEntries={orphanEntries} />
     </aside>
   )
 }
