@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Store } from './store.js'
 
@@ -29,5 +30,77 @@ describe('sessions_v3 — session-id-keyed registry', () => {
   })
   it('unknown id → undefined', () => {
     expect(store.getRegisteredSession('nope')).toBeUndefined()
+  })
+})
+
+// The constructor's one-time backfills: a DB written by a pre-spine daemon must
+// keep auto-wake working immediately after upgrade, without waiting for each
+// session's next SessionStart hook to re-register it.
+describe('sessions_v3 backfill on upgrade', () => {
+  it('a sessions_v2-only DB (pre-v3 daemon) surfaces its rows via getRegisteredSession', () => {
+    const path = join(dir, 'v2-only.sqlite')
+    const raw = new Database(path)
+    raw.exec(`
+      CREATE TABLE sessions_v2 (
+        cwd TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        claude_session_id TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    raw.prepare('INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run('/tmp/old-proj', 'cc-old', 'old-proj', null, '2026-01-01T00:00:00.000Z')
+    raw.close()
+
+    const upgraded = new Store(path)
+    try {
+      expect(upgraded.getRegisteredSession('cc-old'))
+        .toEqual({ sessionId: 'cc-old', cwd: '/tmp/old-proj', project: 'old-proj' })
+    } finally {
+      upgraded.close()
+    }
+  })
+
+  it('a legacy sessions-only DB (pre-v2 daemon) chains through both backfills into v3', () => {
+    const path = join(dir, 'v1-only.sqlite')
+    const raw = new Database(path)
+    raw.exec(`
+      CREATE TABLE sessions (
+        project TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    raw.prepare('INSERT INTO sessions (project, session_id, cwd, updated_at) VALUES (?, ?, ?, ?)')
+      .run('ancient-proj', 'cc-ancient', '/tmp/ancient-proj', '2026-01-01T00:00:00.000Z')
+    raw.close()
+
+    const upgraded = new Store(path)
+    try {
+      expect(upgraded.getRegisteredSession('cc-ancient'))
+        .toEqual({ sessionId: 'cc-ancient', cwd: '/tmp/ancient-proj', project: 'ancient-proj' })
+    } finally {
+      upgraded.close()
+    }
+  })
+
+  it('the backfill never clobbers a fresher v3 row for the same session id', () => {
+    // Same session id present in BOTH v2 (stale cwd) and v3 (fresh cwd): the
+    // ON CONFLICT DO NOTHING must keep the v3 row authoritative.
+    store.recordSession('demo', 'cc-live', '/tmp/fresh')
+    const path = join(dir, 'test.sqlite')
+    const raw = new Database(path)
+    raw.prepare('UPDATE sessions_v2 SET cwd = ? WHERE session_id = ?').run('/tmp/stale', 'cc-live')
+    raw.close()
+    store.close()
+
+    const reopened = new Store(path)
+    try {
+      expect(reopened.getRegisteredSession('cc-live')?.cwd).toBe('/tmp/fresh')
+    } finally {
+      reopened.close()
+    }
   })
 })
