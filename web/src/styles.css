@@ -210,6 +210,13 @@ a { color: inherit; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--ink); font-weight: 550;
 }
+/* On bound cards the session title is wrapped in an <a>, making the anchor the
+   pill's flex item instead of the <strong> — without this rule the anchor's
+   default min-width:auto/overflow:visible defeat the strong's ellipsis (which
+   is inert once the strong is demoted to a plain inline). */
+.source-strip a {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .source-strip code { font-family: var(--mono); font-size: 11.5px; }
 .source-time { font-variant-numeric: tabular-nums; }
 .source-label {
