@@ -52,6 +52,15 @@ export function isRead(entryId: string): boolean {
   return readStore().has(entryId)
 }
 
+// One localStorage read for callers that need read-state for MANY entries in a
+// single render pass (e.g. the sidebar computing an unread dot per session) —
+// isRead()/unreadCount() each re-read+re-parse localStorage per call, which is
+// fine for a single entry but O(entries × storage-read) across a whole sidebar.
+// Call this once per render and check membership against the returned Set instead.
+export function readEntrySet(): Set<string> {
+  return new Set(readStore().keys())
+}
+
 // Unread count for the report feed. Tag entries are ambient annotations on a card
 // (not a standalone item the human must act on or dismiss) — they never count
 // toward "unread", regardless of read-state.

@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
+import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { groupCardsByProjectAndSession, TaskSidebar } from './TaskSidebar.js'
 
@@ -40,6 +41,26 @@ function sessionsInOneProject(project: string, n: number): Card[] {
       session: { agent: 'codex', project, title: `Session ${i}` },
     }),
   )
+}
+
+function reportEntry(overrides: Partial<Entry> & Pick<Entry, 'id' | 'createdAt' | 'claudeSessionId'>): Entry {
+  return {
+    type: 'report',
+    session: { agent: 'claude-code', project: 'p' },
+    headline: 'investigation findings',
+    blocks: [{ id: 'b1', type: 'markdown', text: 'summary' }],
+    ...overrides,
+  } as Entry
+}
+
+function tagEntry(overrides: Partial<Entry> & Pick<Entry, 'id' | 'createdAt' | 'claudeSessionId'>): Entry {
+  return {
+    type: 'tag',
+    session: { agent: 'claude-code', project: 'p' },
+    tag: 'stage:plan:decided',
+    cardId: 'c1',
+    ...overrides,
+  } as Entry
 }
 
 describe('TaskSidebar session grouping', () => {
@@ -232,5 +253,149 @@ describe('TaskSidebar folder accordion + session cap', () => {
     render(<TaskSidebar selectedId={null} cards={cards} />)
     expect(screen.queryByRole('group', { name: 'Session 0' })).toBeNull()
     expect(screen.getByRole('button', { name: /\/workspace\/mono/, expanded: false })).toBeTruthy()
+  })
+})
+
+describe('TaskSidebar FIFO within session stacks (group order stays recency)', () => {
+  it('renders a session\'s own cards oldest-first (FIFO) while the group order stays newest-first', () => {
+    // Two sessions in one project: session "New" was created after session "Old" —
+    // the PROJECT's session order must stay recency (New's group before Old's).
+    // But WITHIN "Old" itself, its two cards must render first-in-at-top (FIFO).
+    const oldFirst = card({
+      id: 'old-first', headline: 'Old session — first card', createdAt: '2026-06-16T12:00:00.000Z',
+      session: { agent: 'codex', project: '/workspace/mono', title: 'Old' },
+    })
+    const oldSecond = card({
+      id: 'old-second', headline: 'Old session — second card', createdAt: '2026-06-16T12:05:00.000Z',
+      session: { agent: 'codex', project: '/workspace/mono', title: 'Old' },
+    })
+    const newCard = card({
+      id: 'new', headline: 'New session — only card', createdAt: '2026-06-16T13:00:00.000Z',
+      session: { agent: 'codex', project: '/workspace/mono', title: 'New' },
+    })
+
+    // Adversarial order: pass cards in a shuffled, non-chronological array.
+    render(<TaskSidebar selectedId={null} cards={[oldSecond, newCard, oldFirst]} />)
+
+    const groups = groupCardsByProjectAndSession([oldSecond, newCard, oldFirst])
+    // Group-level (session) ordering is UNCHANGED: newest session ("New") first.
+    expect(groups[0].sessions.map(s => s.label)).toEqual(['New', 'Old'])
+
+    // Within "Old", the cards are FIFO: first-in ("old-first") at the top.
+    const oldSession = groups[0].sessions.find(s => s.label === 'Old')
+    expect(oldSession?.cards.map(c => c.id)).toEqual(['old-first', 'old-second'])
+
+    // DOM order agrees: the older card's headline appears before the newer one's
+    // within the "Old" session group.
+    const oldGroup = screen.getByRole('group', { name: 'Old' })
+    const titles = within(oldGroup).getAllByText(/Old session/).map(el => el.textContent)
+    expect(titles.indexOf('Old session — first card')).toBeLessThan(titles.indexOf('Old session — second card'))
+  })
+
+  it('[REGRESSION] group-level project/session ordering stays newest-first (existing recency test)', () => {
+    // Mirrors the existing "groups pending cards by project and then session" test's
+    // ordering guarantee — pinned again here alongside the FIFO change so a future
+    // edit that accidentally flips group ordering fails loudly in this describe too.
+    const groups = groupCardsByProjectAndSession([
+      card({ id: 'newer', headline: 'Folder upload plan', createdAt: '2026-06-16T12:05:00.000Z' }),
+      card({ id: 'older', headline: 'Canvas upload review', createdAt: '2026-06-16T12:00:00.000Z' }),
+    ])
+    expect(groups[0].cards.map(c => c.id)).toEqual(['newer', 'older'])
+  })
+})
+
+describe('TaskSidebar tag chips in bound session bodies', () => {
+  it('renders a bound session\'s tags as slim chips in FIFO order', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const tagOld = tagEntry({ id: 't-old', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A', tag: 'stage:clarify:raised', cardId: 'a' })
+    const tagNew = tagEntry({ id: 't-new', createdAt: '2026-06-16T12:02:00.000Z', claudeSessionId: 'cc-A', tag: 'stage:plan:decided', cardId: 'a' })
+
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[tagNew, tagOld]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    const chips = within(sessionGroup).getAllByText(/·/)
+    // FIFO: the older tag chip (raised) appears before the newer one (decided).
+    const chipTexts = chips.map(c => c.textContent)
+    const idxRaised = chipTexts.findIndex(t => t?.includes('raised'))
+    const idxDecided = chipTexts.findIndex(t => t?.includes('decided'))
+    expect(idxRaised).toBeGreaterThanOrEqual(0)
+    expect(idxDecided).toBeGreaterThanOrEqual(0)
+    expect(idxRaised).toBeLessThan(idxDecided)
+  })
+
+  it('shows no tag chips for an unbound (legacy pseudo-key) session', () => {
+    const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'p', title: 't' } })
+    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[tagEntry({ id: 't1', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-other' })]} />)
+    expect(screen.queryByText(/plan.*decided/i)).toBeNull()
+  })
+})
+
+describe('TaskSidebar unread report dot (tray-separation guarded)', () => {
+  const bound = card({
+    id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+    session: { agent: 'x', project: 'p', title: 't' },
+  })
+
+  it('shows an unread dot on a session head when it has an unread report entry', () => {
+    const report = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[report]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    expect(within(sessionGroup).getByLabelText(/unread/i)).toBeTruthy()
+  })
+
+  it('never changes the side-count "N waiting" number when a session has unread reports', () => {
+    const report = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    const { container, rerender } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+    const sideCount = () => container.querySelector('.side-count')?.textContent
+    expect(sideCount()).toBe('1 waiting') // one pending card, queried directly by class
+
+    rerender(<TaskSidebar selectedId={null} cards={[bound]} entries={[report]} />)
+
+    // Adding an unread report (and its dot) must not touch the tray count at all.
+    expect(sideCount()).toBe('1 waiting')
+  })
+})
+
+describe('TaskSidebar stream drawer affordance', () => {
+  it('opens the StreamDrawer from a bound session\'s stream affordance, default closed on mount', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+
+    // Default closed: no stream drawer/dialog present on mount.
+    expect(screen.queryByLabelText('Session stream')).toBeNull()
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
+
+    expect(screen.getByLabelText('Session stream')).toBeTruthy()
+  })
+
+  it('closes the StreamDrawer via its close callback', () => {
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
+    expect(screen.getByLabelText('Session stream')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
+    expect(screen.queryByLabelText('Session stream')).toBeNull()
+  })
+
+  it('does not show the stream affordance on an unbound (legacy pseudo-key) session', () => {
+    const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'p', title: 't' } })
+    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[]} />)
+    const sessionGroup = screen.getByRole('group', { name: 't' })
+    expect(within(sessionGroup).queryByRole('button', { name: /stream/i })).toBeNull()
   })
 })

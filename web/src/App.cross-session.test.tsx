@@ -167,3 +167,42 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
     expect(screen.queryByText('The table is clear')).toBeNull()
   })
 })
+
+// App fetches entries once and must pass them into TaskSidebar at BOTH call sites
+// (the default/root layout and the #/session/<id> layout) — otherwise a session's
+// tag chips only ever render on one of the two routes the sidebar appears on.
+describe('dashboard passes entries into the sidebar at both routes', () => {
+  const bound = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z')
+  const boundCard = { ...bound, claudeSessionId: 'cc-A' }
+  const tag = {
+    id: 'tag-1', type: 'tag' as const, claudeSessionId: 'cc-A',
+    session: { agent: 'claude-code', project: 'repo-one' },
+    tag: 'stage:clarify:raised', cardId: 'A', createdAt: '2026-06-30T10:01:00.000Z',
+  }
+
+  it('renders a session\'s tag chip in the sidebar on the root route', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([boundCard])
+    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session A decision' })
+
+    expect(await screen.findByText(/clarify.*raised/i)).toBeTruthy()
+  })
+
+  it('renders a session\'s tag chip in the sidebar on the #/session/<id> route', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([boundCard])
+    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/session/cc-A'
+
+    render(<App />)
+
+    // Both the sidebar's tag chip AND the session stream's own tag row render
+    // "clarify · raised" on this route — assert the SIDEBAR one specifically via
+    // its .side-tag-chip class so this test targets Task 9's wiring, not Task 8's.
+    const chip = await screen.findByText(/clarify.*raised/i, { selector: '.side-tag-chip' })
+    expect(chip).toBeTruthy()
+  })
+})

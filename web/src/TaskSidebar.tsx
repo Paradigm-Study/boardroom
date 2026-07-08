@@ -1,9 +1,13 @@
-import { Archive, Armchair, ChevronRight, FolderTree, Inbox } from 'lucide-react'
+import { Archive, Armchair, ChevronRight, FolderTree, Inbox, MessagesSquare } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
+import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { age, isReconnecting, needsHuman } from './helpers.js'
+import { readEntrySet } from './readState.js'
 import { STAGE } from './stage.js'
+import { StreamDrawer } from './StreamDrawer.js'
+import { parseTag } from './tagLabel.js'
 
 // How many sessions a folder shows before the "View more" control. A single
 // folder can hold hundreds of sessions; capping keeps it from burying the rest.
@@ -45,6 +49,10 @@ interface SidebarProjectGroup {
 export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGroup[] {
   const projects = new Map<string, SidebarProjectGroup>()
 
+  // Group-level ordering (which project/session appears first) stays newest-first —
+  // iterating in that order determines each Map's insertion order, so a NEW session
+  // still lands above an OLDER one at the group level. The human's FIFO rule is
+  // scoped strictly to the cards WITHIN a single session stack (below).
   for (const card of [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
     const pKey = projectKey(card)
     let project = projects.get(pKey)
@@ -61,6 +69,14 @@ export function groupCardsByProjectAndSession(cards: Card[]): SidebarProjectGrou
       project.sessions.push(session)
     }
     session.cards.push(card)
+  }
+
+  // FIFO within each session stack ONLY (first-in-at-top): the loop above appended
+  // cards newest-first (it walks the newest-first list), so each session's `cards`
+  // needs a final reverse to read oldest-first — group/session order above is
+  // untouched, this only reorders inside a single session's own card list.
+  for (const project of projects.values()) {
+    for (const session of project.sessions) session.cards.reverse()
   }
 
   return [...projects.values()]
@@ -128,16 +144,21 @@ function ProjectSection({
   projectIndex,
   selectedId,
   sessions,
+  entriesBySession,
+  readIds,
 }: {
   project: SidebarProjectGroup
   section: string
   projectIndex: number
   selectedId: string | null
   sessions?: SessionVM[]
+  entriesBySession: Map<string, Entry[]>
+  readIds: Set<string>
 }) {
   const key = foldKey(section, project.key)
   const [folded, setFolded] = useState(() => readFolded(key))
   const [showAll, setShowAll] = useState(false)
+  const [openStreamKey, setOpenStreamKey] = useState<string | null>(null)
 
   // Navigating to a card must never land on an invisible selection: unfold the
   // project and lift the session cap when the selected card lives behind them.
@@ -184,6 +205,16 @@ function ProjectSection({
             // carries a status chip — the legacy pseudo-key has no session record to
             // fetch cards for, and no SessionVM to look a status up on.
             const vm = session.bound ? sessions?.find(s => s.sessionId === session.key) : undefined
+            const sessionEntries = session.bound ? entriesBySession.get(session.key) ?? [] : []
+            // Already FIFO (createdAt ASC) — entriesBySession is built that way once
+            // at the top of TaskSidebar, so no re-sort needed per session render.
+            const tags = sessionEntries.filter((e): e is Extract<Entry, { type: 'tag' }> => e.type === 'tag')
+            // Unread dot: readIds is read from localStorage exactly ONCE per render
+            // pass (in TaskSidebar), so this is a plain Set lookup per report — O(1)
+            // per entry, not a localStorage re-read per entry.
+            const hasUnreadReport = sessionEntries.some(e => e.type === 'report' && !readIds.has(e.id))
+            const streamOpen = openStreamKey === session.key
+
             return (
               <section key={session.key} className="side-session" role="group" aria-labelledby={sessionHeadingId}>
                 <div className="side-session-head">
@@ -192,11 +223,49 @@ function ProjectSection({
                       ? <a href={`#/session/${encodeURIComponent(session.key)}`}>{session.label}</a>
                       : session.label}
                   </h4>
+                  {hasUnreadReport && <span className="side-unread-dot" aria-label="Unread report" />}
                   <span className="side-session-agent">{session.agent}</span>
                   <span>{session.cards.length} card{session.cards.length === 1 ? '' : 's'}</span>
                   {vm && <span className={`stream-status stream-status-${vm.sessionStatus}`}>{vm.sessionStatus}</span>}
+                  {session.bound && (
+                    <button
+                      type="button"
+                      className="side-stream-btn"
+                      aria-label="Open session stream"
+                      title="Open session stream"
+                      onClick={() => setOpenStreamKey(session.key)}
+                    >
+                      <MessagesSquare size={12} aria-hidden />
+                    </button>
+                  )}
                 </div>
+                {tags.length > 0 && (
+                  <div className="side-session-tags">
+                    {tags.map(tag => {
+                      const { stage, label } = parseTag(tag.tag)
+                      const color = stage ? STAGE[stage].color : 'var(--ink-3)'
+                      return (
+                        <a
+                          key={tag.id}
+                          className="side-tag-chip"
+                          style={{ '--stage-color': color } as React.CSSProperties}
+                          href={`#/card/${tag.cardId}`}
+                        >
+                          {label}
+                        </a>
+                      )
+                    })}
+                  </div>
+                )}
                 {session.cards.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+                {streamOpen && (
+                  <StreamDrawer
+                    session={vm ?? null}
+                    cards={session.cards}
+                    entries={sessionEntries}
+                    onClose={() => setOpenStreamKey(null)}
+                  />
+                )}
               </section>
             )
           })}
@@ -217,11 +286,15 @@ function GroupedCards({
   section,
   selectedId,
   sessions,
+  entriesBySession,
+  readIds,
 }: {
   cards: Card[]
   section: string
   selectedId: string | null
   sessions?: SessionVM[]
+  entriesBySession: Map<string, Entry[]>
+  readIds: Set<string>
 }) {
   return (
     <>
@@ -233,18 +306,46 @@ function GroupedCards({
           projectIndex={projectIndex}
           selectedId={selectedId}
           sessions={sessions}
+          entriesBySession={entriesBySession}
+          readIds={readIds}
         />
       ))}
     </>
   )
 }
 
-export function TaskSidebar({ cards, selectedId, sessions }: { cards: Card[]; selectedId: string | null; sessions?: SessionVM[] }) {
+// Groups entries by claudeSessionId, each list kept FIFO (createdAt ASC) — computed
+// ONCE per render pass rather than per session, so a sidebar with many sessions
+// doesn't re-filter/re-sort the whole entries array per group (O(sessions), not
+// O(sessions × entries)).
+function groupEntriesBySession(entries: Entry[]): Map<string, Entry[]> {
+  const bySession = new Map<string, Entry[]>()
+  for (const entry of [...entries].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    if (!entry.claudeSessionId) continue
+    const list = bySession.get(entry.claudeSessionId)
+    if (list) list.push(entry)
+    else bySession.set(entry.claudeSessionId, [entry])
+  }
+  return bySession
+}
+
+export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
+  cards: Card[]
+  selectedId: string | null
+  sessions?: SessionVM[]
+  entries?: Entry[]
+}) {
   const byNewest = [...cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate
   // is still awaiting the human and must not sink into History (see shared/needsHuman).
   const pending = byNewest.filter(c => needsHuman(c))
   const rest = byNewest.filter(c => !needsHuman(c))
+
+  const entriesBySession = groupEntriesBySession(entries)
+  // ONE localStorage read for the whole render pass (see readState.readEntrySet) —
+  // every session's unread-dot check below is then a plain Set lookup, not a
+  // localStorage re-parse per session or per entry.
+  const readIds = readEntrySet()
 
   return (
     <aside className="sidebar">
@@ -262,12 +363,12 @@ export function TaskSidebar({ cards, selectedId, sessions }: { cards: Card[]; se
 
       <div className="side-group"><Inbox size={12} aria-hidden />Needs you <span className="n">{pending.length}</span></div>
       {pending.length === 0 && <p className="side-empty">Nothing waiting on you.</p>}
-      <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} />
+      <GroupedCards cards={pending} section="pending" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} readIds={readIds} />
 
       {rest.length > 0 && (
         <div className="side-group"><Archive size={12} aria-hidden />History <span className="n">{rest.length}</span></div>
       )}
-      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} />
+      <GroupedCards cards={rest} section="history" selectedId={selectedId} sessions={sessions} entriesBySession={entriesBySession} readIds={readIds} />
     </aside>
   )
 }

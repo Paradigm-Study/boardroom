@@ -959,3 +959,38 @@ a { color: inherit; }
   display: flex; flex-direction: column; z-index: 50; overflow-y: auto;
 }
 .report-drawer-body { padding: 8px 18px 24px; display: flex; flex-direction: column; gap: 14px; }
+
+/* Sidebar tag chips — a bound session's derived stage tags, FIFO, slim on purpose
+   (same "stage · event" label + stage-color convention as .entry-tag in the stream,
+   just compact enough for the sidebar's narrow column). */
+.side-session-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 10px 5px; }
+.side-tag-chip {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600;
+  color: var(--stage-color); text-decoration: none; padding: 1px 7px 1px 5px;
+  border-radius: 999px; background: color-mix(in srgb, var(--stage-color) 10%, transparent);
+}
+.side-tag-chip::before { content: ''; width: 5px; height: 5px; border-radius: 2px; background: var(--stage-color); flex: none; }
+.side-tag-chip:hover { background: color-mix(in srgb, var(--stage-color) 18%, transparent); }
+
+/* Unread report dot on a session head — mirrors .entry-unread-dot's color/shape.
+   Purely additive to .side-session-head; never affects .side-count (tray-separation). */
+.side-unread-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+
+/* Per-session "open stream" affordance — a small icon button on bound session
+   heads that opens the StreamDrawer for that session only. */
+.side-stream-btn {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-left: auto; padding: 0;
+  background: none; border: none; border-radius: var(--r);
+  color: var(--ink-3); cursor: pointer;
+}
+.side-stream-btn:hover { color: var(--ink); background: var(--bg-3); }
+
+/* Stream drawer — the SpecDrawer slide-in chrome wrapping a full SessionStream for
+   one session, opened from the sidebar's per-session stream affordance. */
+.stream-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 92vw);
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: -16px 0 40px -24px rgba(0,0,0,0.35);
+  display: flex; flex-direction: column; z-index: 50; overflow-y: auto;
+}
+.stream-drawer-body { padding: 8px 18px 24px; }

@@ -1,27 +1,10 @@
-import type { Card, Stage } from '../../src/shared/card.js'
+import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { CardView } from './CardView.js'
 import { ReportEntryView } from './ReportEntryView.js'
 import { STAGE } from './stage.js'
-
-const STAGE_IDS = new Set<string>(Object.keys(STAGE))
-
-function isStage(id: string): id is Stage {
-  return STAGE_IDS.has(id)
-}
-
-// A tag's payload is `stage:<stage>:<event>` (e.g. 'stage:plan:decided') — split it
-// into the stage (for STAGE's label + color) and a "stage · event" label. Anything
-// that doesn't match the shape still renders (the raw tag string), so a future/
-// unknown tag format degrades gracefully instead of vanishing.
-function parseTag(tag: string): { stage: Stage | null; label: string } {
-  const match = /^stage:([a-z]+):([a-z]+)$/.exec(tag)
-  if (!match) return { stage: null, label: tag }
-  const [, stageId, event] = match
-  const stage = isStage(stageId) ? stageId : null
-  return { stage, label: `${stage ? STAGE[stage].label.toLowerCase() : stageId} · ${event}` }
-}
+import { parseTag } from './tagLabel.js'
 
 function TagRow({ entry }: { entry: Extract<Entry, { type: 'tag' }> }) {
   const { stage, label } = parseTag(entry.tag)

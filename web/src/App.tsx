@@ -287,7 +287,7 @@ export function App() {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     return (
       <div className="frame">
-        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} />
+        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
         <main className="content"><div className="content-inner">
           <SessionStream session={vm} cards={own} entries={ownEntries} />
         </div></main>
@@ -297,7 +297,7 @@ export function App() {
 
   return (
     <div className="frame">
-      <TaskSidebar cards={all} selectedId={shown?.id ?? null} sessions={sessions ?? undefined} />
+      <TaskSidebar cards={all} selectedId={shown?.id ?? null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
       <main className="content">
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
         {perm === 'default' && (
