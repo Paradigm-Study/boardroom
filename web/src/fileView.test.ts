@@ -108,4 +108,9 @@ describe('parseHash / fileHash', () => {
     expect(parseHash('/session/cc-A')).toEqual({ kind: 'session', id: 'cc-A' })
     expect(parseHash(`#/session/${encodeURIComponent('cc/weird id')}`)).toEqual({ kind: 'session', id: 'cc/weird id' })
   })
+  it('survives a malformed percent-encoding in the session id instead of blank-screening', () => {
+    // decodeURIComponent('%E0%A4%A') throws URIError; parseHash runs during App
+    // render, so a throw here is a blank dashboard from one mangled URL.
+    expect(parseHash('#/session/%E0%A4%A')).toEqual({ kind: 'session', id: '%E0%A4%A' })
+  })
 })

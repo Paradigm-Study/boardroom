@@ -93,6 +93,17 @@ export function fileHash(file: { url: string; name?: string; mime?: string }): s
   return `#/file?${q.toString()}`
 }
 
+// parseHash runs during App render, so a URIError from a hand-mangled hash
+// (e.g. "#/session/%E0%A4%A") would blank the whole dashboard — fall back to the
+// raw segment instead; an undecodable id simply matches no session.
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
 export function parseHash(hash: string): Route {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash
   if (raw.startsWith('/file?')) {
@@ -109,7 +120,7 @@ export function parseHash(hash: string): Route {
   }
   if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
   const session = /^\/session\/(.+)$/.exec(raw)
-  if (session) return { kind: 'session', id: decodeURIComponent(session[1]) }
+  if (session) return { kind: 'session', id: safeDecode(session[1]) }
   const card = /^\/card\/(.+)$/.exec(raw)
   if (card) return { kind: 'card', id: card[1] }
   if (raw.startsWith('block-')) return { kind: 'anchor', id: raw }

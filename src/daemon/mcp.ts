@@ -293,7 +293,9 @@ function buildServer(queue: Queue, sessionBindings: Map<string, string>): McpSer
         // Stream anchor: a BOUND post points at exactly where it landed (the
         // dashboard's #/session/<id> route) rather than a vague "your session
         // stream" claim — matches the spec's "entry id + stream anchor" return.
-        const anchor = claudeSessionId ? ` Stream: #/session/${claudeSessionId}` : ''
+        // Encoded for symmetry with the dashboard's own #/session links (identity
+        // for today's UUID ids — but the route decodes).
+        const anchor = claudeSessionId ? ` Stream: #/session/${encodeURIComponent(claudeSessionId)}` : ''
         return {
           content: [{
             type: 'text' as const,
