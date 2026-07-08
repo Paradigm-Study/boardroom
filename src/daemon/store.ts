@@ -1,6 +1,7 @@
 import { chmodSync, existsSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { Card, type CardStatus } from '../shared/card.js'
+import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { CapturedSession } from '../shared/session.js'
 
@@ -89,6 +90,15 @@ export class Store {
         session_id TEXT PRIMARY KEY,
         json       TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entries (
+        id         TEXT PRIMARY KEY,
+        type       TEXT NOT NULL,
+        session_id TEXT,
+        created_at TEXT NOT NULL,
+        json       TEXT NOT NULL
       )
     `)
   }
@@ -302,6 +312,50 @@ export class Store {
     return rows
       .map(r => this.parseCapturedRow(r.json))
       .filter((c): c is CapturedSession => c !== undefined)
+  }
+
+  // Validate on the way in so a malformed entry can never reach SQLite — the read
+  // path then trusts that every stored row started life as a well-formed Entry.
+  insertEntry(entry: Entry): void {
+    const valid = Entry.parse(entry)
+    this.db.prepare('INSERT INTO entries (id, type, session_id, created_at, json) VALUES (?, ?, ?, ?, ?)')
+      .run(valid.id, valid.type, valid.claudeSessionId ?? null, valid.createdAt, JSON.stringify(valid))
+  }
+
+  // Skip — never throw on — a row that fails validation (a legacy/schema-drifted
+  // or hand-edited/corrupt row). A single bad row must not crash boot or listing;
+  // it is logged and omitted.
+  private parseEntryRow(json: string): Entry | undefined {
+    let raw: unknown
+    try {
+      raw = JSON.parse(json)
+    } catch {
+      console.warn('[store] skipping an entries row with invalid JSON')
+      return undefined
+    }
+    const result = Entry.safeParse(raw)
+    if (result.success) return result.data
+    const id = (raw as { id?: string } | null)?.id
+    console.warn(`[store] skipping entry ${id ?? '<unknown>'} that failed schema validation: ${result.error.issues[0]?.message}`)
+    return undefined
+  }
+
+  listEntries(): Entry[] {
+    const rows = this.db.prepare(
+      'SELECT json FROM entries ORDER BY created_at ASC, id ASC',
+    ).all() as { json: string }[]
+    return rows
+      .map(r => this.parseEntryRow(r.json))
+      .filter((e): e is Entry => e !== undefined)
+  }
+
+  listEntriesBySession(claudeSessionId: string): Entry[] {
+    const rows = this.db.prepare(
+      'SELECT json FROM entries WHERE session_id = ? ORDER BY created_at ASC, id ASC',
+    ).all(claudeSessionId) as { json: string }[]
+    return rows
+      .map(r => this.parseEntryRow(r.json))
+      .filter((e): e is Entry => e !== undefined)
   }
 
   close(): void {
