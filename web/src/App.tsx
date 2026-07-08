@@ -84,9 +84,8 @@ function saveSessionScroll(entries: Map<string, SessionScrollEntry>, key: string
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
-  // Populated by the initial fetch + SSE below; not yet rendered anywhere — the
-  // report/tag UI (sidebar stacks, ReportEntryView, StreamDrawer) is later P1 work.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed by upcoming report UI tasks
+  // Populated by the initial fetch + SSE below; rendered by SessionStream (merged
+  // with cards) on the #/session/<id> route.
   const [entries, setEntries] = useState<Map<string, Entry>>(new Map())
   const [sessions, setSessions] = useState<SessionVM[] | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
@@ -134,7 +133,11 @@ export function App() {
         for (const e of list) if (!merged.has(e.id)) merged.set(e.id, e)
         return merged
       })
-    }).catch(() => { /* entries are supplementary; the cards fetch above already surfaces load errors */ })
+    }).catch((err: unknown) => {
+      // Entries are supplementary; the cards fetch above already surfaces load
+      // errors to the human, so this is a log-only signal for diagnosis.
+      console.warn('[boardroom] failed to fetch entries', err)
+    })
     return subscribeStream(
       card => {
         setCards(prev => new Map(prev).set(card.id, card))
@@ -279,11 +282,14 @@ export function App() {
     const own = all
       .filter(c => c.claudeSessionId === route.id)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const ownEntries = [...entries.values()]
+      .filter(e => e.claudeSessionId === route.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     return (
       <div className="frame">
         <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} />
         <main className="content"><div className="content-inner">
-          <SessionStream session={vm} cards={own} />
+          <SessionStream session={vm} cards={own} entries={ownEntries} />
         </div></main>
       </div>
     )

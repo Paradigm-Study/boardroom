@@ -1,13 +1,55 @@
-import type { Card } from '../../src/shared/card.js'
+import type { Card, Stage } from '../../src/shared/card.js'
+import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { CardView } from './CardView.js'
+import { ReportEntryView } from './ReportEntryView.js'
+import { STAGE } from './stage.js'
 
-// One session's scrollable stream: gates in chronological order. The spine view —
-// cards are entries in the session, not free-floating inbox items. Sorts oldest-first
-// itself (rather than trusting the caller's order) so the stream reads top-to-bottom
-// as the session unfolded regardless of how `cards` was fetched.
-export function SessionStream({ session, cards }: { session: SessionVM | null; cards: Card[] }) {
+const STAGE_IDS = new Set<string>(Object.keys(STAGE))
+
+function isStage(id: string): id is Stage {
+  return STAGE_IDS.has(id)
+}
+
+// A tag's payload is `stage:<stage>:<event>` (e.g. 'stage:plan:decided') — split it
+// into the stage (for STAGE's label + color) and a "stage · event" label. Anything
+// that doesn't match the shape still renders (the raw tag string), so a future/
+// unknown tag format degrades gracefully instead of vanishing.
+function parseTag(tag: string): { stage: Stage | null; label: string } {
+  const match = /^stage:([a-z]+):([a-z]+)$/.exec(tag)
+  if (!match) return { stage: null, label: tag }
+  const [, stageId, event] = match
+  const stage = isStage(stageId) ? stageId : null
+  return { stage, label: `${stage ? STAGE[stage].label.toLowerCase() : stageId} · ${event}` }
+}
+
+function TagRow({ entry }: { entry: Extract<Entry, { type: 'tag' }> }) {
+  const { stage, label } = parseTag(entry.tag)
+  const color = stage ? STAGE[stage].color : 'var(--ink-3)'
+  return (
+    <div className="entry-tag" style={{ '--stage-color': color } as React.CSSProperties}>
+      <a href={`#/card/${entry.cardId}`}>{label}</a>
+    </div>
+  )
+}
+
+type StreamItem =
+  | { kind: 'card'; at: string; card: Card }
+  | { kind: Entry['type']; at: string; entry: Entry }
+
+// One session's scrollable stream: gates AND entries (reports, tags) in chronological
+// order — the spine view treats a report or a stage tag as a stream citizen, not a
+// second surface bolted on. Sorts oldest-first itself (rather than trusting the
+// caller's order) so the stream reads top-to-bottom as the session unfolded
+// regardless of how `cards`/`entries` were fetched.
+export function SessionStream({ session, cards, entries }: { session: SessionVM | null; cards: Card[]; entries: Entry[] }) {
   const ordered = [...cards].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+
+  const items: StreamItem[] = [
+    ...cards.map(c => ({ kind: 'card' as const, at: c.createdAt, card: c })),
+    ...entries.map(e => ({ kind: e.type, at: e.createdAt, entry: e })),
+  ].sort((a, b) => a.at.localeCompare(b.at))
+
   return (
     <section className="session-stream" aria-label="Session stream">
       <header className="stream-head">
@@ -18,12 +60,20 @@ export function SessionStream({ session, cards }: { session: SessionVM | null; c
         </div>
         {session && <span className={`stream-status stream-status-${session.sessionStatus}`}>{session.sessionStatus}</span>}
       </header>
-      {ordered.length === 0 && <p className="side-empty">No cards from this session yet.</p>}
-      {ordered.map(c => (
-        <div className="stream-item" key={c.id}>
-          <CardView card={c} cards={ordered} />
-        </div>
-      ))}
+      {items.length === 0 && <p className="side-empty">No cards from this session yet.</p>}
+      {items.map(item => {
+        if (item.kind === 'card') {
+          return (
+            <div className="stream-item" key={item.card.id}>
+              <CardView card={item.card} cards={ordered} />
+            </div>
+          )
+        }
+        const { entry } = item
+        return entry.type === 'report'
+          ? <ReportEntryView key={entry.id} entry={entry} />
+          : <TagRow key={entry.id} entry={entry} />
+      })}
     </section>
   )
 }

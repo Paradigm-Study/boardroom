@@ -923,3 +923,39 @@ a { color: inherit; }
 .stream-status-needs-decision, .stream-status-awaiting-review { color: var(--pending); background: var(--pending-soft); border-color: transparent; }
 .stream-status-running { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
 .stream-item { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; background: var(--bg-2); }
+
+/* Report entries — a stream summary card (glanceable) + its full-size drawer.
+   Distinct chrome from .stream-item so a report never reads as a gate to decide. */
+.entry-report {
+  border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px;
+  background: var(--bg); display: flex; flex-direction: column; gap: 10px;
+}
+.entry-report-head { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
+.entry-report-head h3 { margin: 0; font-size: 14px; color: var(--ink); flex: 1; }
+.entry-report-body { display: flex; flex-direction: column; gap: 10px; }
+.entry-report-open {
+  align-self: flex-start; font-size: 12px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 999px; padding: 4px 11px; cursor: pointer;
+}
+.entry-report-open:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.entry-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+
+/* Tag rows — an ambient "stage · event" annotation on the stream, slim on purpose
+   (never a gate, never counts as unread) and colored with the stage's own var. */
+.entry-tag { padding: 2px 2px; }
+.entry-tag a {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600;
+  color: var(--stage-color); text-decoration: none;
+}
+.entry-tag a::before { content: ''; width: 6px; height: 6px; border-radius: 2px; background: var(--stage-color); flex: none; }
+.entry-tag a:hover { text-decoration: underline; }
+
+/* Report drawer — the SpecDrawer full-size pattern reused verbatim (fixed,
+   right-anchored) so a report's detail view shares the same slide-in chrome. */
+.report-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 92vw);
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: -16px 0 40px -24px rgba(0,0,0,0.35);
+  display: flex; flex-direction: column; z-index: 50; overflow-y: auto;
+}
+.report-drawer-body { padding: 8px 18px 24px; display: flex; flex-direction: column; gap: 14px; }
