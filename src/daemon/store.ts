@@ -44,10 +44,10 @@ export class Store {
     // checkouts of one repo share `basename(cwd)` but never a cwd, so they get
     // distinct rows here — where the legacy `sessions` table (project PK) would
     // clobber one with the other and let the waker resume into the wrong tree.
-    // `claude_session_id` is RESERVED for Part 2 (exact-session disambiguation):
-    // no producer populates it yet — the SessionStart hook posts only
-    // sessionId/cwd/project — so it is currently always NULL and the waker
-    // resolves by project. See docs/superpowers/specs (session-capture design).
+    // `claude_session_id` is a DEAD column: it was reserved for exact-session
+    // disambiguation, which sessions_v3 (session-id PK, below) now provides.
+    // Nothing reads or writes it; it stays in the schema only so fresh and
+    // pre-existing DBs keep identical shapes (a rolled-back daemon still boots).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions_v2 (
         cwd TEXT PRIMARY KEY,
@@ -63,8 +63,8 @@ export class Store {
     // no-op once the row is registered fresh. `WHERE true` disambiguates the
     // INSERT…SELECT…ON CONFLICT grammar in SQLite.
     this.db.exec(`
-      INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at)
-      SELECT cwd, session_id, project, NULL, updated_at FROM sessions WHERE true
+      INSERT INTO sessions_v2 (cwd, session_id, project, updated_at)
+      SELECT cwd, session_id, project, updated_at FROM sessions WHERE true
       ON CONFLICT(cwd) DO NOTHING
     `)
     // Session-id-keyed registry (the session spine). Unlike sessions_v2 (cwd PK,
@@ -103,7 +103,7 @@ export class Store {
     `)
   }
 
-  recordSession(project: string, sessionId: string, cwd: string, claudeSessionId?: string): void {
+  recordSession(project: string, sessionId: string, cwd: string): void {
     const ts = new Date().toISOString()
     // All writes in one transaction so the legacy, cwd-keyed, and session-id-keyed
     // tables can never drift if a later INSERT throws (SQLITE_FULL/IOERR).
@@ -115,10 +115,10 @@ export class Store {
       ).run(project, sessionId, cwd, ts)
       // Worktree-safe cwd-keyed table — the authoritative one for resume targeting.
       this.db.prepare(
-        `INSERT INTO sessions_v2 (cwd, session_id, project, claude_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO sessions_v2 (cwd, session_id, project, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(cwd) DO UPDATE SET session_id = excluded.session_id, project = excluded.project,
-           claude_session_id = COALESCE(excluded.claude_session_id, claude_session_id), updated_at = excluded.updated_at`,
-      ).run(cwd, sessionId, project, claudeSessionId ?? null, ts)
+           updated_at = excluded.updated_at`,
+      ).run(cwd, sessionId, project, ts)
       // Session-id-keyed registry: immune to same-cwd overwrite, one row per session.
       this.db.prepare(
         `INSERT INTO sessions_v3 (session_id, cwd, project, updated_at) VALUES (?, ?, ?, ?)
@@ -136,18 +136,8 @@ export class Store {
 
   getSessionByCwd(cwd: string): SessionRow | undefined {
     return toSessionRow(
-      this.db.prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE cwd = ?').get(cwd),
+      this.db.prepare('SELECT session_id, cwd FROM sessions_v2 WHERE cwd = ?').get(cwd),
     )
-  }
-
-  // FAIL-CLOSED like getSessionByProject: a claude session id that maps to more
-  // than one row is ambiguous (resuming either could be the wrong tree), so return
-  // undefined rather than a nondeterministic .get() row.
-  getSessionById(claudeSessionId: string): SessionRow | undefined {
-    const rows = this.db
-      .prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE claude_session_id = ?')
-      .all(claudeSessionId)
-    return rows.length === 1 ? toSessionRow(rows[0]) : undefined
   }
 
   // FAIL-CLOSED resolve-by-basename: returns a row only when EXACTLY ONE session
@@ -157,7 +147,7 @@ export class Store {
   // best safe resolution when no Claude session id is available.
   getSessionByProject(project: string): SessionRow | undefined {
     const rows = this.db
-      .prepare('SELECT session_id, cwd, claude_session_id FROM sessions_v2 WHERE project = ?')
+      .prepare('SELECT session_id, cwd FROM sessions_v2 WHERE project = ?')
       .all(project)
     return rows.length === 1 ? toSessionRow(rows[0]) : undefined
   }
@@ -366,16 +356,11 @@ export class Store {
 export interface SessionRow {
   sessionId: string
   cwd: string
-  claudeSessionId?: string
 }
 
 function toSessionRow(row: unknown): SessionRow | undefined {
   if (!row || typeof row !== 'object') return undefined
-  const r = row as { session_id?: unknown; cwd?: unknown; claude_session_id?: unknown }
+  const r = row as { session_id?: unknown; cwd?: unknown }
   if (typeof r.session_id !== 'string' || typeof r.cwd !== 'string') return undefined
-  return {
-    sessionId: r.session_id,
-    cwd: r.cwd,
-    ...(typeof r.claude_session_id === 'string' ? { claudeSessionId: r.claude_session_id } : {}),
-  }
+  return { sessionId: r.session_id, cwd: r.cwd }
 }

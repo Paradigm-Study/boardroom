@@ -272,35 +272,11 @@ describe('Store session registry — cwd-keyed (worktree-safe)', () => {
     )
   })
 
-  it('getSessionById resolves the exact session by its Claude session id', () => {
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
-    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-B')
-    expect(store.getSessionById('cc-B')).toEqual(
-      expect.objectContaining({ sessionId: 'sid-B', cwd: '/abs/wt-b/demo' }),
-    )
-  })
-
-  it('getSessionById is fail-closed when a Claude session id maps to more than one row', () => {
-    // Two distinct worktrees somehow carrying the same claude id → resuming either
-    // could be the wrong tree, so resolve to undefined (mirrors getSessionByProject).
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-X')
-    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-X')
-    expect(store.getSessionById('cc-X')).toBeUndefined()
-  })
-
   it('re-registering the same cwd updates in place (no duplicate row)', () => {
     store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
     store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo')
     expect(store.getSessionByCwd('/abs/wt-a/demo')?.sessionId).toBe('sid-A2')
     expect(store.getSessionByProject('demo')?.sessionId).toBe('sid-A2') // still unique
-  })
-
-  it('preserves a stored Claude session id when a later re-register of the same cwd omits it', () => {
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
-    store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo') // re-register, no claude id
-    expect(store.getSessionById('cc-A')).toEqual(
-      expect.objectContaining({ sessionId: 'sid-A2', cwd: '/abs/wt-a/demo' }),
-    )
   })
 
   it('backfill never clobbers an existing sessions_v2 row and is idempotent across reboots', () => {
