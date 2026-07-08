@@ -145,4 +145,34 @@ describe('present_report — non-blocking MCP tool', () => {
     postReportSpy.mockRestore()
     await client.close()
   }, 10_000)
+
+  it('inherits claudeSessionId from an explicit sessionKey, then binds it on a later call with none', async () => {
+    const client = new Client({ name: 'boardroom-report-e2e-inherit', version: '0.1.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(base)))
+
+    // First call: present_report WITH sessionKey on this client/transport
+    const firstResult = await client.callTool(
+      { name: 'present_report', arguments: reportArgs('inherit test first call', 'cc-inherit') },
+      { maxTotalTimeout: 5000, timeout: 5000 },
+    ) as { content: { type: string; text: string }[]; isError?: boolean }
+
+    expect(firstResult.isError).not.toBe(true)
+    let persisted = store.listEntries()
+    expect(persisted).toHaveLength(1)
+    expect(persisted[0].claudeSessionId).toBe('cc-inherit')
+
+    // Second call: present_report WITHOUT sessionKey on the SAME client/transport
+    // Should inherit the binding from the connection's sessionBindings cache
+    const secondResult = await client.callTool(
+      { name: 'present_report', arguments: reportArgs('inherit test second call — no sessionKey') },
+      { maxTotalTimeout: 5000, timeout: 5000 },
+    ) as { content: { type: string; text: string }[]; isError?: boolean }
+
+    expect(secondResult.isError).not.toBe(true)
+    persisted = store.listEntries()
+    expect(persisted).toHaveLength(2)
+    expect(persisted[1].claudeSessionId).toBe('cc-inherit')
+
+    await client.close()
+  }, 10_000)
 })
