@@ -116,4 +116,38 @@ describe('SessionStart hook', () => {
     expect(ctx).not.toContain('identical project + headline') // stale protocol gone
     expect(ctx).toContain('identical sessionKey, project and headline')
   })
+
+  it('injects present_report guidance in connected context', async () => {
+    let localServer: Server | undefined
+    try {
+      localServer = createServer((req, res) => {
+        if (req.method === 'GET' && req.url?.startsWith('/api/cards')) { res.statusCode = 200; res.end('[]'); return }
+        if (req.method === 'POST' && req.url === '/api/session') {
+          req.resume()
+          req.on('end', () => { res.statusCode = 200; res.end('{}') })
+          return
+        }
+        res.statusCode = 404; res.end()
+      })
+      await new Promise<void>(r => localServer!.listen(0, '127.0.0.1', r))
+      const { stdout, status } = await runHook((localServer.address() as AddressInfo).port)
+      expect(status).toBe(0)
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+      expect(ctx).toContain('present_report')
+      expect(ctx).toContain('never blocks')
+    } finally {
+      if (localServer) {
+        localServer.closeAllConnections()
+        await new Promise<void>(r => localServer!.close(() => r()))
+      }
+    }
+  })
+
+  it('injects present_report guidance in offline context', async () => {
+    const { stdout, status } = await runHook(59_999) // nothing listening → connection refused
+    expect(status).toBe(0)
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(ctx).toContain('present_report')
+    expect(ctx).toContain('never blocks')
+  })
 })

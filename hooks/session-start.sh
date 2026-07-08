@@ -71,6 +71,9 @@ behalf — their approval lives in the cards.
   bullet points as evidence (proof it works, not narration) — so the human can
   decide whether the session is complete. Denied claims come back with notes;
   treat each as your next task.
+- CONVEY: to hand the human results, findings, or explanations with nothing to
+  decide, call present_report (fire-and-forget — it never blocks and is NOT a
+  completion; review_results still closes the session).
 - Keep cards glanceable (the human reads like a CEO): tabular/comparative info in
   structured blocks, markdown 1–2 sentences, ≥1 global block + ≥1 question-local
   block per decision (wire blockRefs). Set the card project to your working
@@ -115,6 +118,9 @@ human's behalf.
   — never ask in chat.
 - FINISH: when the work is done, call review_results with tight evidence so the
   human can decide whether the session is complete.
+- CONVEY: to hand the human results, findings, or explanations with nothing to
+  decide, call present_report (fire-and-forget — it never blocks and is NOT a
+  completion; review_results still closes the session).
 - Keep cards glanceable: tabular/comparative info in structured blocks, markdown
   1–2 sentences, ≥1 global block + ≥1 question-local block per decision. Set the
   card project to your working directory's name.
