@@ -1,8 +1,9 @@
 import { Armchair, Bell } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
+import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
-import { fetchCards, fetchSessions, subscribeCards } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
 import { CardView } from './CardView.js'
 import { FileViewer } from './FileViewer.js'
 import { FolderColumns } from './FolderColumns.js'
@@ -83,6 +84,10 @@ function saveSessionScroll(entries: Map<string, SessionScrollEntry>, key: string
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
+  // Populated by the initial fetch + SSE below; not yet rendered anywhere — the
+  // report/tag UI (sidebar stacks, ReportEntryView, StreamDrawer) is later P1 work.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed by upcoming report UI tasks
+  const [entries, setEntries] = useState<Map<string, Entry>>(new Map())
   const [sessions, setSessions] = useState<SessionVM[] | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -121,7 +126,16 @@ export function App() {
       seenPending.current ??= new Set()
       setInitialLoadDone(true)
     })
-    return subscribeCards(
+    fetchEntries().then(list => {
+      // Same merge-don't-replace reasoning as the cards fetch above: an entry may
+      // already have arrived over SSE before this GET resolves.
+      setEntries(prev => {
+        const merged = new Map(prev)
+        for (const e of list) if (!merged.has(e.id)) merged.set(e.id, e)
+        return merged
+      })
+    }).catch(() => { /* entries are supplementary; the cards fetch above already surfaces load errors */ })
+    return subscribeStream(
       card => {
         setCards(prev => new Map(prev).set(card.id, card))
         setLoadError(null) // a live event means the stream is connected
@@ -133,6 +147,12 @@ export function App() {
         } else if (card.status !== 'pending') {
           seen.delete(card.id)
         }
+      },
+      // Entries are one-way conveyed items (reports/tags), never gates — no
+      // notifyCard, no seenPending. Tray separation (spec criterion): a report
+      // must never toast like a pending card does.
+      entry => {
+        setEntries(prev => new Map(prev).set(entry.id, entry))
       },
       // Stream connectivity drives the same banner; it clears on reconnect ('open').
       online => setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…'),

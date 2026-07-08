@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AttachmentRef, Card } from '../../src/shared/card.js'
-import { decideCard, fetchCards, subscribeCards, uploadAttachment } from './api.js'
+import type { Entry } from '../../src/shared/entry.js'
+import { decideCard, fetchCards, fetchEntries, subscribeCards, subscribeStream, uploadAttachment } from './api.js'
 
 function jsonResponse(body: unknown, status = 200): globalThis.Response {
   return {
@@ -56,6 +57,22 @@ describe('fetchCards', () => {
     await expect(fetchCards()).rejects.toThrow(
       'Boardroom returned a non-JSON response (HTTP 404). The dashboard may be out of date — reload the page.',
     )
+  })
+})
+
+describe('fetchEntries', () => {
+  it('returns the parsed JSON body on a 200', async () => {
+    const entries = [{ id: 'e1', type: 'report', headline: 'One' }]
+    fetchMock.mockResolvedValue(jsonResponse(entries))
+
+    await expect(fetchEntries()).resolves.toEqual(entries)
+    expect(fetchMock).toHaveBeenCalledWith('/api/entries')
+  })
+
+  it('throws the error message from a non-ok JSON response', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, 400))
+
+    await expect(fetchEntries()).rejects.toThrow('boom')
   })
 })
 
@@ -171,5 +188,63 @@ describe('subscribeCards', () => {
     const stop = subscribeCards(() => {})
     stop()
     expect(MockEventSource.instances[0].closed).toBe(true)
+  })
+})
+
+describe('subscribeStream', () => {
+  beforeEach(() => {
+    MockEventSource.instances = []
+    vi.stubGlobal('EventSource', MockEventSource)
+  })
+
+  it('opens a single EventSource and delivers cards and entries via independent listeners', () => {
+    const gotCards: Card[] = []
+    const gotEntries: Entry[] = []
+    subscribeStream(c => gotCards.push(c), e => gotEntries.push(e))
+
+    expect(MockEventSource.instances.length).toBe(1)
+    const es = MockEventSource.instances[0]
+    es.emit('card', { data: JSON.stringify({ id: 'c1' }) })
+    es.emit('entry', { data: JSON.stringify({ id: 'e1', type: 'report' }) })
+
+    expect(gotCards.map(c => c.id)).toEqual(['c1'])
+    expect(gotEntries.map(e => e.id)).toEqual(['e1'])
+  })
+
+  it('skips a malformed entry frame without throwing and without affecting cards', () => {
+    const gotCards: Card[] = []
+    const gotEntries: Entry[] = []
+    subscribeStream(c => gotCards.push(c), e => gotEntries.push(e))
+    const es = MockEventSource.instances[0]
+
+    expect(() => es.emit('entry', { data: 'not-json{' })).not.toThrow()
+    es.emit('card', { data: JSON.stringify({ id: 'c1' }) })
+
+    expect(gotEntries).toEqual([])
+    expect(gotCards.map(c => c.id)).toEqual(['c1'])
+  })
+
+  it('reports connection status: offline on stream error, online on (re)open', () => {
+    const statuses: boolean[] = []
+    subscribeStream(() => {}, () => {}, online => statuses.push(online))
+    const es = MockEventSource.instances[0]
+    es.emit('error')
+    es.emit('open')
+    expect(statuses).toEqual([false, true])
+  })
+
+  it('closes the single stream on unsubscribe', () => {
+    const stop = subscribeStream(() => {}, () => {})
+    stop()
+    expect(MockEventSource.instances[0].closed).toBe(true)
+  })
+
+  it('works with onEntry omitted (entry frames are simply ignored)', () => {
+    const gotCards: Card[] = []
+    subscribeStream(c => gotCards.push(c))
+    const es = MockEventSource.instances[0]
+    expect(() => es.emit('entry', { data: JSON.stringify({ id: 'e1', type: 'report' }) })).not.toThrow()
+    es.emit('card', { data: JSON.stringify({ id: 'c1' }) })
+    expect(gotCards.map(c => c.id)).toEqual(['c1'])
   })
 })

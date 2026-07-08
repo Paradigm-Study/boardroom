@@ -2,14 +2,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, fetchSessions, subscribeCards } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
 import { App } from './App.js'
 import { fileHash } from './fileView.js'
 
 vi.mock('./api.js', () => ({
   fetchCards: vi.fn(),
+  fetchEntries: vi.fn(),
   fetchSessions: vi.fn(),
-  subscribeCards: vi.fn(),
+  subscribeStream: vi.fn(),
 }))
 
 // notify.js reaches for the Notification API / permissions; stub it so App mounts
@@ -93,6 +94,9 @@ beforeEach(() => {
   // Sessions now poll on every route (feeds the sidebar's status tags) — default to
   // an empty list so a test that doesn't care about sessions isn't forced to mock it.
   vi.mocked(fetchSessions).mockResolvedValue([])
+  // Same additive-default reasoning: a test that doesn't care about entries
+  // shouldn't be forced to mock fetchEntries.
+  vi.mocked(fetchEntries).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -107,7 +111,7 @@ describe('App initial-fetch / SSE race', () => {
     let resolveFetch!: (cards: Card[]) => void
     vi.mocked(fetchCards).mockReturnValue(new Promise<Card[]>(r => { resolveFetch = r }))
     let onCard: (c: Card) => void = () => {}
-    vi.mocked(subscribeCards).mockImplementation(cb => { onCard = cb; return () => {} })
+    vi.mocked(subscribeStream).mockImplementation(cb => { onCard = cb; return () => {} })
 
     render(<App />)
 
@@ -130,7 +134,7 @@ describe('session navigation scroll memory', () => {
     const sessionB = card('session-b', 'Session B decision', { agent: 'codex', project: 'boardroom', title: 'Session B' })
     const sessionC = card('session-c', 'Session C decision', { agent: 'codex', project: 'boardroom', title: 'Session C' })
     vi.mocked(fetchCards).mockResolvedValue([sessionA, sessionB, sessionC])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/session-a'
 
     render(<App />)
@@ -175,7 +179,7 @@ describe('session navigation scroll memory', () => {
     const sessionB = card('session-b', 'Session B decision', { agent: 'codex', project: 'boardroom', title: 'Session B' })
     const sessionC = card('session-c', 'Session C decision', { agent: 'codex', project: 'boardroom', title: 'Session C' })
     vi.mocked(fetchCards).mockResolvedValue([sessionA, sessionB, sessionC])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/session-a'
 
     const first = render(<App />)
@@ -223,7 +227,7 @@ describe('session navigation scroll memory', () => {
       [scrollKey(preservedSession)]: { top: 640, updatedAt: Date.now() },
     }))
     vi.mocked(fetchCards).mockResolvedValue([card('live', 'Live decision', liveSession)])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/live'
 
     render(<App />)
@@ -252,7 +256,7 @@ describe('in-page block anchors (evidence links)', () => {
     const anchored = card('anchored', 'Anchored decision')
     const newest = { ...card('newest', 'Newest decision'), createdAt: '2026-06-17T12:00:00.000Z' }
     vi.mocked(fetchCards).mockResolvedValue([anchored, newest])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/anchored'
 
     render(<App />)
@@ -274,7 +278,7 @@ describe('deep-link loading state', () => {
   it('shows Loading (not "Card not found.") while the initial fetch is in flight', async () => {
     let resolveFetch!: (cards: Card[]) => void
     vi.mocked(fetchCards).mockReturnValue(new Promise<Card[]>(r => { resolveFetch = r }))
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/some-id'
 
     render(<App />)
@@ -289,7 +293,7 @@ describe('deep-link loading state', () => {
 describe('file-viewer route', () => {
   it('renders the in-app viewer for a #/file route with a Back affordance', async () => {
     vi.mocked(fetchCards).mockResolvedValue([])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = fileHash({ url: '/api/x/a1', name: 'shot.png', mime: 'image/png' })
 
     render(<App />)
@@ -300,7 +304,7 @@ describe('file-viewer route', () => {
 
   it('returns to the dashboard when Back is clicked', async () => {
     vi.mocked(fetchCards).mockResolvedValue([])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = fileHash({ url: '/api/x/a1', name: 'shot.png', mime: 'image/png' })
 
     render(<App />)

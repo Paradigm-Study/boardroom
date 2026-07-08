@@ -2,7 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, fetchSessions, subscribeCards } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
 import { App } from './App.js'
 
 // CHARACTERIZATION TESTS for the dashboard's gate selection across sessions.
@@ -15,7 +15,7 @@ import { App } from './App.js'
 // most-recent PENDING card across ALL sessions, with no notion of a "current" session
 // to scope to — but it renders each card's OWN content faithfully (no mixing here).
 
-vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchSessions: vi.fn(), subscribeCards: vi.fn() }))
+vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn() }))
 vi.mock('./notify.js', () => ({
   notifyCard: vi.fn(),
   notifyPermission: () => 'granted',
@@ -40,6 +40,9 @@ beforeEach(() => {
   // Sessions now poll on every route (feeds the sidebar's status tags) — default to
   // an empty list so a test that doesn't care about sessions isn't forced to mock it.
   vi.mocked(fetchSessions).mockResolvedValue([])
+  // Same additive-default reasoning: a test that doesn't care about entries
+  // shouldn't be forced to mock fetchEntries.
+  vi.mocked(fetchEntries).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -54,7 +57,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[BEHAVIOR] on root, auto-opens the most-recent pending card across ALL sessions — not a current session\'s', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
 
@@ -67,7 +70,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[CORRECT] the opened card shows ITS OWN content — the dashboard does not mix sessions', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
@@ -79,7 +82,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[CORRECT] deep-linking to a specific session\'s card shows exactly that card', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/A'
 
     render(<App />)
@@ -111,7 +114,7 @@ describe('dashboard sidebar grouping by real session id', () => {
     const boundA = { ...a, claudeSessionId: 'cc-A' }
     const boundB = { ...b, claudeSessionId: 'cc-B' }
     vi.mocked(fetchCards).mockResolvedValue([boundA, boundB])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
@@ -125,7 +128,7 @@ describe('dashboard sidebar grouping by real session id', () => {
     const a = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T10:00:00.000Z')
     const b = gate('B', 'Session B decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T11:00:00.000Z')
     vi.mocked(fetchCards).mockResolvedValue([a, b])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
@@ -143,7 +146,7 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
     const reconnecting = bootOrphan('A', 'Session A (reconnecting)', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T12:00:00.000Z')
     const otherPending = gate('B', 'Session B decision', { agent: 'codex', project: 'repo-two', title: 'Session B' }, '2026-06-30T10:00:00.000Z')
     vi.mocked(fetchCards).mockResolvedValue([reconnecting, otherPending])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: 'Session A (reconnecting)' })).toBeTruthy()
@@ -156,7 +159,7 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
     // so auto-open lands on it instead of "The table is clear".
     const reconnecting = bootOrphan('A', 'Session A (reconnecting)', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T12:00:00.000Z')
     vi.mocked(fetchCards).mockResolvedValue([reconnecting])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: 'Session A (reconnecting)' })).toBeTruthy()

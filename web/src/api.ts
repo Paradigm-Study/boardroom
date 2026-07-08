@@ -1,4 +1,5 @@
 import type { AttachmentRef, Card, DecideResponse, DecisionAnswer } from '../../src/shared/card.js'
+import type { Entry } from '../../src/shared/entry.js'
 import type { CapturedSession } from '../../src/shared/session.js'
 
 export interface DeviceIdentity {
@@ -36,6 +37,12 @@ export type SessionVM = CapturedSession & {
 // Every Claude Code session the daemon has captured on this machine (alive + ended).
 export async function fetchSessions(): Promise<SessionVM[]> {
   return check(await fetch('/api/sessions'))
+}
+
+// The report/tag stream, FIFO (createdAt ascending) — backs the dashboard's report
+// feed. Distinct from cards: an entry is a one-way conveyed item, never a gate.
+export async function fetchEntries(): Promise<Entry[]> {
+  return check(await fetch('/api/entries'))
 }
 
 // This machine's identity — the editable device nickname is shown in the Folders view.
@@ -76,8 +83,13 @@ export async function uploadAttachment(
   return check(res)
 }
 
-export function subscribeCards(
+// ONE EventSource for the whole dashboard: cards and entries are independent
+// listeners on the same '/events' stream (the SSE model is listener-per-event-type,
+// not stream-per-consumer), so a card-only and an entry-only caller never fight
+// over the connection.
+export function subscribeStream(
   onCard: (card: Card) => void,
+  onEntry?: (entry: Entry) => void,
   onStatus?: (online: boolean) => void,
 ): () => void {
   const es = new EventSource('/events')
@@ -93,6 +105,15 @@ export function subscribeCards(
       console.warn('[boardroom] dropped a malformed card event', err)
     }
   })
+  es.addEventListener('entry', e => {
+    // Same malformed-frame guard as the card listener above — one bad entry frame
+    // must not take down the whole stream.
+    try {
+      onEntry?.(JSON.parse((e as MessageEvent).data) as Entry)
+    } catch (err) {
+      console.warn('[boardroom] dropped a malformed entry event', err)
+    }
+  })
   // EventSource auto-reconnects on transient drops, but a daemon that is down at
   // load or out for a while leaves it failed with no UI signal — surface it.
   es.addEventListener('error', e => {
@@ -100,4 +121,13 @@ export function subscribeCards(
     onStatus?.(false)
   })
   return () => es.close()
+}
+
+// Thin wrapper kept for existing tests/callers that only care about cards — a
+// no-op onEntry so nothing else breaks.
+export function subscribeCards(
+  onCard: (card: Card) => void,
+  onStatus?: (online: boolean) => void,
+): () => void {
+  return subscribeStream(onCard, undefined, onStatus)
 }
