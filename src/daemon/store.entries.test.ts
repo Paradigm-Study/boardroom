@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 describe('entries table', () => {
-  it('insert + list round-trip via listEntries in FIFO order', () => {
+  it('insert + list round-trip via listEntries in FIFO order (adversarial insert order)', () => {
     const entry1: Entry = {
       id: 'e1',
       type: 'report',
@@ -37,8 +37,9 @@ describe('entries table', () => {
       createdAt: '2026-07-07T10:01:00Z',
     }
 
-    store.insertEntry(entry1)
+    // Insert the LATER-timestamped entry first to ensure ORDER BY created_at ASC is enforced
     store.insertEntry(entry2)
+    store.insertEntry(entry1)
 
     const all = store.listEntries()
     expect(all).toHaveLength(2)
@@ -46,7 +47,38 @@ describe('entries table', () => {
     expect(all[1]).toEqual(entry2)
   })
 
-  it('listEntriesBySession filters by session_id and excludes unbound entries', () => {
+  it('tiebreak on identical created_at uses id ASC order', () => {
+    const sameTime = '2026-07-07T10:00:00Z'
+    const entryB: Entry = {
+      id: 'b',
+      type: 'report',
+      claudeSessionId: 'cc-A',
+      session: { agent: 'claude', project: 'test' },
+      headline: 'Entry B',
+      blocks: [{ id: 'b1', type: 'markdown', text: 'content' }],
+      createdAt: sameTime,
+    }
+    const entryA: Entry = {
+      id: 'a',
+      type: 'tag',
+      claudeSessionId: 'cc-A',
+      session: { agent: 'claude', project: 'test' },
+      tag: 'important',
+      cardId: 'card-1',
+      createdAt: sameTime,
+    }
+
+    // Insert higher id first to verify tiebreak actually sorts by id
+    store.insertEntry(entryB)
+    store.insertEntry(entryA)
+
+    const all = store.listEntries()
+    expect(all).toHaveLength(2)
+    expect(all[0]).toEqual(entryA)
+    expect(all[1]).toEqual(entryB)
+  })
+
+  it('listEntriesBySession filters by session_id and excludes unbound entries (adversarial insert order)', () => {
     const boundToA: Entry = {
       id: 'e1',
       type: 'report',
@@ -74,9 +106,10 @@ describe('entries table', () => {
       createdAt: '2026-07-07T10:02:00Z',
     }
 
-    store.insertEntry(boundToA)
-    store.insertEntry(boundToB)
+    // Insert in reverse order to verify filtering + ordering both work
     store.insertEntry(unbound)
+    store.insertEntry(boundToB)
+    store.insertEntry(boundToA)
 
     const sessionA = store.listEntriesBySession('cc-A')
     expect(sessionA).toHaveLength(1)
