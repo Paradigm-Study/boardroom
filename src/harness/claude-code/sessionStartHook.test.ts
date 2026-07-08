@@ -1,7 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -107,6 +109,50 @@ describe('session-start hook (runtime)', () => {
       })
     } finally {
       server.close()
+    }
+  })
+
+  // The session id is attacker-shaped input (it arrives on stdin and ends up in a
+  // shell variable): if the hook ever re-evaluated it — eval, an unquoted heredoc,
+  // string-built jq — a $(…)/backtick payload would EXECUTE at every session start.
+  // The reviewer probed this manually; codify it: the payload must pass through
+  // LITERALLY (context + registration body) and must never run.
+  it('a session_id full of shell metacharacters passes through literally and executes nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boardroom-hook-meta-'))
+    const markerA = join(dir, 'pwned-subshell')
+    const markerB = join(dir, 'pwned-backtick')
+    const payload = `sid-$(touch ${markerA})-\`touch ${markerB}\`-"quoted"-'single'-;|&`
+    const { server, port, requests } = await stubDaemon()
+    try {
+      const ctx = contextOf(await runHookAgainst(port, JSON.stringify({ session_id: payload, cwd: '/tmp/demo-proj' })))
+      // Literal passthrough: the agent must see the exact key back.
+      expect(ctx).toContain(`Boardroom session key: ${payload}`)
+      // Literal registration: jq --arg must JSON-encode, never interpolate.
+      const registration = requests.find(r => r.url === '/api/session')
+      expect(JSON.parse(registration!.body)).toEqual({
+        sessionId: payload,
+        cwd: '/tmp/demo-proj',
+        project: 'demo-proj',
+      })
+      // And nothing executed: neither the $(…) nor the backtick form ran.
+      expect(existsSync(markerA)).toBe(false)
+      expect(existsSync(markerB)).toBe(false)
+    } finally {
+      server.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('offline branch also passes a metacharacter session_id through literally without executing it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boardroom-hook-meta-off-'))
+    const marker = join(dir, 'pwned-offline')
+    const payload = `sid-$(touch ${marker})`
+    try {
+      const ctx = runHook(1, JSON.stringify({ session_id: payload, cwd: '/tmp/demo-proj' }))
+      expect(ctx).toContain(`Boardroom session key: ${payload}`)
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
