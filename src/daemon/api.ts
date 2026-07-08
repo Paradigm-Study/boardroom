@@ -8,7 +8,7 @@ import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
-import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
+import { needsHuman, REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { deriveSessionStatus } from '../shared/sessionStatus.js'
 import { buildTrayVM } from './trayView.js'
 
@@ -139,7 +139,10 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         return {
           ...s,
           sessionStatus: deriveSessionStatus(s, own, nowMs, windowMs),
-          pendingCount: own.filter(c => c.status === 'pending').length,
+          // needsHuman, not status === 'pending': deriveSessionStatus counts a
+          // reconnecting orphan toward needs-decision, so this count must too or
+          // the row contradicts its own status tag.
+          pendingCount: own.filter(c => needsHuman(c, nowMs, windowMs)).length,
           cardCount: own.length,
         }
       })

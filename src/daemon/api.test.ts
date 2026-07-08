@@ -603,6 +603,22 @@ describe('GET /api/sessions', () => {
     // NOT be reported as needs-decision (it would be, under the 24h default).
     expect(s.sessionStatus).not.toBe('needs-decision')
   })
+
+  // pendingCount must agree with sessionStatus: both count "on the human's plate"
+  // (needsHuman), not the literal status string. A reconnecting boot-orphan inside
+  // the reattach window drives sessionStatus to needs-decision — a pendingCount of 0
+  // beside that status would be a self-contradicting view-model row.
+  it('counts a reconnecting boot-orphan card in pendingCount, matching sessionStatus', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-orphan', status: 'alive' }))
+    store.insert(cardFixture({
+      id: 'k-orphan', claudeSessionId: 'cc-orphan', status: 'orphaned',
+      orphanedReason: 'boot', orphanedAt: new Date().toISOString(), // just now — inside any window
+    }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-orphan')
+    expect(s.sessionStatus).toBe('needs-decision')
+    expect(s.pendingCount).toBe(1)
+  })
 })
 
 describe("GET /api/sessions/:id/cards", () => {
