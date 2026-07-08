@@ -1,10 +1,10 @@
 import { Archive, Armchair, ChevronRight, FolderTree, Inbox, MessagesSquare } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
 import { age, isReconnecting, needsHuman } from './helpers.js'
-import { isImplicitlyRead, readEntrySet, unreadCount } from './readState.js'
+import { isImplicitlyRead, readEntrySet, readStateVersion, subscribeReadState, unreadCount } from './readState.js'
 import { STAGE } from './stage.js'
 import { StreamDrawer } from './StreamDrawer.js'
 import { parseTag } from './tagLabel.js'
@@ -401,6 +401,10 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
 
   const entriesBySession = groupEntriesBySession(entries)
   const cardsBySession = groupAllCardsBySession(cards)
+  // Re-render when a ReportDrawer (possibly deep inside this sidebar's own
+  // StreamDrawer) marks an entry read — the dot and the aggregate count below
+  // read localStorage during render and would otherwise stay stale.
+  useSyncExternalStore(subscribeReadState, readStateVersion)
   // ONE localStorage read for the whole render pass (see readState.readEntrySet) —
   // every session's unread-dot check below is then a plain Set lookup, not a
   // localStorage re-parse per session or per entry.

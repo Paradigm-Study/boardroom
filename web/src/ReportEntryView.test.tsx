@@ -9,7 +9,10 @@ const { markReadMock, isReadMock } = vi.hoisted(() => ({
   isReadMock: vi.fn(),
 }))
 
-vi.mock('./readState.js', () => ({
+// Mock only the read/mark pair; the rest (isImplicitlyRead, the subscription
+// surface) stays real — ReportEntryView.readflow.test.tsx covers the unmocked flow.
+vi.mock('./readState.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./readState.js')>()),
   markRead: markReadMock,
   isRead: isReadMock,
 }))

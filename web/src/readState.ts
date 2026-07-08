@@ -45,10 +45,31 @@ function writeStore(ids: Map<string, number>, now = Date.now()): void {
   }
 }
 
+// ── Reactivity ─────────────────────────────────────────────────────────────
+// markRead is the only writer, but it fires deep in the tree (ReportDrawer's
+// mount effect) while the surfaces showing unread state (stream dots, the
+// sidebar aggregate) read localStorage during THEIR render — without a change
+// signal they'd stay stale until some unrelated re-render. A version counter +
+// listener set is the whole store; React surfaces subscribe via
+// useSyncExternalStore(subscribeReadState, readStateVersion).
+let version = 0
+const listeners = new Set<() => void>()
+
+export function subscribeReadState(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+export function readStateVersion(): number {
+  return version
+}
+
 export function markRead(entryId: string): void {
   const ids = readStore()
   ids.set(entryId, Date.now())
   writeStore(ids)
+  version++
+  for (const listener of listeners) listener()
 }
 
 export function isRead(entryId: string): boolean {

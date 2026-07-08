@@ -417,6 +417,29 @@ describe('TaskSidebar side-unread-count aggregate', () => {
   })
 })
 
+describe('TaskSidebar unread aggregate reactivity', () => {
+  // markRead fires inside the ReportDrawer (a grandchild); the sidebar's aggregate
+  // count reads localStorage — without a readState subscription it would stay
+  // stale until some unrelated re-render.
+  it('clears the sidebar unread count the moment the report is opened from a stream drawer', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
+    const bound = card({
+      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const r1 = reportEntry({ id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A' })
+    const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[r1]} />)
+    expect(container.querySelector('.side-unread-count')?.textContent).toBe('1 unread')
+
+    fireEvent.click(within(screen.getByRole('group', { name: 't' })).getByRole('button', { name: /stream/i }))
+    fireEvent.click(screen.getByRole('button', { name: /open report/i }))
+
+    expect(container.querySelector('.side-unread-count')).toBeNull()
+    vi.useRealTimers()
+  })
+})
+
 describe('TaskSidebar age-implies-read (no false re-lighting)', () => {
   it('does not show an unread dot for a report older than the read TTL, even unread', () => {
     const bound = card({

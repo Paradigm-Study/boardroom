@@ -1,9 +1,9 @@
 import { FileText } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import type { ReportEntry } from '../../src/shared/entry.js'
 import { BlockView } from './blocks/BlockView.js'
 import { ReportDrawer } from './ReportDrawer.js'
-import { isRead } from './readState.js'
+import { isImplicitlyRead, isRead, readStateVersion, subscribeReadState } from './readState.js'
 
 // A report's stream summary card: headline + its blocks, glanceable — the same
 // SpecAffordance open/close pattern as the spec-recall drawer (default closed,
@@ -11,7 +11,11 @@ import { isRead } from './readState.js'
 // Task 7) shows until the human opens the drawer, which marks it read.
 export function ReportEntryView({ entry }: { entry: ReportEntry }) {
   const [open, setOpen] = useState(false)
-  const unread = !isRead(entry.id)
+  // Subscribe to readState so the drawer's markRead clears the dot immediately
+  // (the drawer stays open over a still-lit dot otherwise). Age-implies-read:
+  // same rule as the sidebar — an old report must not re-light here.
+  useSyncExternalStore(subscribeReadState, readStateVersion)
+  const unread = !isImplicitlyRead(entry) && !isRead(entry.id)
 
   return (
     <div className="entry-report">
