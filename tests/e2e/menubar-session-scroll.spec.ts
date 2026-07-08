@@ -70,19 +70,35 @@ test('menubar dashboard restores per-session scroll after wrapper reload', async
     // deterministic startup noise, not the scroll behavior under test — but only
     // until the mocks attach: after mocksReady flips, a 502 is a REAL failure (an
     // API request the fixture forgot to cover) and must fail the run.
+    // App.tsx's fetchEntries().catch logs the same pre-mock daemon-unreachable
+    // condition via console.warn('[boardroom] failed to fetch entries', err) — a
+    // different text shape than the browser's native "Failed to load resource"
+    // message, and the underlying error varies (a non-JSON 502 body via the vite
+    // proxy, or a raw "TypeError: Failed to fetch" when the connection is refused
+    // outright), so match on the log's own prefix rather than the error detail —
+    // same approach as the unconditional '[boardroom] card stream error' clause.
     let mocksReady = false
     page.on('console', msg => {
       const text = msg.text()
       if (text.includes('[boardroom] card stream error')) return
       if (!mocksReady && text.includes('Failed to load resource') && text.includes('502')) return
+      if (!mocksReady && text.includes('[boardroom] failed to fetch entries')) return
       if (msg.type() === 'warning' || msg.type() === 'error') logs.push(`page ${msg.type()}: ${text}`)
     })
     page.on('pageerror', err => logs.push(`pageerror: ${err.message}`))
     await mockBoardroomApi(page)
-    mocksReady = true
     const dashboardUrl = `http://127.0.0.1:5177/?e2e=${Date.now()}`
 
+    // mocksReady flips AFTER this goto, not right after mockBoardroomApi resolves:
+    // mockBoardroomApi only registers page.route handlers, it doesn't wait for the
+    // preloaded window's own pre-mock fetches (fired at Electron launch, against the
+    // still-unmocked page) to finish rejecting — those console messages can land a
+    // few ms after route registration, which is still "before this test's page load"
+    // in every way that matters. Gating on the goto instead of on mockBoardroomApi's
+    // resolution ties the cutover to a real event boundary (the old, unmocked
+    // document is replaced by the new, mocked one) instead of a wall-clock race.
     await page.goto(`${dashboardUrl}#/card/${scrollCards[0].id}`, { waitUntil: 'domcontentloaded' })
+    mocksReady = true
     await expect(page.getByRole('heading', { name: scrollCards[0].headline })).toBeVisible()
     const initial = await readState(page)
     expect(initial.scrollY).toBe(0)
