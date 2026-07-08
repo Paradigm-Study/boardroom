@@ -83,18 +83,28 @@ export class Queue extends EventEmitter {
   // Auto-derived stage tag on a gate raise/decide. NOT called from the reattach
   // (decided-undelivered claim, gen: -1) or orphan-revive branches of submit — a
   // re-issued call is not a new gate, so it must not add a second 'raised' tag.
+  //
+  // Best-effort side channel: by the time this runs, the card is already
+  // persisted and the waiter already attached/resolved (submit/decide's own
+  // work is done). A store failure here (e.g. disk full) must NEVER surface as
+  // a failure of the gate call that already succeeded — swallow it, warn, and
+  // move on, so the tag stream is "nice to have," not load-bearing.
   private recordTag(card: Card, event: 'raised' | 'decided'): void {
-    const tag: Entry = {
-      id: randomUUID(),
-      type: 'tag',
-      ...(card.claudeSessionId ? { claudeSessionId: card.claudeSessionId } : {}),
-      session: card.session,
-      tag: `stage:${card.stage}:${event}`,
-      cardId: card.id,
-      createdAt: new Date().toISOString(),
+    try {
+      const tag: Entry = {
+        id: randomUUID(),
+        type: 'tag',
+        ...(card.claudeSessionId ? { claudeSessionId: card.claudeSessionId } : {}),
+        session: card.session,
+        tag: `stage:${card.stage}:${event}`,
+        cardId: card.id,
+        createdAt: new Date().toISOString(),
+      }
+      this.store.insertEntry(tag)
+      this.emit('entry', tag)
+    } catch (error) {
+      console.warn(`[queue] failed to record stage tag for card "${card.id}" (${event}):`, error)
     }
-    this.store.insertEntry(tag)
-    this.emit('entry', tag)
   }
 
   // Validate, persist, and emit a report entry. The seam present_report calls so

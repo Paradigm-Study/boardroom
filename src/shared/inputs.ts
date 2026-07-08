@@ -310,3 +310,13 @@ export const ReviewResultsInput = z.object({
   }
 })
 export type ReviewResultsInput = z.infer<typeof ReviewResultsInput>
+
+// The non-blocking report gate: convey findings/results with NO decision
+// attached. No decisions, no sections in P1 — just glanceable summary blocks;
+// the dashboard offers a full-size drawer for the same blocks.
+export const PresentReportInput = z.object({
+  ...sessionFields,
+  headline: z.string().min(1).describe('One-line summary of what this report conveys'),
+  blocks: z.array(Block).min(1).describe('The report content — glanceable summary blocks; the dashboard offers a full-size drawer'),
+}).superRefine(checkUniqueIds)
+export type PresentReportInput = z.infer<typeof PresentReportInput>

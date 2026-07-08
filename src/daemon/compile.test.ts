@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Card, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from '../shared/card.js'
-import { compileClarify, compilePlan, compileResults, compileSpec, PLAN_VERDICT } from './compile.js'
+import { Entry } from '../shared/entry.js'
+import { compileClarify, compilePlan, compileReport, compileResults, compileSpec, PLAN_VERDICT } from './compile.js'
 
 const decision = {
   id: 'd1',
@@ -177,5 +178,47 @@ describe('compileSpec', () => {
     expect(verdict.options.map(o => o.id)).toEqual(['lock', 'revise'])
     expect(verdict.noteRequiredOn).toEqual(['revise'])
     expect(verdict.blockRefs ?? []).toEqual([])
+  })
+})
+
+describe('compileReport', () => {
+  const input = {
+    project: 'demo',
+    title: 'investigation',
+    headline: 'interim findings',
+    blocks: [{ id: 'b1', type: 'markdown' as const, text: 'summary of what was found' }],
+  }
+
+  it('builds a valid report entry with session attribution', () => {
+    const entry = compileReport(input, { agent: 'claude-code' })
+    const parsed = Entry.parse(entry)
+    expect(parsed.type).toBe('report')
+    expect(entry.session).toEqual({ agent: 'claude-code', project: 'demo', title: 'investigation' })
+    expect(entry.id).toBeTruthy()
+    expect(entry.createdAt).toMatch(/^\d{4}-/)
+    if (entry.type !== 'report') throw new Error('expected report entry')
+    expect(entry.headline).toBe('interim findings')
+    expect(entry.blocks).toEqual(input.blocks)
+  })
+
+  it('carries meta.claudeSessionId when present', () => {
+    const entry = compileReport(input, { agent: 'claude-code', claudeSessionId: 'cc-1' })
+    expect(entry.claudeSessionId).toBe('cc-1')
+  })
+
+  it('omits claudeSessionId when meta has none (unbound legacy caller)', () => {
+    const entry = compileReport(input, { agent: 'claude-code' })
+    expect('claudeSessionId' in entry).toBe(false)
+  })
+
+  it('carries NO fingerprint field — reports are not reattachable', () => {
+    const entry = compileReport(input, { agent: 'claude-code' })
+    expect('fingerprint' in entry).toBe(false)
+  })
+
+  it('mints a distinct id and createdAt on every call, even with identical input (no dedup)', () => {
+    const a = compileReport(input, { agent: 'claude-code' })
+    const b = compileReport(input, { agent: 'claude-code' })
+    expect(a.id).not.toBe(b.id)
   })
 })

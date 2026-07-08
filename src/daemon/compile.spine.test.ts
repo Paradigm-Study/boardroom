@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileClarify, compilePlan, compileSpec, compileResults } from './compile.js'
+import { compileClarify, compilePlan, compileSpec, compileResults, compileReport } from './compile.js'
 
 const clarifyInput = {
   project: 'demo',
@@ -34,6 +34,12 @@ const resultsInput = {
   project: 'demo',
   headline: 'done',
   claims: [{ id: 'c1', claim: 'tests pass', evidence: [{ id: 'e1', type: 'markdown' as const, text: 'x' }] }],
+}
+
+const reportInput = {
+  project: 'demo',
+  headline: 'interim findings',
+  blocks: [{ id: 'b1', type: 'markdown' as const, text: 'summary' }],
 }
 
 describe('compile threads claudeSessionId onto cards', () => {
@@ -72,5 +78,16 @@ describe('compile threads claudeSessionId onto cards', () => {
   it('results card omits claudeSessionId when meta has none', () => {
     const card = compileResults(resultsInput as never, { agent: 'claude-code' })
     expect(card.claudeSessionId).toBeUndefined()
+  })
+
+  it('report entry carries meta.claudeSessionId', () => {
+    const entry = compileReport(reportInput as never, { agent: 'claude-code', claudeSessionId: 'cc-5' })
+    expect(entry.type).toBe('report')
+    expect(entry.claudeSessionId).toBe('cc-5')
+    expect(entry.session.agent).toBe('claude-code')
+  })
+  it('report entry omits claudeSessionId when meta has none (unbound legacy caller)', () => {
+    const entry = compileReport(reportInput as never, { agent: 'claude-code' })
+    expect(entry.claudeSessionId).toBeUndefined()
   })
 })

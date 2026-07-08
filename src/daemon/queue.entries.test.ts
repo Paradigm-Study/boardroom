@@ -165,6 +165,48 @@ describe('Queue.postReport', () => {
   })
 })
 
+describe('Queue.recordTag hardening — a store failure must never fail the gate call', () => {
+  it('submit still returns normally and completes the card flow when store.insertEntry throws for the tag', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(store, 'insertEntry').mockImplementation(() => { throw new Error('disk full') })
+
+    const cardEvents: Card[] = []
+    queue.on('card', c => cardEvents.push(c))
+    const entryEvents: Entry[] = []
+    queue.on('entry', e => entryEvents.push(e))
+
+    let result: { cardId: string; gen: number } | undefined
+    expect(() => { result = queue.submit(card('c1'), noop) }).not.toThrow()
+
+    // The card flow completed: persisted, waiter attached (gen > 0), 'card' emitted.
+    expect(result).toEqual({ cardId: 'c1', gen: 1 })
+    expect(store.get('c1')).toBeDefined()
+    expect(cardEvents).toHaveLength(1)
+    expect(cardEvents[0].id).toBe('c1')
+
+    // The tag entry itself never made it out (insertEntry threw before emit).
+    expect(entryEvents).toHaveLength(0)
+
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('decide still returns normally when store.insertEntry throws for the "decided" tag', () => {
+    queue.submit(card('c1'), noop)
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(store, 'insertEntry').mockImplementation(() => { throw new Error('disk full') })
+
+    let response: unknown
+    expect(() => { response = queue.decide('c1', { d1: { chosen: ['a'] } }) }).not.toThrow()
+    expect((response as { delivered: boolean }).delivered).toBe(true)
+    expect(store.get('c1')?.status).toBe('decided')
+
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+})
+
 describe('Queue entries — tray/cards isolation guard (spec criterion tray-separation)', () => {
   it('buildTrayVM output and store.list() (cards) are unaffected by entries', () => {
     queue.submit(card('c1'), noop) // also emits a 'raised' tag entry

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { Block } from '../shared/blocks.js'
 import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type Card, type Decision, type DecisionOption, type PlanVerdict, type ResultsVerdict, type SpecVerdict } from '../shared/card.js'
+import type { Entry } from '../shared/entry.js'
 
 // Verdict option lists are constrained to the shared unions so a renamed verdict
 // is a compile error here AND at every consumer that compares against it.
 type VerdictOption<V extends string> = Omit<DecisionOption, 'id'> & { id: V }
-import type { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
+import type { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 
 const now = (): string => new Date().toISOString()
 
@@ -183,5 +184,21 @@ export function compileResults(input: ReviewResultsInput, meta: CompileMeta): Ca
     status: 'pending',
     createdAt: now(),
     fingerprint: fingerprint(input.project, 'results', input.headline),
+  }
+}
+
+// The report entry: fire-and-forget, NOT reattachable. Each call mints a fresh
+// entry — no fingerprint, no dedup — because a non-blocking call can never lose
+// a human decision, so idempotent retry-collapse (the reason cards fingerprint)
+// does not apply here.
+export function compileReport(input: PresentReportInput, meta: CompileMeta): Entry {
+  return {
+    id: randomUUID(),
+    type: 'report',
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
+    headline: input.headline,
+    blocks: input.blocks,
+    createdAt: now(),
   }
 }

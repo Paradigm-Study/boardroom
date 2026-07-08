@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from './inputs.js'
+import { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from './inputs.js'
 
 const decision = {
   id: 'd1',
@@ -250,6 +250,56 @@ describe('SpecInput', () => {
 
   it('accepts a valid spec with a goal, criteria, and an optional on-disk specRef', () => {
     expect(SpecInput.safeParse({ ...valid, specRef: '/tmp/spec.md' }).success).toBe(true)
+  })
+})
+
+describe('PresentReportInput', () => {
+  const validBlock = { id: 'b1', type: 'markdown', text: 'summary of findings' }
+
+  it('accepts a minimal valid report (project, headline, one block)', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock] })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects zero blocks', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [] })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a missing headline', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', blocks: [validBlock] })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects duplicate block ids', () => {
+    const r = PresentReportInput.safeParse({
+      project: 'demo', headline: 'findings',
+      blocks: [validBlock, { ...validBlock }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate block ids/.test(i.message))).toBe(true)
+  })
+
+  it('has NO decisions field and NO sections field (P1: summary blocks only)', () => {
+    const r = PresentReportInput.safeParse({
+      project: 'demo', headline: 'findings', blocks: [validBlock],
+      decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+      sections: [{ id: 's1', kind: 'decide' }],
+    })
+    expect(r.success).toBe(true)
+    if (r.success) {
+      expect('decisions' in r.data).toBe(false)
+      expect('sections' in r.data).toBe(false)
+    }
+  })
+
+  it('accepts and preserves sessionKey; accepts omission', () => {
+    const withKey = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock], sessionKey: 'cc-1' })
+    expect(withKey.success).toBe(true)
+    if (withKey.success) expect(withKey.data.sessionKey).toBe('cc-1')
+
+    const withoutKey = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock] })
+    expect(withoutKey.success).toBe(true)
   })
 })
 
