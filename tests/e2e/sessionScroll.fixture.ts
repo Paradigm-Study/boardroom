@@ -137,4 +137,18 @@ export async function mockBoardroomApi(page: Page, cards: BrowserCard[] = scroll
     contentType: 'application/json',
     body: JSON.stringify({ machineId: 'qa-machine', deviceLabel: 'QA Mac' }),
   }))
+  // Report/tag stream: no e2e spec exercises entries content yet, so a bare []
+  // keeps the dashboard's report feed harmlessly empty rather than hitting the
+  // (nonexistent, in this hermetic run) daemon port. Route both the global and
+  // per-session variants — mirrors how /api/sessions is mocked above.
+  await page.route('**/api/entries', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: '[]',
+  }))
+  await page.route('**/api/sessions/*/entries', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: '[]',
+  }))
 }

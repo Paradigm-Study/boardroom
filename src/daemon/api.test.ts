@@ -8,6 +8,7 @@ import type { Card } from '../shared/card.js'
 import { CapturedSession } from '../shared/session.js'
 import { buildApiRouter, isWithinRoot, safeSegment } from './api.js'
 import { Block } from '../shared/blocks.js'
+import type { Entry } from '../shared/entry.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
 
@@ -43,6 +44,19 @@ function capturedFixture(overrides: Partial<CapturedSession> & { sessionId: stri
     status: 'alive', capturedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
     ...overrides,
   }
+}
+
+// Small local factory for a ReportEntry, with overrides — used by the entries
+// route + SSE tests below.
+function reportFixture(overrides: Partial<Entry> & { id: string }): Entry {
+  return {
+    type: 'report',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h',
+    blocks: [{ id: 'b1', type: 'markdown', text: 'content' }],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  } as Entry
 }
 
 const noop = { resolve: () => {}, reject: () => {} }
@@ -446,6 +460,69 @@ describe('GET /events', () => {
     expect(frames[0].total).toBe(1) // snapshot: one pending
     expect(frames[1].total).toBe(0) // after decide: cleared
   })
+
+  // Collect every SSE frame (any event type) until `enough` arrive, tagging each
+  // with its `event:` line so callers can filter by frame kind. Mirrors
+  // collectTrayFrames's destroy-on-enough pattern.
+  async function collectFrames(
+    enough: number,
+    onFrame?: (count: number) => void,
+  ): Promise<{ event: string; data: Record<string, unknown> }[]> {
+    const frames: { event: string; data: Record<string, unknown> }[] = []
+    await request(app)
+      .get('/events')
+      .buffer(false)
+      .parse((res, done) => {
+        let buf = ''
+        res.on('data', (chunk: Buffer) => {
+          buf += chunk.toString()
+          let idx
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const frame = buf.slice(0, idx); buf = buf.slice(idx + 2)
+            const eventLine = frame.split('\n').find(l => l.startsWith('event:'))
+            const dataLine = frame.split('\n').find(l => l.startsWith('data:'))
+            if (!eventLine || !dataLine) continue
+            frames.push({ event: eventLine.slice(6).trim(), data: JSON.parse(dataLine.slice(5).trim()) })
+            onFrame?.(frames.length)
+            if (frames.length >= enough) { (res as unknown as { destroy(): void }).destroy(); done(null, null); return }
+          }
+        })
+      })
+      .catch(() => {})
+    return frames
+  }
+
+  // Open the stream, wait for the initial tray snapshot (proof the listener is
+  // registered), THEN call postReport and assert the entry frame arrives.
+  it('emits `event: entry` with the entry JSON after queue.postReport (listener attached before firing)', async () => {
+    const report = reportFixture({ id: 'e1', claudeSessionId: 'cc-1' })
+    const frames = await collectFrames(2, n => {
+      if (n === 1) queue.postReport(report) // n===1 is the connect-time tray snapshot
+    })
+    const entryFrame = frames.find(f => f.event === 'entry')
+    expect(entryFrame).toBeDefined()
+    expect(entryFrame!.data).toEqual(report)
+  })
+
+  // HARD constraint (spec criterion tray-separation): the entry listener must
+  // NEVER call sendTray() — the tray never counts entries. Prove it directly:
+  // post several reports on an open connection and assert not one extra tray
+  // frame appears beyond the single connect-time snapshot.
+  it('tray-separation: entry activity never emits a tray frame (only the connect-time snapshot)', async () => {
+    const frames = await collectFrames(4, n => {
+      if (n === 1) {
+        queue.postReport(reportFixture({ id: 'e1' }))
+        queue.postReport(reportFixture({ id: 'e2' }))
+        queue.postReport(reportFixture({ id: 'e3' }))
+      }
+    })
+    const trayFrames = frames.filter(f => f.event === 'tray')
+    const entryFrames = frames.filter(f => f.event === 'entry')
+    expect(entryFrames).toHaveLength(3)
+    // Exactly the single connect-time snapshot — no tray frame was triggered by
+    // any of the three postReport calls above.
+    expect(trayFrames).toHaveLength(1)
+  })
 })
 
 describe('POST /api/session (Phase 2 wake registry)', () => {
@@ -539,6 +616,37 @@ describe("GET /api/sessions/:id/cards", () => {
 
   it('returns an empty array for a session with no cards (not 404)', async () => {
     const res = await request(app).get('/api/sessions/no-such-session/cards').expect(200)
+    expect(res.body).toEqual([])
+  })
+})
+
+describe('GET /api/entries', () => {
+  it('returns all entries in FIFO order (adversarial insert order)', async () => {
+    // Insert the LATER-timestamped entry first — the route must sort by
+    // created_at, not by insertion/table order.
+    store.insertEntry(reportFixture({ id: 'e2', createdAt: '2026-07-07T10:01:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'e1', createdAt: '2026-07-07T10:00:00.000Z' }))
+    const res = await request(app).get('/api/entries').expect(200)
+    expect(res.body.map((e: Entry) => e.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('returns an empty array when there are no entries', async () => {
+    const res = await request(app).get('/api/entries').expect(200)
+    expect(res.body).toEqual([])
+  })
+})
+
+describe("GET /api/sessions/:id/entries", () => {
+  it("returns only that session's entries in FIFO order", async () => {
+    store.insertEntry(reportFixture({ id: 'e2', claudeSessionId: 'cc-1', createdAt: '2026-07-07T11:00:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'e1', claudeSessionId: 'cc-1', createdAt: '2026-07-07T10:00:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'other', claudeSessionId: 'cc-2', createdAt: '2026-07-07T09:00:00.000Z' }))
+    const res = await request(app).get('/api/sessions/cc-1/entries').expect(200)
+    expect(res.body.map((e: Entry) => e.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('returns an empty array for a session with no entries (not 404)', async () => {
+    const res = await request(app).get('/api/sessions/no-such-session/entries').expect(200)
     expect(res.body).toEqual([])
   })
 })

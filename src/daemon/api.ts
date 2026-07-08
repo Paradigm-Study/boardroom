@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
+import type { Entry } from '../shared/entry.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
 import type { Store } from './store.js'
@@ -155,6 +156,23 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         .filter(c => c.claudeSessionId === req.params.id)
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       res.json(own)
+    } catch (err) { sendError(res, err) }
+  })
+
+  // Report/tag stream, FIFO (createdAt ascending — store.listEntries already
+  // orders this way). Backs the dashboard's report feed; a stream with no
+  // entries yet returns [], not 404.
+  router.get('/api/entries', (_req, res) => {
+    try {
+      res.json(store.listEntries())
+    } catch (err) { sendError(res, err) }
+  })
+
+  // That session's entries in stream order — the per-session report feed.
+  // Distinct path from /api/entries above; mirrors /api/sessions/:id/cards.
+  router.get('/api/sessions/:id/entries', (req, res) => {
+    try {
+      res.json(store.listEntriesBySession(req.params.id))
     } catch (err) { sendError(res, err) }
   })
 
@@ -350,6 +368,14 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       sendTray()
     }
     queue.on('card', onCard)
+    // The dashboard's report feed subscribes to this same stream. Entries are a
+    // separate concern from cards/tray: the tray never counts entries (spec
+    // criterion tray-separation), so this listener MUST NOT call sendTray() —
+    // it only forwards the raw entry frame.
+    const onEntry = (entry: Entry): void => {
+      res.write(`event: entry\ndata: ${JSON.stringify(entry)}\n\n`)
+    }
+    queue.on('entry', onEntry)
     sendTray()
     const heartbeat = setInterval(() => {
       res.write(':hb\n\n')
@@ -358,6 +384,7 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
     req.on('close', () => {
       clearInterval(heartbeat)
       queue.off('card', onCard)
+      queue.off('entry', onEntry)
     })
   })
 
