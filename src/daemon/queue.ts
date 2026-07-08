@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, SPEC_VERDICT_ID, SPEC_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
+import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import type { Store } from './store.js'
 import { buildSummary } from './summary.js'
@@ -74,7 +76,33 @@ export class Queue extends EventEmitter {
     this.store.insert(card)
     const gen = this.attach(card.id, waiter)
     this.emit('card', card)
+    this.recordTag(card, 'raised')
     return { cardId: card.id, gen }
+  }
+
+  // Auto-derived stage tag on a gate raise/decide. NOT called from the reattach
+  // (decided-undelivered claim, gen: -1) or orphan-revive branches of submit — a
+  // re-issued call is not a new gate, so it must not add a second 'raised' tag.
+  private recordTag(card: Card, event: 'raised' | 'decided'): void {
+    const tag: Entry = {
+      id: randomUUID(),
+      type: 'tag',
+      ...(card.claudeSessionId ? { claudeSessionId: card.claudeSessionId } : {}),
+      session: card.session,
+      tag: `stage:${card.stage}:${event}`,
+      cardId: card.id,
+      createdAt: new Date().toISOString(),
+    }
+    this.store.insertEntry(tag)
+    this.emit('entry', tag)
+  }
+
+  // Validate, persist, and emit a report entry. The seam present_report calls so
+  // mcp.ts never touches the Store directly.
+  postReport(entry: Entry): void {
+    const valid = Entry.parse(entry)
+    this.store.insertEntry(valid)
+    this.emit('entry', valid)
   }
 
   private getOrThrow(id: string): Card {
@@ -171,6 +199,7 @@ export class Queue extends EventEmitter {
       entry.waiter.resolve({ cardId: id, decisions: answers, summary })
     }
     this.emit('card', updated)
+    this.recordTag(updated, 'decided')
     return { card: updated, summary, delivered }
   }
 
