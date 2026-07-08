@@ -135,6 +135,25 @@ const pendingSpec: Card = {
   criteria: [specCriterion],
 }
 
+describe('CardHeader session provenance', () => {
+  // The sheet-source link is decision-sheet-only, and results cards render the
+  // checklist instead of a decision sheet — the header strip is their ONLY
+  // provenance surface, so the bound session title must link to the stream there.
+  it('links the header session title to #/session/<id> when the card is bound', () => {
+    render(<CardView card={{ ...pendingResults, claudeSessionId: 'cc-123' }} />)
+    const strip = screen.getByLabelText('Decision source')
+    const link = within(strip).getByRole('link', { name: 'Plan QA' })
+    expect(link.getAttribute('href')).toBe('#/session/cc-123')
+  })
+
+  it('renders a plain, unlinked title for an unbound (legacy) card', () => {
+    render(<CardView card={pendingResults} />)
+    const strip = screen.getByLabelText('Decision source')
+    expect(within(strip).queryByRole('link', { name: 'Plan QA' })).toBeNull()
+    expect(within(strip).getByText('Plan QA')).toBeTruthy()
+  })
+})
+
 describe('CardView pending spec actions', () => {
   it('renders send-back and lock actions, and the criterion as an acceptance block', () => {
     render(<CardView card={pendingSpec} />)
