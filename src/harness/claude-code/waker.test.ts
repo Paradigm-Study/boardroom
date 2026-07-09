@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../shared/card.js'
 import { Queue } from '../../daemon/queue.js'
 import { Store } from '../../daemon/store.js'
-import { makeDefaultSpawn, Waker } from './waker.js'
+import { makeDefaultSpawn, resumeCredentialEnv, Waker } from './waker.js'
 
 function decided(over: Partial<Card> = {}): Card {
   return {
@@ -204,10 +204,67 @@ describe('Waker', () => {
   })
 })
 
+// The waker spawns `claude -p --resume`, which needs the standalone CLI to be
+// authenticated. Under launchd the daemon inherits a minimal/stale ambient
+// credential (the 401), so we inject a durable resume credential into the child's
+// env. A subscription OAuth token (claude setup-token) is preferred; an
+// ANTHROPIC_API_KEY is the pay-per-use fallback. Never send both — that lets the
+// CLI silently pick API-key billing when the user wanted their subscription.
+describe('resumeCredentialEnv', () => {
+  it('prefers a subscription OAuth token (boardroom-scoped var wins)', () => {
+    expect(resumeCredentialEnv({ BOARDROOM_RESUME_OAUTH_TOKEN: 'tok-b', CLAUDE_CODE_OAUTH_TOKEN: 'tok-c', ANTHROPIC_API_KEY: 'k' }))
+      .toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'tok-b' })
+  })
+
+  it('falls back to an inherited CLAUDE_CODE_OAUTH_TOKEN', () => {
+    expect(resumeCredentialEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'tok-c', ANTHROPIC_API_KEY: 'k' }))
+      .toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'tok-c' })
+  })
+
+  it('uses ANTHROPIC_API_KEY only when no OAuth token is configured', () => {
+    expect(resumeCredentialEnv({ ANTHROPIC_API_KEY: 'k' })).toEqual({ ANTHROPIC_API_KEY: 'k' })
+  })
+
+  it('is empty when nothing is configured (wake still runs, just unauthenticated → 401, now loud)', () => {
+    expect(resumeCredentialEnv({})).toEqual({})
+  })
+
+  it('ignores blank/whitespace credential values', () => {
+    expect(resumeCredentialEnv({ CLAUDE_CODE_OAUTH_TOKEN: '   ', ANTHROPIC_API_KEY: 'k' })).toEqual({ ANTHROPIC_API_KEY: 'k' })
+  })
+})
+
 // Real child processes: the production spawn implementation must settle success
 // strictly on exit 0 and surface the child's stderr on failure — the invisible-401
 // regression was a wake that spawned fine and died on its first API call.
 describe('makeDefaultSpawn', () => {
+  it('injects the resume credential into the child environment', async () => {
+    const outcome = await new Promise<string>(resolve => {
+      makeDefaultSpawn(join(dir, 'wakelogs'), { CLAUDE_CODE_OAUTH_TOKEN: 'injected' })(
+        '/bin/sh', ['-c', 'test "$CLAUDE_CODE_OAUTH_TOKEN" = injected'], dir,
+        { label: 'card-env', onSuccess: () => resolve('success'), onFailure: d => resolve(`failure: ${d}`) },
+      )
+    })
+    expect(outcome).toBe('success')
+  })
+
+  it('when injecting the OAuth token, strips an ambient ANTHROPIC_API_KEY that would otherwise outrank it in claude -p', async () => {
+    const prev = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = 'stray-key' // as if the daemon inherited one
+    try {
+      const outcome = await new Promise<string>(resolve => {
+        makeDefaultSpawn(join(dir, 'wakelogs'), { CLAUDE_CODE_OAUTH_TOKEN: 'injected' })(
+          '/bin/sh', ['-c', 'test "$CLAUDE_CODE_OAUTH_TOKEN" = injected && test -z "$ANTHROPIC_API_KEY"'], dir,
+          { label: 'card-strip', onSuccess: () => resolve('token-wins'), onFailure: d => resolve(`shadowed: ${d}`) },
+        )
+      })
+      expect(outcome).toBe('token-wins')
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = prev
+    }
+  })
+
   it('settles onSuccess only when the child exits 0, and removes the wake log', async () => {
     const logDir = join(dir, 'wakelogs')
     const outcome = await new Promise<string>(resolve => {

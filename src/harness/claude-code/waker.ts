@@ -26,6 +26,24 @@ interface WakerOpts {
   wakeLogDir?: string
 }
 
+// The credential the spawned `claude -p --resume` authenticates with. Under
+// launchd the daemon inherits a minimal/stale ambient credential, so `claude`
+// self-refresh fails with 401 (the observed waker outage). We inject a durable
+// one into the child's env instead. Precedence: a subscription OAuth token from
+// `claude setup-token` (1-year, free on Pro/Max) — via the boardroom-scoped var
+// or an inherited CLAUDE_CODE_OAUTH_TOKEN — beats a pay-per-use ANTHROPIC_API_KEY.
+// Never emit both: in `-p` mode the CLI always prefers the API key when present,
+// which would silently bill per token instead of using the subscription. Empty
+// when nothing is configured — the wake still runs (and now fails LOUDLY, without
+// consuming the decision) rather than being suppressed. Pure for unit testing.
+export function resumeCredentialEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const oauth = env.BOARDROOM_RESUME_OAUTH_TOKEN?.trim() || env.CLAUDE_CODE_OAUTH_TOKEN?.trim()
+  if (oauth) return { CLAUDE_CODE_OAUTH_TOKEN: oauth }
+  const apiKey = env.ANTHROPIC_API_KEY?.trim()
+  if (apiKey) return { ANTHROPIC_API_KEY: apiKey }
+  return {}
+}
+
 // Resumes the agent's Claude Code session when a card it left behind (parked, or
 // otherwise orphaned) gets decided. The daemon is an MCP server and cannot push
 // the agent, so this spawns an EXTERNAL `claude --resume` from the session's
@@ -42,7 +60,7 @@ export class Waker {
   private onWakeFailed?: (card: Card, detail: string) => void
 
   constructor(private store: Store, opts: WakerOpts = {}) {
-    this.spawnFn = opts.spawn ?? makeDefaultSpawn(opts.wakeLogDir ?? join(homedir(), 'Library', 'Logs', 'boardroom-waker'))
+    this.spawnFn = opts.spawn ?? makeDefaultSpawn(opts.wakeLogDir ?? join(homedir(), 'Library', 'Logs', 'boardroom-waker'), resumeCredentialEnv())
     this.claudeBin = opts.claudeBin ?? process.env.BOARDROOM_CLAUDE_BIN ?? '/opt/homebrew/bin/claude'
     this.permissionMode = opts.permissionMode ?? process.env.BOARDROOM_RESUME_PERMISSION ?? 'acceptEdits'
     this.onWakeFailed = opts.onWakeFailed
@@ -151,8 +169,9 @@ const WAKE_LOG_RETENTION_MS = 30 * 24 * 60 * 60_000
 // is removed on a clean exit and kept on failure — except when the daemon dies
 // before the exit event, which strands the log; the boot-time sweep below bounds
 // that accumulation.
-export function makeDefaultSpawn(logDir: string): SpawnFn {
+export function makeDefaultSpawn(logDir: string, extraEnv: Record<string, string> = {}): SpawnFn {
   sweepStaleWakeLogs(logDir)
+  const childEnv = buildChildEnv(extraEnv)
   return (bin, args, cwd, hooks) => {
     let logPath: string | undefined
     let fd: number | undefined
@@ -177,7 +196,7 @@ export function makeDefaultSpawn(logDir: string): SpawnFn {
     }
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(bin, args, { cwd, stdio: ['ignore', 'ignore', fd ?? 'ignore'], detached: true })
+      child = spawn(bin, args, { cwd, stdio: ['ignore', 'ignore', fd ?? 'ignore'], detached: true, ...(childEnv ? { env: childEnv } : {}) })
     } catch (err) {
       // A synchronous spawn throw would otherwise propagate through the queue's
       // 'card' emit into the decide HTTP handler — 500ing a decision that was
@@ -209,6 +228,22 @@ export function makeDefaultSpawn(logDir: string): SpawnFn {
     })
     child.unref()
   }
+}
+
+// Merge the injected resume credential onto the inherited env — but when we inject
+// a subscription OAuth token, strip any ambient ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+// first: in `claude -p` those OUTRANK CLAUDE_CODE_OAUTH_TOKEN, so a stray key in the
+// daemon's environment would silently shadow the token we chose and bill per-token
+// against the subscription the user picked. Returns undefined (inherit env untouched)
+// when there is nothing to inject.
+function buildChildEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv | undefined {
+  if (!Object.keys(extraEnv).length) return undefined
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv }
+  if ('CLAUDE_CODE_OAUTH_TOKEN' in extraEnv) {
+    delete env.ANTHROPIC_API_KEY
+    delete env.ANTHROPIC_AUTH_TOKEN
+  }
+  return env
 }
 
 function stderrTail(logPath: string | undefined): string {
