@@ -20,6 +20,11 @@ export function loadConfig(configDir?: string): Config {
   let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>> = {}
   const p = join(dir, 'config.json')
   if (existsSync(p)) file = JSON.parse(readFileSync(p, 'utf8'))
+  // BOARDROOM_PORT is the port convention seed.ts and every hook already honor;
+  // the daemon reads it too so a dev daemon can run on its own port (paired with
+  // BOARDROOM_CONFIG_DIR for its own DB) beside the production one on 4040. A
+  // non-numeric value is ignored rather than crashing the boot on a typo.
+  const envPort = Number(process.env.BOARDROOM_PORT)
   return {
     port: 4040,
     remindEveryMinutes: 10,
@@ -27,6 +32,7 @@ export function loadConfig(configDir?: string): Config {
     openOnPending: false,
     reattachWindowMs: REATTACH_WINDOW_MS, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
+    ...(Number.isInteger(envPort) && envPort > 0 ? { port: envPort } : {}),
     dbPath: join(dir, 'boardroom.sqlite'),
     configDir: dir,
   }

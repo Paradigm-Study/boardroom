@@ -55,4 +55,39 @@ describe('loadConfig', () => {
     loadConfig(cfgDir)
     expect(statSync(cfgDir).mode & 0o777).toBe(0o700)
   })
+
+  it('honors BOARDROOM_PORT — the convention seed.ts and every hook already use — over the default', () => {
+    const prev = process.env.BOARDROOM_PORT
+    process.env.BOARDROOM_PORT = '4041'
+    try {
+      expect(loadConfig(join(dir, 'cfgdir')).port).toBe(4041)
+    } finally {
+      if (prev === undefined) delete process.env.BOARDROOM_PORT
+      else process.env.BOARDROOM_PORT = prev
+    }
+  })
+
+  it('BOARDROOM_PORT wins over a config.json port (env is the explicit dev-daemon override)', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ port: 9999 }))
+    const prev = process.env.BOARDROOM_PORT
+    process.env.BOARDROOM_PORT = '4041'
+    try {
+      expect(loadConfig(dir).port).toBe(4041)
+    } finally {
+      if (prev === undefined) delete process.env.BOARDROOM_PORT
+      else process.env.BOARDROOM_PORT = prev
+    }
+  })
+
+  it('ignores a non-numeric BOARDROOM_PORT, falling back to file/default', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ port: 9999 }))
+    const prev = process.env.BOARDROOM_PORT
+    process.env.BOARDROOM_PORT = 'not-a-port'
+    try {
+      expect(loadConfig(dir).port).toBe(9999)
+    } finally {
+      if (prev === undefined) delete process.env.BOARDROOM_PORT
+      else process.env.BOARDROOM_PORT = prev
+    }
+  })
 })
