@@ -3,7 +3,7 @@ import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { Router, type Request, type Response } from 'express'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
-import type { Card, CardResponse } from '../shared/card.js'
+import type { Card, CardResponse, ParkedMarker } from '../shared/card.js'
 import { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 import { compileClarify, compilePlan, compileReport, compileResults, compileSpec, type CompileMeta } from './compile.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
@@ -31,11 +31,6 @@ const STREAM_HEARTBEAT_MS = 120_000
 // guess and proceed, which would defeat the human-in-the-loop guarantee.
 const PARKED_TEXT =
   '⏸ Boardroom: no decision yet — your turn is over. STOP here. Do NOT guess, infer, or proceed on an assumption about what the human would choose. The human will decide on the dashboard; the decision is not lost. To receive it, re-issue this EXACT same call (identical sessionKey, project and headline) on a later turn — reattachment is automatic and re-runs no work.'
-
-interface ParkedMarker {
-  parked: true
-  cardId: string
-}
 
 // Positive-duration env override, falling back to the default for a missing,
 // non-numeric, or non-positive value. (`Number(x) || default` reads as a footgun

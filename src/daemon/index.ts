@@ -23,9 +23,14 @@ guardListen(server, config.port)
 // with the process) — the agent recovers the human's REAL decision by re-issuing
 // the identical call (findReattachable revives the orphaned card). Never inferred.
 // The capturer is stopped first in the drain so its watcher can't write post-close.
-// quiesce orphans still-pending gates as 'boot' BEFORE their sockets are destroyed,
-// so a redeploy-during-a-gate surfaces as "reconnecting" — not a buried 'disconnect'.
-installSignalHandlers({ server, store, capturer, quiesce: () => store.orphanAllPending() })
+// quiesce first PARKS every live gate (parkAllLive resolves its hanging call with a
+// STOP sentinel — a clean sever the agent understands, not a raw dropped socket),
+// then orphans any remaining still-pending gate as 'boot'. Both leave the card
+// "reconnecting" (never 'disconnect'), so a redeploy-during-a-gate is reattachable.
+installSignalHandlers({
+  server, store, capturer,
+  quiesce: () => { queue.parkAllLive(); store.orphanAllPending() },
+})
 
 startNotifications(queue, config)
 startAutoOpen(queue, config)

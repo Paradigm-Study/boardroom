@@ -296,6 +296,51 @@ describe('Queue.park', () => {
   })
 })
 
+describe('Queue.parkAllLive', () => {
+  it('parks EVERY live gate on shutdown: resolves each waiter with a parked sentinel and orphans it as boot', () => {
+    const a = { resolve: vi.fn(), reject: vi.fn() }
+    const b = { resolve: vi.fn(), reject: vi.fn() }
+    queue.submit(card('c1'), a)
+    queue.submit(card('c2'), b)
+
+    expect(queue.parkAllLive()).toBe(2)
+
+    for (const [id, w] of [['c1', a], ['c2', b]] as const) {
+      expect(store.get(id)?.status).toBe('orphaned')
+      // 'boot' (not 'disconnect') so the tray/dashboard resurface it as reconnecting.
+      expect(store.get(id)?.orphanedReason).toBe('boot')
+      expect(w.resolve).toHaveBeenCalledWith({ parked: true, cardId: id })
+      expect(w.reject).not.toHaveBeenCalled() // graceful: a STOP sentinel, never an error
+    }
+  })
+
+  it('leaves the card reattachable: a re-issue after a shutdown-park revives it and claims the later decision', () => {
+    const first = queue.submit(card('c1', 'shared-fp'), { resolve: vi.fn(), reject: vi.fn() })
+    expect(queue.parkAllLive()).toBe(1)
+    // Human decides the now-orphaned card after the restart-park.
+    queue.decide(first.cardId, { d1: { chosen: ['a'] } })
+    const resolve = vi.fn()
+    const retry = queue.submit(card('c2', 'shared-fp'), { resolve, reject: vi.fn() })
+    expect(retry.gen).toBe(-1)
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ cardId: 'c1' }))
+    expect(store.get('c2')).toBeUndefined() // no duplicate
+  })
+
+  it('is a no-op when there are no live waiters (returns 0, resolves nothing)', () => {
+    expect(queue.parkAllLive()).toBe(0)
+  })
+
+  it('does not re-park a card whose waiter is live but already decided (no double-resolve)', () => {
+    const w = { resolve: vi.fn(), reject: vi.fn() }
+    queue.submit(card('c1'), w)
+    queue.decide('c1', { d1: { chosen: ['a'] } }) // resolves + detaches the waiter
+    w.resolve.mockClear()
+    expect(queue.parkAllLive()).toBe(0)
+    expect(w.resolve).not.toHaveBeenCalled()
+    expect(store.get('c1')?.status).toBe('decided')
+  })
+})
+
 describe('Queue.submit — reattach & claim', () => {
   it('reattaches a retry to an orphaned card instead of duplicating', () => {
     const first = queue.submit(card('c1', 'shared-fp'), noop)

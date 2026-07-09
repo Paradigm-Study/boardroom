@@ -172,6 +172,15 @@ export interface CardResponse {
   summary: string
 }
 
+// Resolved (not rejected) into a gate's hanging promise when the card is parked
+// instead of decided — either an opt-in block-window elapsed, or the daemon is
+// shutting down (parkAllLive). The mcp handler maps it to the PARKED hard-STOP
+// text. Shared so the Queue can resolve it without a circular import on mcp.ts.
+export interface ParkedMarker {
+  parked: true
+  cardId: string
+}
+
 // The decide HTTP endpoint's response, shared so the daemon (Queue.decide) and the
 // web client (decideCard) agree on one shape the type checker enforces on both sides.
 export interface DecideResponse {

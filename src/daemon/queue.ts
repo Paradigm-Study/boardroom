@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, SPEC_VERDICT_ID, SPEC_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer } from '../shared/card.js'
+import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RESULTS_VERDICTS, SPEC_VERDICT_ID, SPEC_VERDICTS, type Card, type CardResponse, type DecideResponse, type DecisionAnswer, type ParkedMarker } from '../shared/card.js'
 import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import type { Store } from './store.js'
@@ -11,7 +11,11 @@ export class ConflictError extends Error {}
 export class ValidationError extends Error {}
 
 export interface Waiter {
-  resolve(response: CardResponse): void
+  // Accepts a ParkedMarker too: parkAllLive() resolves a hanging gate directly with
+  // a STOP sentinel; park() instead only orphans the card and returns a boolean,
+  // leaving the hanging handler to resolve its own promise. The mcp handler
+  // discriminates CardResponse vs ParkedMarker on the resolved value.
+  resolve(response: CardResponse | ParkedMarker): void
   reject(error: Error): void
 }
 
@@ -248,6 +252,32 @@ export class Queue extends EventEmitter {
     this.store.update(updated)
     this.emit('card', updated)
     return true
+  }
+
+  // Graceful shutdown: park EVERY live gate at once. For each still-pending card
+  // with a live in-RAM waiter, orphan it as 'boot' (so it resurfaces as
+  // "reconnecting", exactly like store.orphanAllPending — never 'disconnect',
+  // which the needs-you surfaces exclude) and RESOLVE its waiter with a parked
+  // STOP sentinel. That turns a redeploy-during-a-gate from an opaque transport
+  // error (raw dropped socket) into the well-understood "parked — re-issue to
+  // claim" result the agent already knows how to handle. The daemon must then
+  // give these resolves a brief window to flush over their still-open sockets
+  // before closeAllConnections destroys them (see shutdown.ts drainGraceMs).
+  // Returns the number of gates parked. Cards whose waiter already died (pending
+  // in the DB, no live promise) are left to store.orphanAllPending.
+  parkAllLive(): number {
+    let parked = 0
+    for (const [id, entry] of this.waiters) {
+      const card = this.store.get(id)
+      if (!card || card.status !== 'pending') continue
+      this.waiters.delete(id)
+      const updated: Card = { ...card, status: 'orphaned', orphanedAt: new Date().toISOString(), orphanedReason: 'boot' }
+      this.store.update(updated)
+      entry.waiter.resolve({ parked: true, cardId: id })
+      this.emit('card', updated)
+      parked++
+    }
+    return parked
   }
 
   pendingCount(): number {
