@@ -98,19 +98,46 @@ Config: `~/.config/boardroom/config.json` — `port` (4040),
 binds 127.0.0.1; that is hardwired (it is the security predicate for
 running without auth).
 
+Optional mesh relay (mesh-v0, default-off): add `"mesh": { "url", "token",
+"person" }` to `config.json` (or set `BOARDROOM_MESH_URL` /
+`BOARDROOM_MESH_TOKEN` / `BOARDROOM_MESH_PERSON` — env overrides the file
+field-by-field). When ALL THREE resolve, the daemon forwards privacy-safe card
+lifecycle records (`raised`/`decided`, no card bodies) to the relay's
+`/outbox/<person>`; a partial config is treated as "not configured" and
+nothing subscribes or leaves the machine.
+
 ## Enforcement hooks (global, optional but recommended)
 
 Instructions alone are advisory — the model can lapse into its built-in
-question UI. Two `PreToolUse` hooks in `~/.claude/settings.json` redirect
+question UI. `PreToolUse` hooks in `~/.claude/settings.json` redirect
 those lapses to the dashboard (see `hooks/`):
 
 - `redirect-ask.sh` — denies `AskUserQuestion` once per session with a
-  pointer to `clarify`, when the daemon is reachable.
+  pointer to `clarify`, when the daemon is reachable. Matcher:
+  `AskUserQuestion`.
 - `check-plan.sh` — denies `ExitPlanMode` once per session unless a plan
-  card for this project already exists on the dashboard.
+  card for this project already exists on the dashboard. Matcher:
+  `ExitPlanMode`.
+- `mesh-gate.sh` (mesh-v0, default-off) — on `Edit|Write|MultiEdit` (register
+  with that matcher), asks the mesh relay whether a teammate has an active
+  edit or a locked spec on the same file, and surfaces an advisory `ask` once
+  per (session, repo) on a conflict — never `deny`. Armed only when
+  `MESH_URL` + `MESH_PERSON` (and usually `MESH_TOKEN`) are present in the
+  hook's environment; fails open on every relay/git/parse failure.
 
-Both are deny-once: a second attempt always passes, so sessions are nudged,
-never caged, and a downed daemon disables them automatically.
+All are fire-once per session: a second attempt always passes, so sessions
+are nudged, never caged, and a downed daemon (or relay) disables them
+automatically.
+
+`session-start.sh` additionally appends a `## Team brief (mesh)` digest of
+teammates' active intents and locked specs to the injected context when
+`MESH_URL` + `MESH_PERSON` are set; without them (or with the relay down) its
+output is byte-identical to the pre-mesh hook.
+
+Note the deliberate env split: the **daemon** reads `BOARDROOM_MESH_*` (or
+`config.json` `"mesh"`), while the **hooks** read `MESH_URL` / `MESH_PERSON` /
+`MESH_TOKEN` from the environment Claude Code gives them — hooks never read
+the daemon's config file. Set both if you want forwarding and the gate/brief.
 
 ## Menu-bar app (macOS)
 

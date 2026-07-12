@@ -56,3 +56,90 @@ describe('loadConfig', () => {
     expect(statSync(cfgDir).mode & 0o777).toBe(0o700)
   })
 })
+
+describe('loadConfig mesh resolution (mesh-v0, default-off)', () => {
+  const MESH_ENV = ['BOARDROOM_MESH_URL', 'BOARDROOM_MESH_TOKEN', 'BOARDROOM_MESH_PERSON'] as const
+  let savedEnv: Record<string, string | undefined>
+
+  beforeEach(() => {
+    savedEnv = {}
+    for (const key of MESH_ENV) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of MESH_ENV) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key]
+    }
+  })
+
+  it('resolves no mesh at all by default (nothing configured → nothing leaves the machine)', () => {
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toBeUndefined()
+  })
+
+  it('resolves mesh from a complete file block', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ mesh: { url: 'http://127.0.0.1:4600', token: 'tok-file', person: 'alice' } }),
+    )
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toEqual({ url: 'http://127.0.0.1:4600', token: 'tok-file', person: 'alice' })
+  })
+
+  it('resolves mesh from env alone (no file)', () => {
+    process.env.BOARDROOM_MESH_URL = 'http://127.0.0.1:4601'
+    process.env.BOARDROOM_MESH_TOKEN = 'tok-env'
+    process.env.BOARDROOM_MESH_PERSON = 'bob'
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toEqual({ url: 'http://127.0.0.1:4601', token: 'tok-env', person: 'bob' })
+  })
+
+  it('lets env override the file field-by-field', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ mesh: { url: 'http://127.0.0.1:4600', token: 'tok-file', person: 'alice' } }),
+    )
+    process.env.BOARDROOM_MESH_TOKEN = 'tok-env'
+    const cfg = loadConfig(dir)
+    // Only the env-set field changes; the other two still come from the file.
+    expect(cfg.mesh).toEqual({ url: 'http://127.0.0.1:4600', token: 'tok-env', person: 'alice' })
+  })
+
+  it('treats a partial mesh (file) as not configured — never a half-armed forwarder', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ mesh: { url: 'http://127.0.0.1:4600', token: 'tok-file' } }), // person missing
+    )
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toBeUndefined()
+  })
+
+  it('treats a partial mesh (env) as not configured', () => {
+    process.env.BOARDROOM_MESH_URL = 'http://127.0.0.1:4601'
+    process.env.BOARDROOM_MESH_PERSON = 'bob' // token missing
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toBeUndefined()
+  })
+
+  it('a partial file block cannot leak through the spread (mesh is computed after ...file)', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ port: 4099, mesh: { url: 'http://127.0.0.1:4600' } }),
+    )
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toBeUndefined() // NOT the partial object from the file
+    expect(cfg.port).toBe(4099) // ordinary file overrides still work
+  })
+
+  it('empty-string fields count as unset (env "" does not arm the forwarder)', () => {
+    process.env.BOARDROOM_MESH_URL = ''
+    process.env.BOARDROOM_MESH_TOKEN = 'tok-env'
+    process.env.BOARDROOM_MESH_PERSON = 'bob'
+    const cfg = loadConfig(dir)
+    expect(cfg.mesh).toBeUndefined()
+  })
+})
