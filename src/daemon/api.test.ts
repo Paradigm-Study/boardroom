@@ -1,4 +1,5 @@
 import express from 'express'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +12,7 @@ import { Block } from '../shared/blocks.js'
 import type { Entry } from '../shared/entry.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
+import type { MeshForwarder, MeshPublishEvent } from './meshForward.js'
 
 function card(id: string): Card {
   return {
@@ -87,6 +89,21 @@ describe('GET /api/widgets', () => {
     expect(Array.isArray(res.body)).toBe(true)
     expect(res.body).toHaveLength(Block.options.length)
     expect(res.body.every((e: { type?: string; name?: string; whenToUse?: string }) => !!e.type && !!e.name && !!e.whenToUse)).toBe(true)
+  })
+})
+
+describe('Mesh publisher status', () => {
+  it('reports a stable disabled state when Mesh is not configured', async () => {
+    const status = await request(app).get('/api/mesh/status').expect(200)
+    expect(status.body).toEqual({
+      configured: false,
+      teamId: 'legacy-local',
+      queued: 0,
+      delivered: 0,
+      terminal: 0,
+    })
+    const publishes = await request(app).get('/api/mesh/publishes').expect(200)
+    expect(publishes.body).toEqual([])
   })
 })
 
@@ -502,6 +519,39 @@ describe('GET /events', () => {
     const entryFrame = frames.find(f => f.event === 'entry')
     expect(entryFrame).toBeDefined()
     expect(entryFrame!.data).toEqual(report)
+  })
+
+  it('emits publisher receipt changes as `event: mesh` without changing card/tray frames', async () => {
+    const emitter = new EventEmitter()
+    const publisher = {
+      mesh: { url: 'http://127.0.0.1:4600', token: 'secret', person: 'alice' },
+      stop: () => {},
+      flush: () => Promise.resolve(),
+      close: () => {},
+      status: () => ({ configured: true as const, teamId: 'legacy-local', queued: 1, delivered: 0, terminal: 0 }),
+      listPublishes: () => [],
+      on: (event: 'status', listener: (status: MeshPublishEvent) => void) => { emitter.on(event, listener) },
+      off: (event: 'status', listener: (status: MeshPublishEvent) => void) => { emitter.off(event, listener) },
+    } satisfies MeshForwarder
+    app = express()
+    app.use(express.json({ limit: '4mb' }))
+    app.use(buildApiRouter(queue, store, {
+      attachmentDir: join(dir, 'attachments'),
+      configDir: dir,
+      meshForwarder: publisher,
+    }))
+    const event: MeshPublishEvent = {
+      type: 'delivered',
+      idempotencyKey: 'boardroom:c1:raised',
+      cardId: 'c1',
+      event: 'raised',
+      seq: 7,
+    }
+    const frames = await collectFrames(2, n => {
+      if (n === 1) emitter.emit('status', event)
+    })
+    expect(frames.find(frame => frame.event === 'mesh')?.data).toEqual(event)
+    expect(frames.filter(frame => frame.event === 'tray')).toHaveLength(1)
   })
 
   // HARD constraint (spec criterion tray-separation): the entry listener must

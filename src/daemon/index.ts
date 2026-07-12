@@ -2,13 +2,12 @@ import { createDaemon } from './app.js'
 import { loadConfig } from './config.js'
 import { guardListen } from './listen.js'
 import { startMenubar } from './menubar.js'
-import { createMeshForwarder } from './meshForward.js'
 import { startAutoOpen, startNotifications } from './notify.js'
 import { installSignalHandlers } from './shutdown.js'
 
 process.umask(0o077)
 const config = loadConfig()
-const { app, queue, store, capturer, orphanedOnBoot } = createDaemon(config)
+const { app, queue, store, capturer, orphanedOnBoot, meshForwarder } = createDaemon(config)
 
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`boardroom daemon on http://127.0.0.1:${config.port}`)
@@ -22,7 +21,6 @@ guardListen(server, config.port)
 // mesh config, createMeshForwarder returns undefined and nothing subscribes —
 // the daemon behaves byte-identically to before. Created BEFORE the signal
 // handlers so the drain can stop it and flush its in-flight relay POSTs.
-const meshForwarder = createMeshForwarder(queue, config)
 if (meshForwarder) console.log(`  mesh forwarding live for "${meshForwarder.mesh.person}" → ${meshForwarder.mesh.url}`)
 
 // Bind the daemon to clean process signals: a redeploy SIGTERMs us (launchctl

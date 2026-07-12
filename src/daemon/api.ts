@@ -11,6 +11,7 @@ import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import { needsHuman, REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { deriveSessionStatus } from '../shared/sessionStatus.js'
 import { buildTrayVM } from './trayView.js'
+import type { MeshForwarder, MeshPublishEvent } from './meshForward.js'
 
 interface ApiOptions {
   attachmentDir: string
@@ -19,6 +20,7 @@ interface ApiOptions {
   // "reconnecting" cards against the SAME window the queue reattaches against.
   // Optional → tests and legacy callers fall back to the 24h default.
   reattachWindowMs?: number
+  meshForwarder?: MeshForwarder
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
@@ -187,6 +189,25 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
 
   router.get('/api/device', (_req, res) => {
     try { res.json(loadMachineIdentity(options.configDir)) } catch (err) { sendError(res, err) }
+  })
+
+  // Local, content-minimized publish receipts. These expose queue health and
+  // delivery identity without exposing the bearer token or any non-mesh card
+  // content. Absent mesh config is an ordinary disabled state, not an error.
+  router.get('/api/mesh/status', (_req, res) => {
+    res.json(options.meshForwarder?.status() ?? {
+      configured: false,
+      teamId: 'legacy-local',
+      queued: 0,
+      delivered: 0,
+      terminal: 0,
+    })
+  })
+
+  router.get('/api/mesh/publishes', (req, res) => {
+    const raw = Number(req.query.limit ?? 100)
+    const limit = Number.isFinite(raw) ? Math.max(1, Math.min(500, raw)) : 100
+    res.json(options.meshForwarder?.listPublishes(limit) ?? [])
   })
 
   router.put('/api/device', (req, res) => {
@@ -379,6 +400,10 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       res.write(`event: entry\ndata: ${JSON.stringify(entry)}\n\n`)
     }
     queue.on('entry', onEntry)
+    const onMesh = (event: MeshPublishEvent): void => {
+      res.write(`event: mesh\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    options.meshForwarder?.on('status', onMesh)
     sendTray()
     const heartbeat = setInterval(() => {
       res.write(':hb\n\n')
@@ -388,6 +413,7 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       clearInterval(heartbeat)
       queue.off('card', onCard)
       queue.off('entry', onEntry)
+      options.meshForwarder?.off('status', onMesh)
     })
   })
 

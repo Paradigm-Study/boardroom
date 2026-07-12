@@ -99,12 +99,37 @@ binds 127.0.0.1; that is hardwired (it is the security predicate for
 running without auth).
 
 Optional mesh relay (mesh-v0, default-off): add `"mesh": { "url", "token",
-"person" }` to `config.json` (or set `BOARDROOM_MESH_URL` /
-`BOARDROOM_MESH_TOKEN` / `BOARDROOM_MESH_PERSON` — env overrides the file
-field-by-field). When ALL THREE resolve, the daemon forwards privacy-safe card
-lifecycle records (`raised`/`decided`, no card bodies) to the relay's
-`/outbox/<person>`; a partial config is treated as "not configured" and
-nothing subscribes or leaves the machine.
+"person", "teamId"? }` to `config.json` (or set `BOARDROOM_MESH_URL` /
+`BOARDROOM_MESH_TOKEN` / `BOARDROOM_MESH_PERSON` / optional
+`BOARDROOM_MESH_TEAM_ID` — env overrides the file field-by-field). When the
+required first three resolve, the daemon forwards privacy-safe card lifecycle
+records (`raised`/`decided`, no card bodies) to `/outbox/<person>`; a partial
+config is treated as "not configured" and nothing leaves the machine.
+
+Publishes are committed to `mesh-outbox.sqlite` before network I/O. Restarts
+reconcile card transitions, retries retain a stable `Idempotency-Key`, and a
+terminal 401/403 is surfaced rather than retried forever. Local diagnostics are
+available at `/api/mesh/status` and `/api/mesh/publishes`; receipt changes also
+appear as `event: mesh` on the existing `/events` stream.
+
+For a hosted rotating credential, the mesh block additionally carries
+`"deviceId"` and `"expiresAt"` (env: `BOARDROOM_MESH_DEVICE_ID` and
+`BOARDROOM_MESH_EXPIRES_AT`). Boardroom rotates it before expiry and persists
+the successor—not the config file—to `mesh-credential.json` at mode 0600.
+Expired or revoked credentials become a terminal, user-visible publisher state
+instead of an infinite retry loop.
+
+### Packaged local API authentication
+
+A packaged supervisor must set a random install-scoped bearer in
+`BOARDROOM_LOCAL_TOKEN`, or write it to a 0600 file and set
+`BOARDROOM_LOCAL_TOKEN_FILE` (the default discovered file is
+`<configDir>/local-token`). When configured, the bearer protects every daemon
+surface: MCP, cards/admin writes, mesh status/publishes, attachments, static
+content, and `/events` SSE. Clients send `Authorization: Bearer <token>`; the
+daemon compares it in constant time and never logs or reflects it. Leaving the
+token unset preserves legacy loopback-only development behavior, but is not a
+valid packaged-supervisor configuration.
 
 ## Enforcement hooks (global, optional but recommended)
 

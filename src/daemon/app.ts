@@ -11,6 +11,8 @@ import { Queue } from './queue.js'
 import { SessionCapturer } from '../harness/claude-code/sessionCapturer.js'
 import { Store } from './store.js'
 import { Waker } from '../harness/claude-code/waker.js'
+import { createMeshForwarder, type MeshForwarder } from './meshForward.js'
+import { localBearerAuth } from './localAuth.js'
 
 export interface Daemon {
   app: Express
@@ -18,12 +20,21 @@ export interface Daemon {
   store: Store
   capturer: SessionCapturer
   orphanedOnBoot: number
+  meshForwarder?: MeshForwarder
 }
 
 export function createDaemon(config: Config): Daemon {
   const store = new Store(config.dbPath)
   const orphanedOnBoot = store.orphanAllPending()
   const queue = new Queue(store, config.reattachWindowMs)
+  // Construct the durable publisher before exposing the API so status and SSE
+  // subscribers observe its boot reconciliation from a single shared instance.
+  let meshForwarder: MeshForwarder | undefined
+  try {
+    meshForwarder = createMeshForwarder(queue, config, store)
+  } catch (error) {
+    console.warn('[mesh] durable publisher failed to initialize; Boardroom remains local-only:', error)
+  }
 
   const machine = loadMachineIdentity(config.configDir)
   const capturer = new SessionCapturer(store, machine.machineId)
@@ -38,12 +49,14 @@ export function createDaemon(config: Config): Daemon {
   queue.on('card', card => waker.onCard(card))
 
   const app = express()
+  app.use(localBearerAuth(config.localToken))
   app.use(express.json({ limit: '4mb' }))
   app.use(buildMcpRouter(queue))
   app.use(buildApiRouter(queue, store, {
     attachmentDir: join(config.configDir, 'attachments'),
     configDir: config.configDir,
     reattachWindowMs: config.reattachWindowMs,
+    meshForwarder,
   }))
 
   const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))
@@ -53,5 +66,5 @@ export function createDaemon(config: Config): Daemon {
   // all setup above has succeeded, so a throw mid-setup can't leak a watcher/timer
   // with no returned Daemon handle to stop() them.
   capturer.start()
-  return { app, queue, store, capturer, orphanedOnBoot }
+  return { app, queue, store, capturer, orphanedOnBoot, meshForwarder }
 }

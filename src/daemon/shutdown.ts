@@ -23,7 +23,7 @@ export interface ShutdownOpts {
   // mid-shutdown, and flush() is awaited after the server drains so an in-flight
   // relay POST / spool write completes before the process exits. A wedged flush
   // cannot pin the daemon — the force-exit watchdog still fires.
-  meshForwarder?: { stop(): void; flush(): Promise<void> }
+  meshForwarder?: { stop(): void; flush(): Promise<void>; close?(): void }
   // Injected so the real process is never touched in unit tests. Defaults wire to
   // the live process in production (index.ts).
   proc?: NodeJS.EventEmitter
@@ -78,6 +78,7 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
       if (timer !== undefined) clearTimeout(timer)
       // try/finally so a future cleanup throw can never skip the exit — a daemon
       // that fails to exit on SIGTERM would block the redeploy it was asked to make.
+      try { opts.meshForwarder?.close?.() } catch (err) { log('[shutdown] mesh forwarder close failed:', err) }
       try { opts.store.close() } catch (err) { log('[shutdown] store close failed:', err) } finally { exit(code) }
     }
 

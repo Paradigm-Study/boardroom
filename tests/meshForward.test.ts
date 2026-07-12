@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -26,6 +26,8 @@ interface CapturedRequest {
   method: string | undefined
   url: string | undefined
   auth: string | undefined
+  idempotencyKey: string | undefined
+  teamId: string | undefined
   raw: string
   body: Record<string, unknown>
 }
@@ -42,6 +44,8 @@ function relay(requests: CapturedRequest[]): RelayServer {
         method: req.method,
         url: req.url,
         auth: req.headers.authorization,
+        idempotencyKey: req.headers['idempotency-key'] as string | undefined,
+        teamId: req.headers['x-mesh-team-id'] as string | undefined,
         raw,
         body: JSON.parse(raw) as Record<string, unknown>,
       })
@@ -216,6 +220,7 @@ describe('createMeshForwarder', () => {
   afterEach(async () => {
     forwarder?.stop()
     await forwarder?.flush()
+    forwarder?.close()
     for (const activeServer of servers) await close(activeServer)
     store.close()
     rmSync(dir, { recursive: true, force: true })
@@ -223,7 +228,7 @@ describe('createMeshForwarder', () => {
   })
 
   function arm(override = config): MeshForwarder {
-    const armed = createMeshForwarder(queue, override)
+    const armed = createMeshForwarder(queue, override, store)
     if (!armed) throw new Error('expected mesh forwarder to be configured')
     forwarder = armed
     return armed
@@ -241,6 +246,7 @@ describe('createMeshForwarder', () => {
     expect(request.method).toBe('POST')
     expect(request.url).toBe('/outbox/alice')
     expect(request.auth).toBe('Bearer tok-a')
+    expect(request.idempotencyKey).toBe(`boardroom:${card.id}:raised`)
     expect(request.body).toEqual({
       v: 0,
       kind: 'card_event',
@@ -364,11 +370,15 @@ describe('createMeshForwarder', () => {
     queue.submit(first, noopWaiter)
     await armed.flush()
 
-    const spoolPath = join(dir, 'mesh-spool.ndjson')
-    expect(existsSync(spoolPath)).toBe(true)
-    const lines = readFileSync(spoolPath, 'utf8').trim().split('\n')
-    expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0])).toMatchObject({ event: 'raised', cardId: first.id })
+    expect(armed.status()).toMatchObject({ queued: 1, delivered: 0, terminal: 0 })
+    expect(armed.listPublishes()).toEqual([
+      expect.objectContaining({
+        cardId: first.id,
+        event: 'raised',
+        state: 'queued',
+        idempotencyKey: `boardroom:${first.id}:raised`,
+      }),
+    ])
     expect(warn).toHaveBeenCalledTimes(1)
 
     const replacement = relay(requests)
@@ -379,7 +389,45 @@ describe('createMeshForwarder', () => {
     await armed.flush()
 
     expect(requests.map(request => request.body.cardId)).toEqual([first.id, second.id])
-    expect(!existsSync(spoolPath) || readFileSync(spoolPath, 'utf8').trim() === '').toBe(true)
+    expect(armed.status()).toMatchObject({ queued: 0, delivered: 2, terminal: 0 })
+  })
+
+  it('never lets a newer publish overtake an older transient failure', async () => {
+    await close(server)
+    let accepting = false
+    const flaky = createServer((req, res) => {
+      let raw = ''
+      req.setEncoding('utf8')
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => {
+        requests.push({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization,
+          idempotencyKey: req.headers['idempotency-key'] as string | undefined,
+          teamId: req.headers['x-mesh-team-id'] as string | undefined,
+          raw,
+          body: JSON.parse(raw) as Record<string, unknown>,
+        })
+        res.writeHead(accepting ? 200 : 503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(accepting ? { ok: true, seq: requests.length } : { error: 'down' }))
+      })
+    })
+    servers.push(flaky)
+    await listen(flaky, relayPort)
+    const armed = arm()
+    const first = planCard('ordered-a')
+    const second = planCard('ordered-b')
+    queue.submit(first, noopWaiter)
+    queue.submit(second, noopWaiter)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(requests.map(request => request.body.cardId)).toEqual([first.id])
+    expect(armed.status().queued).toBe(2)
+
+    accepting = true
+    await armed.flush()
+    expect(requests.map(request => request.body.cardId)).toEqual([first.id, first.id, second.id])
+    expect(armed.status()).toMatchObject({ queued: 0, delivered: 2, terminal: 0 })
   })
 
   it('does not emit a second raised record when an orphan is revived', async () => {
@@ -393,6 +441,168 @@ describe('createMeshForwarder', () => {
 
     expect(requests).toHaveLength(1)
     expect(requests[0].body).toMatchObject({ event: 'raised', cardId: first.id })
+  })
+
+  it('reconciles a card committed before the publisher started and persists its receipt across restart', async () => {
+    const card = planCard('crash-window')
+    queue.submit(card, noopWaiter) // no forwarder existed when the card committed
+
+    const first = arm()
+    await first.flush()
+    expect(requests.map(request => request.body.cardId)).toEqual([card.id])
+    expect(first.status()).toMatchObject({ queued: 0, delivered: 1 })
+
+    first.stop()
+    first.close()
+    forwarder = undefined
+    const restarted = arm()
+    await restarted.flush()
+    expect(requests).toHaveLength(1) // delivered row was not replayed
+    expect(restarted.listPublishes()).toEqual([
+      expect.objectContaining({ cardId: card.id, state: 'delivered', attempts: 1 }),
+    ])
+  })
+
+  it('imports the legacy NDJSON spool once into the durable outbox', async () => {
+    const spoolPath = join(dir, 'mesh-spool.ndjson')
+    writeFileSync(spoolPath, `${JSON.stringify({
+      v: 0,
+      kind: 'card_event',
+      person: 'alice',
+      device: 'legacy-device',
+      project: PROJECT,
+      ts: '2026-07-12T10:00:00.000Z',
+      cardId: 'legacy-spooled-card',
+      stage: 'plan',
+      event: 'raised',
+      artifacts: [],
+    })}\n`)
+    const armed = arm()
+    await armed.flush()
+    expect(existsSync(spoolPath)).toBe(false)
+    expect(requests.map(request => request.body.cardId)).toEqual(['legacy-spooled-card'])
+    expect(armed.listPublishes()[0]).toMatchObject({
+      idempotencyKey: 'boardroom:legacy-spooled-card:raised',
+      state: 'delivered',
+    })
+  })
+
+  it('classifies 401/403 as terminal and never retries them', async () => {
+    await close(server)
+    const forbidden = createServer((req, res) => {
+      let raw = ''
+      req.setEncoding('utf8')
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => {
+        requests.push({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization,
+          idempotencyKey: req.headers['idempotency-key'] as string | undefined,
+          teamId: req.headers['x-mesh-team-id'] as string | undefined,
+          raw,
+          body: JSON.parse(raw) as Record<string, unknown>,
+        })
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'membership revoked' }))
+      })
+    })
+    servers.push(forbidden)
+    await listen(forbidden, relayPort)
+    const armed = arm()
+    queue.submit(planCard('revoked-member'), noopWaiter)
+    await armed.flush()
+    expect(requests).toHaveLength(1)
+    expect(armed.status()).toMatchObject({ queued: 0, delivered: 0, terminal: 1 })
+    expect(armed.listPublishes()[0]).toMatchObject({
+      state: 'terminal',
+      attempts: 1,
+      lastError: 'mesh relay returned 403',
+    })
+    await armed.flush()
+    expect(requests).toHaveLength(1)
+  })
+
+  it('sends the optional team header without changing the v0 body', async () => {
+    const armed = arm({ ...config, mesh: { ...config.mesh!, teamId: 'team-a' } })
+    queue.submit(planCard('tenant-header'), noopWaiter)
+    await armed.flush()
+    expect(requests[0].teamId).toBe('team-a')
+    expect(requests[0].body).not.toHaveProperty('teamId')
+  })
+
+  it('rotates an expiring hosted credential before publish and persists it at 0600', async () => {
+    await close(server)
+    const authHeaders: string[] = []
+    const hosted = createServer((req, res) => {
+      authHeaders.push(req.headers.authorization ?? '')
+      let raw = ''
+      req.setEncoding('utf8')
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json')
+        if (req.url === '/v1/credentials/rotate') {
+          res.end(JSON.stringify({
+            relayUrl: `http://127.0.0.1:${relayPort}`,
+            teamId: 'team-a',
+            person: 'alice',
+            accessToken: 'rotated-token',
+            expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          }))
+          return
+        }
+        requests.push({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization,
+          idempotencyKey: req.headers['idempotency-key'] as string | undefined,
+          teamId: req.headers['x-mesh-team-id'] as string | undefined,
+          raw,
+          body: JSON.parse(raw) as Record<string, unknown>,
+        })
+        res.end(JSON.stringify({ ok: true, seq: 9 }))
+      })
+    })
+    servers.push(hosted)
+    await listen(hosted, relayPort)
+    const armed = arm({
+      ...config,
+      mesh: {
+        ...config.mesh!,
+        teamId: 'team-a',
+        deviceId: 'device-a',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    })
+    queue.submit(planCard('rotating'), noopWaiter)
+    await armed.flush()
+    expect(authHeaders).toEqual(['Bearer tok-a', 'Bearer rotated-token'])
+    expect(requests).toHaveLength(1)
+    const credentialPath = join(dir, 'mesh-credential.json')
+    expect(JSON.parse(readFileSync(credentialPath, 'utf8')).token).toBe('rotated-token')
+    expect(statSync(credentialPath).mode & 0o777).toBe(0o600)
+    expect(armed.status()).toMatchObject({ authState: 'active', terminal: 0, delivered: 1 })
+  })
+
+  it('surfaces an expired hosted credential as terminal auth state without sending data', async () => {
+    const armed = arm({
+      ...config,
+      mesh: {
+        ...config.mesh!,
+        teamId: 'team-a',
+        deviceId: 'device-a',
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+    })
+    queue.submit(planCard('expired-auth'), noopWaiter)
+    await armed.flush()
+    expect(requests).toHaveLength(0)
+    expect(armed.status()).toMatchObject({
+      authState: 'expired',
+      queued: 0,
+      terminal: 1,
+      lastError: 'mesh credential expired; re-enrollment required',
+    })
   })
 
   it('attaches nothing when mesh configuration is absent', () => {

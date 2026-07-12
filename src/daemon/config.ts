@@ -11,6 +11,11 @@ export interface MeshConfig {
   url: string
   token: string
   person: string
+  /** Optional tenant selector for enrolled relay configs; omitted = legacy-local. */
+  teamId?: string
+  /** Hosted rotating credential binding. Omit both for legacy static tokens. */
+  deviceId?: string
+  expiresAt?: string
 }
 
 export interface Config {
@@ -22,6 +27,8 @@ export interface Config {
   dbPath: string
   configDir: string
   mesh?: MeshConfig
+  /** Install-scoped API bearer; undefined keeps legacy loopback dev behavior. */
+  localToken?: string
 }
 
 export function loadConfig(configDir?: string): Config {
@@ -38,9 +45,36 @@ export function loadConfig(configDir?: string): Config {
   const meshUrl = process.env.BOARDROOM_MESH_URL || file.mesh?.url
   const meshToken = process.env.BOARDROOM_MESH_TOKEN || file.mesh?.token
   const meshPerson = process.env.BOARDROOM_MESH_PERSON || file.mesh?.person
+  const meshTeamId = process.env.BOARDROOM_MESH_TEAM_ID || file.mesh?.teamId
+  const meshDeviceId = process.env.BOARDROOM_MESH_DEVICE_ID || file.mesh?.deviceId
+  const meshExpiresAt = process.env.BOARDROOM_MESH_EXPIRES_AT || file.mesh?.expiresAt
   const mesh = meshUrl && meshToken && meshPerson
-    ? { url: meshUrl, token: meshToken, person: meshPerson }
+    ? {
+        url: meshUrl,
+        token: meshToken,
+        person: meshPerson,
+        ...(meshTeamId ? { teamId: meshTeamId } : {}),
+        ...(meshDeviceId ? { deviceId: meshDeviceId } : {}),
+        ...(meshExpiresAt ? { expiresAt: meshExpiresAt } : {}),
+      }
     : undefined
+  const explicitTokenFile = process.env.BOARDROOM_LOCAL_TOKEN_FILE
+  const tokenFile = explicitTokenFile || join(dir, 'local-token')
+  let localToken = process.env.BOARDROOM_LOCAL_TOKEN?.trim() || undefined
+  if (!localToken && explicitTokenFile && !existsSync(tokenFile)) {
+    throw new Error('BOARDROOM_LOCAL_TOKEN_FILE does not exist')
+  }
+  if (!localToken && existsSync(tokenFile)) {
+    try {
+      chmodSync(tokenFile, 0o600)
+      localToken = readFileSync(tokenFile, 'utf8').trim() || undefined
+      if (!localToken && explicitTokenFile) throw new Error('local token file is empty')
+    } catch (error) {
+      if (explicitTokenFile) throw error
+      // An unreadable auto-discovered optional token file leaves legacy dev
+      // mode intact; an explicitly configured path always fails closed above.
+    }
+  }
   return {
     port: 4040,
     remindEveryMinutes: 10,
@@ -49,6 +83,7 @@ export function loadConfig(configDir?: string): Config {
     reattachWindowMs: REATTACH_WINDOW_MS, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
     mesh, // computed above; placed after ...file so a partial file block can't leak through
+    ...(localToken ? { localToken } : {}),
     dbPath: join(dir, 'boardroom.sqlite'),
     configDir: dir,
   }
