@@ -71,11 +71,10 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     try { opts.quiesce?.() } catch (err) { log('[shutdown] quiesce failed:', err) }
 
     let exited = false
-    let timer: ReturnType<typeof setTimeout> | undefined
     const finish = (): void => {
       if (exited) return
       exited = true
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
       // try/finally so a future cleanup throw can never skip the exit — a daemon
       // that fails to exit on SIGTERM would block the redeploy it was asked to make.
       try { opts.meshForwarder?.close?.() } catch (err) { log('[shutdown] mesh forwarder close failed:', err) }
@@ -85,7 +84,7 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     // Force-exit watchdog so a wedged connection (or a wedged mesh flush) can't
     // pin the daemon forever.
     const ms = opts.forceExitMs ?? 5_000
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       log('[shutdown] server did not close in time — forcing exit')
       finish()
     }, ms)
