@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto'
 import {
+  closeSync,
   chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -225,7 +228,19 @@ function validateManifest(value: unknown): BackupManifest {
 }
 
 function checksum(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex')
+  const hash = createHash('sha256')
+  const handle = openSync(path, 'r')
+  const chunk = Buffer.allocUnsafe(1024 * 1024)
+  try {
+    for (;;) {
+      const bytes = readSync(handle, chunk, 0, chunk.length, null)
+      if (bytes === 0) break
+      hash.update(chunk.subarray(0, bytes))
+    }
+  } finally {
+    closeSync(handle)
+  }
+  return hash.digest('hex')
 }
 
 export function createBackup(sourceDir: string, outputDir: string): BackupManifest {
