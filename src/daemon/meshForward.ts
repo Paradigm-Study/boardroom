@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import {
   PLAN_VERDICT_ID,
   PLAN_VERDICTS,
@@ -60,10 +60,24 @@ export interface MeshForwarder {
   off(event: 'status', listener: (status: MeshPublishEvent) => void): void
 }
 
-function artifactsFor(card: Card, project: string): BoardroomLifecycle['artifacts'] {
+interface ResolvedProject {
+  project: string
+  workspaceRoot?: string
+}
+
+function hostedArtifactPath(workspaceRoot: string, value: string): string | undefined {
+  const absolute = isAbsolute(value) ? resolve(value) : resolve(workspaceRoot, value)
+  const path = relative(workspaceRoot, absolute).replaceAll('\\', '/')
+  if (!path || path === '..' || path.startsWith('../') || isAbsolute(path)) return undefined
+  return path
+}
+
+function artifactsFor(card: Card, scope: ResolvedProject): BoardroomLifecycle['artifacts'] {
   const paths: string[] = []
   const seen = new Set<string>()
-  const add = (path: string): void => {
+  const add = (candidate: string): void => {
+    const path = scope.workspaceRoot ? hostedArtifactPath(scope.workspaceRoot, candidate) : candidate
+    if (!path) return
     if (seen.has(path)) return
     seen.add(path)
     paths.push(path)
@@ -78,7 +92,7 @@ function artifactsFor(card: Card, project: string): BoardroomLifecycle['artifact
   }
   return paths
     .filter(path => !isSensitiveArtifactPath(path))
-    .map(path => ({ repo: project, path: redactMeshText(path, 500) }))
+    .map(path => ({ repo: scope.project, path: redactMeshText(path, 500) }))
 }
 
 /** Second privacy fence for the deliberately tiny mesh wire record. */
@@ -124,19 +138,19 @@ function lifecycleFor(
   event: BoardroomLifecycle['event'],
   mesh: MeshConfig,
   device: string,
-  project: string,
+  scope: ResolvedProject,
 ): BoardroomLifecycle {
   const record: BoardroomLifecycle = {
     v: 0,
     kind: 'card_event',
     person: mesh.person,
     device,
-    project,
+    project: scope.project,
     ts: event === 'raised' ? card.createdAt : (card.decidedAt ?? new Date().toISOString()),
     cardId: card.id,
     stage: card.stage,
     event,
-    artifacts: artifactsFor(card, project),
+    artifacts: artifactsFor(card, scope),
   }
   if (event === 'decided') {
     const verdict = verdictFor(card)
@@ -155,15 +169,16 @@ function stableKey(cardId: string, event: BoardroomLifecycle['event']): string {
   return `boardroom:${cardId}:${event}`
 }
 
-function projectForCard(card: Card, mesh: MeshConfig, store: Store | undefined): string | undefined {
+function projectForCard(card: Card, mesh: MeshConfig, store: Store | undefined): ResolvedProject | undefined {
   // Legacy local relay configs predate Desktop workspace consent. Preserve the
   // local developer contract while making every hosted publish fail closed.
-  if (!mesh.deviceId) return redactMeshText(card.session.project, 300)
+  if (!mesh.deviceId) return { project: redactMeshText(card.session.project, 300) }
   if (!store || !card.claudeSessionId) return undefined
   const registered = store.getRegisteredSession(card.claudeSessionId)
   if (!registered || registered.project !== card.session.project) return undefined
   const cwd = resolve(registered.cwd)
-  return mesh.projects?.find(candidate => candidate.workspaceRoot === cwd)?.project
+  const consent = mesh.projects?.find(candidate => candidate.workspaceRoot === cwd)
+  return consent ? { project: consent.project, workspaceRoot: cwd } : undefined
 }
 
 type PostResult =
@@ -210,7 +225,7 @@ export function createMeshForwarder(
   const outbox = new MeshOutbox(join(config.configDir, outboxName))
   const emitter = new EventEmitter()
   const hosted = Boolean(credential.deviceId)
-  const authorizedKeys = new Set<string>()
+  const authorizedProjects = new Map<string, string>()
   let stopped = false
   let warnedDown = false
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -240,7 +255,7 @@ export function createMeshForwarder(
 
   const enqueueRecord = (record: BoardroomLifecycle, authorized = !hosted): void => {
     const idempotencyKey = stableKey(record.cardId, record.event)
-    if (authorized) authorizedKeys.add(idempotencyKey)
+    if (authorized) authorizedProjects.set(idempotencyKey, record.project)
     if (hosted && !authorized) return
     const inserted = outbox.enqueue({
       idempotencyKey,
@@ -279,20 +294,34 @@ export function createMeshForwarder(
   // scoped outbox; it never backfills an old local card merely because a team
   // or workspace was approved later.
   for (const card of store?.list() ?? []) {
-    const project = projectForCard(card, mesh, store)
-    if (!project) continue
+    const scope = projectForCard(card, mesh, store)
+    if (!scope) continue
     if (hosted) {
-      authorizedKeys.add(stableKey(card.id, 'raised'))
-      if (card.status === 'decided') authorizedKeys.add(stableKey(card.id, 'decided'))
+      authorizedProjects.set(stableKey(card.id, 'raised'), scope.project)
+      if (card.status === 'decided') authorizedProjects.set(stableKey(card.id, 'decided'), scope.project)
       continue
     }
-    enqueueRecord(lifecycleFor(card, 'raised', mesh, device, project), true)
-    if (card.status === 'decided') enqueueRecord(lifecycleFor(card, 'decided', mesh, device, project), true)
+    enqueueRecord(lifecycleFor(card, 'raised', mesh, device, scope), true)
+    if (card.status === 'decided') enqueueRecord(lifecycleFor(card, 'decided', mesh, device, scope), true)
   }
 
   const post = async (entry: MeshOutboxEntry): Promise<PostResult> => {
-    if (hosted && !authorizedKeys.has(entry.idempotencyKey)) {
-      return { kind: 'terminal', error: 'mesh publish lacks current workspace consent' }
+    if (hosted) {
+      const project = authorizedProjects.get(entry.idempotencyKey)
+      const recordProject = entry.record.project
+      const artifacts = entry.record.artifacts
+      const artifactsValid = Array.isArray(artifacts) && artifacts.every(value => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+        const artifact = value as Record<string, unknown>
+        return artifact.repo === project
+          && typeof artifact.path === 'string'
+          && !isAbsolute(artifact.path)
+          && artifact.path !== '..'
+          && !artifact.path.startsWith('../')
+      })
+      if (!project || recordProject !== project || !artifactsValid) {
+        return { kind: 'terminal', error: 'mesh publish lacks current workspace consent' }
+      }
     }
     const renewal = await ensureFreshCredential()
     if (renewal) return renewal
@@ -376,10 +405,10 @@ export function createMeshForwarder(
 
   const onCard = (card: Card): void => {
     try {
-      const project = projectForCard(card, mesh, store)
-      if (!project) return
-      if (card.status === 'pending') enqueueRecord(lifecycleFor(card, 'raised', mesh, device, project), true)
-      else if (card.status === 'decided') enqueueRecord(lifecycleFor(card, 'decided', mesh, device, project), true)
+      const scope = projectForCard(card, mesh, store)
+      if (!scope) return
+      if (card.status === 'pending') enqueueRecord(lifecycleFor(card, 'raised', mesh, device, scope), true)
+      else if (card.status === 'decided') enqueueRecord(lifecycleFor(card, 'decided', mesh, device, scope), true)
       else return
       scheduleDrain()
     } catch {

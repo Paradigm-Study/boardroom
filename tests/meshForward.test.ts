@@ -600,6 +600,14 @@ describe('createMeshForwarder', () => {
   it('requires exact hosted session/workspace consent and replaces the card project with its canonical identity', async () => {
     const armed = arm({ ...config, mesh: hostedMesh() })
     const allowed = bind(planCard('hosted-allowed'))
+    const diff = allowed.blocks.find(block => block.type === 'diff_stat')
+    if (diff?.type === 'diff_stat') {
+      diff.files.push(
+        { path: join(dir, 'workspace', 'src', 'inside.ts'), additions: 1, deletions: 0 },
+        { path: join(dir, 'outside', 'private.ts'), additions: 1, deletions: 0 },
+        { path: '../escape.ts', additions: 1, deletions: 0 },
+      )
+    }
     queue.submit(allowed, noopWaiter)
     queue.submit(planCard('hosted-unbound'), noopWaiter)
     const wrongWorkspace = bind(planCard('hosted-wrong-workspace'), join(dir, 'other-workspace'))
@@ -614,6 +622,7 @@ describe('createMeshForwarder', () => {
       artifacts: [
         { repo: 'acme/repo', path: 'src/a.ts' },
         { repo: 'acme/repo', path: 'src/b.ts' },
+        { repo: 'acme/repo', path: 'src/inside.ts' },
       ],
     })
     expect(armed.status().queued).toBe(0)
@@ -648,6 +657,33 @@ describe('createMeshForwarder', () => {
     await second.flush()
     expect(requests).toHaveLength(0)
     expect(second.listPublishes()).toEqual([])
+  })
+
+  it('does not authorize an old queued record after the workspace mapping changes project', async () => {
+    const first = arm({
+      ...config,
+      mesh: hostedMesh({ expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+    })
+    queue.submit(bind(planCard('project-remapped')), noopWaiter)
+    await first.flush()
+    expect(first.status().queued).toBe(1)
+    first.stop()
+    first.close()
+    forwarder = undefined
+
+    const restarted = arm({
+      ...config,
+      mesh: hostedMesh({ projects: [{ workspaceRoot: join(dir, 'workspace'), project: 'other/repo' }] }),
+    })
+    await restarted.flush()
+    expect(requests).toHaveLength(0)
+    expect(restarted.listPublishes()).toEqual([
+      expect.objectContaining({
+        cardId: 'project-remapped',
+        state: 'terminal',
+        lastError: 'mesh publish lacks current workspace consent',
+      }),
+    ])
   })
 
   it('attaches nothing when mesh configuration is absent', () => {
