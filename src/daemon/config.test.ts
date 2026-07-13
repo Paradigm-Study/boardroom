@@ -107,6 +107,7 @@ describe('loadConfig mesh resolution (mesh-v0, default-off)', () => {
   const MESH_ENV = [
     'BOARDROOM_MESH_URL', 'BOARDROOM_MESH_TOKEN', 'BOARDROOM_MESH_PERSON',
     'BOARDROOM_MESH_TEAM_ID', 'BOARDROOM_MESH_DEVICE_ID', 'BOARDROOM_MESH_EXPIRES_AT',
+    'BOARDROOM_MESH_PROJECTS_JSON',
   ] as const
   let savedEnv: Record<string, string | undefined>
 
@@ -190,7 +191,45 @@ describe('loadConfig mesh resolution (mesh-v0, default-off)', () => {
     expect(loadConfig(dir).mesh).toEqual({
       url: 'https://mesh.example.test', token: 'runtime-only-token', person: 'alice',
       teamId: 'team-a', deviceId: 'device-a', expiresAt: '2099-01-01T00:00:00.000Z',
+      projects: [],
     })
+  })
+
+  it('parses hosted workspace consent only from the process environment', () => {
+    process.env.BOARDROOM_MESH_URL = 'https://mesh.example.test'
+    process.env.BOARDROOM_MESH_TOKEN = 'runtime-only-token'
+    process.env.BOARDROOM_MESH_PERSON = 'alice'
+    process.env.BOARDROOM_MESH_TEAM_ID = 'team-a'
+    process.env.BOARDROOM_MESH_DEVICE_ID = 'device-a'
+    process.env.BOARDROOM_MESH_EXPIRES_AT = '2099-01-01T00:00:00.000Z'
+    process.env.BOARDROOM_MESH_PROJECTS_JSON = JSON.stringify([
+      { workspaceRoot: '/Users/Alice/work/repo/', project: 'Acme/Repo' },
+      { workspaceRoot: '/Users/Alice/work/repo', project: 'acme/repo' },
+    ])
+    expect(loadConfig(dir).mesh?.projects).toEqual([
+      { workspaceRoot: '/Users/Alice/work/repo', project: 'acme/repo' },
+    ])
+  })
+
+  it('fails closed on malformed or ambiguous hosted workspace consent', () => {
+    process.env.BOARDROOM_MESH_URL = 'https://mesh.example.test'
+    process.env.BOARDROOM_MESH_TOKEN = 'runtime-only-token'
+    process.env.BOARDROOM_MESH_PERSON = 'alice'
+    process.env.BOARDROOM_MESH_TEAM_ID = 'team-a'
+    process.env.BOARDROOM_MESH_DEVICE_ID = 'device-a'
+    process.env.BOARDROOM_MESH_EXPIRES_AT = '2099-01-01T00:00:00.000Z'
+
+    process.env.BOARDROOM_MESH_PROJECTS_JSON = 'not-json'
+    expect(() => loadConfig(dir)).toThrow(/valid JSON/)
+    process.env.BOARDROOM_MESH_PROJECTS_JSON = JSON.stringify([
+      { workspaceRoot: 'relative/path', project: 'acme/repo' },
+    ])
+    expect(() => loadConfig(dir)).toThrow(/invalid workspace mapping/)
+    process.env.BOARDROOM_MESH_PROJECTS_JSON = JSON.stringify([
+      { workspaceRoot: '/Users/Alice/work/repo', project: 'acme/repo' },
+      { workspaceRoot: '/Users/Alice/work/repo/', project: 'other/repo' },
+    ])
+    expect(() => loadConfig(dir)).toThrow(/multiple projects/)
   })
 
   it('treats a partial mesh (file) as not configured — never a half-armed forwarder', () => {

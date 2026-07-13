@@ -114,15 +114,26 @@ describe('reliability operations', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ notifications: false, mesh: { token: 'never-back-up' } }), { mode: 0o600 })
     writeFileSync(join(dir, 'local-token'), 'machine-local-secret', { mode: 0o600 })
     writeFileSync(join(dir, 'mesh-credential.json'), JSON.stringify({ token: 'hosted-secret' }), { mode: 0o600 })
+    const scopedOutboxName = 'mesh-outbox-0123456789abcdef.sqlite'
+    const scopedOutbox = new MeshOutbox(join(dir, scopedOutboxName))
+    scopedOutbox.enqueue({
+      idempotencyKey: 'team-record',
+      cardId: 'team-card',
+      event: 'raised',
+      record: { project: 'acme/repo' },
+      createdAt: '2030-01-01T00:00:00.000Z',
+    })
+    scopedOutbox.close()
     const backupDir = join(dir, 'backup')
     createBackup(dir, backupDir)
     expect(verifyBackup(backupDir).files.map(file => file.name)).toContain('boardroom.sqlite')
     const backupNames = verifyBackup(backupDir).files.map(file => file.name)
+    expect(backupNames).toContain(scopedOutboxName)
     for (const secret of ['config.json', 'local-token', 'mesh-credential.json']) {
       expect(backupNames).not.toContain(secret)
     }
 
-    let changed = new Store(dbPath)
+    const changed = new Store(dbPath)
     changed.insert(card('after-backup'))
     changed.close()
     const preRestore = restoreBackup(backupDir, dir)
@@ -134,6 +145,9 @@ describe('reliability operations', () => {
     preDb.close()
     expect(readFileSync(join(dir, 'local-token'), 'utf8')).toBe('machine-local-secret')
     expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).mesh.token).toBe('never-back-up')
+    const restoredOutbox = new MeshOutbox(join(dir, scopedOutboxName))
+    expect(restoredOutbox.list()).toEqual([expect.objectContaining({ idempotencyKey: 'team-record' })])
+    restoredOutbox.close()
 
     writeFileSync(join(backupDir, 'boardroom.sqlite'), 'tampered')
     expect(() => restoreBackup(backupDir, dir)).toThrow(/checksum mismatch/)
@@ -202,12 +216,15 @@ describe('reliability operations', () => {
   it('doctor emits machine-readable checks and only repairs owner permissions', () => {
     const store = new Store(join(dir, 'boardroom.sqlite'))
     store.close()
+    const scopedOutbox = new MeshOutbox(join(dir, 'mesh-outbox-fedcba9876543210.sqlite'))
+    scopedOutbox.close()
     writeFileSync(join(dir, 'local-token'), 'secret', { mode: 0o644 })
     const before = doctor(dir)
     expect(before.ok).toBe(false)
     const repaired = doctor(dir, true)
     expect(repaired.ok).toBe(true)
     expect(repaired.checks.some(check => check.repaired)).toBe(true)
+    expect(repaired.checks.some(check => check.name === 'db:mesh-outbox-fedcba9876543210.sqlite')).toBe(true)
     expect(statSync(join(dir, 'local-token')).mode & 0o777).toBe(0o600)
     expect(() => JSON.stringify(repaired)).not.toThrow()
   })

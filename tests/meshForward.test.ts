@@ -234,6 +234,24 @@ describe('createMeshForwarder', () => {
     return armed
   }
 
+  function bind(card: Card, workspaceRoot = join(dir, 'workspace')): Card {
+    const sessionId = `session-${card.id}`
+    card.claudeSessionId = sessionId
+    store.recordSession(card.session.project, sessionId, workspaceRoot)
+    return card
+  }
+
+  function hostedMesh(overrides: Partial<NonNullable<Config['mesh']>> = {}): NonNullable<Config['mesh']> {
+    return {
+      ...config.mesh!,
+      teamId: 'team-a',
+      deviceId: 'device-a',
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      projects: [{ workspaceRoot: join(dir, 'workspace'), project: 'acme/repo' }],
+      ...overrides,
+    }
+  }
+
   it('maps a raised plan card to the canonical private wire record', async () => {
     const card = planCard('plan-raised')
     const armed = arm()
@@ -536,14 +554,9 @@ describe('createMeshForwarder', () => {
     writeFileSync(credentialPath, JSON.stringify({ token: 'stale-plaintext-token' }), { mode: 0o600 })
     const armed = arm({
       ...config,
-      mesh: {
-        ...config.mesh!,
-        teamId: 'team-a',
-        deviceId: 'device-a',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
+      mesh: hostedMesh({ expiresAt: new Date(Date.now() + 60_000).toISOString() }),
     })
-    queue.submit(planCard('rotating'), noopWaiter)
+    queue.submit(bind(planCard('rotating')), noopWaiter)
     await armed.flush()
     expect(requests).toHaveLength(0)
     expect(existsSync(credentialPath)).toBe(false)
@@ -560,13 +573,7 @@ describe('createMeshForwarder', () => {
 
     const restarted = arm({
       ...config,
-      mesh: {
-        ...config.mesh!,
-        token: 'desktop-rotated-token',
-        teamId: 'team-a',
-        deviceId: 'device-a',
-        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      },
+      mesh: hostedMesh({ token: 'desktop-rotated-token' }),
     })
     await restarted.flush()
     expect(requests).toHaveLength(1)
@@ -577,14 +584,9 @@ describe('createMeshForwarder', () => {
   it('holds expired hosted publishes for Desktop re-enrollment without sending or losing data', async () => {
     const armed = arm({
       ...config,
-      mesh: {
-        ...config.mesh!,
-        teamId: 'team-a',
-        deviceId: 'device-a',
-        expiresAt: new Date(Date.now() - 1_000).toISOString(),
-      },
+      mesh: hostedMesh({ expiresAt: new Date(Date.now() - 1_000).toISOString() }),
     })
-    queue.submit(planCard('expired-auth'), noopWaiter)
+    queue.submit(bind(planCard('expired-auth')), noopWaiter)
     await armed.flush()
     expect(requests).toHaveLength(0)
     expect(armed.status()).toMatchObject({
@@ -593,6 +595,59 @@ describe('createMeshForwarder', () => {
       terminal: 0,
       lastError: 'mesh credential expired; desktop re-enrollment and service restart required',
     })
+  })
+
+  it('requires exact hosted session/workspace consent and replaces the card project with its canonical identity', async () => {
+    const armed = arm({ ...config, mesh: hostedMesh() })
+    const allowed = bind(planCard('hosted-allowed'))
+    queue.submit(allowed, noopWaiter)
+    queue.submit(planCard('hosted-unbound'), noopWaiter)
+    const wrongWorkspace = bind(planCard('hosted-wrong-workspace'), join(dir, 'other-workspace'))
+    queue.submit(wrongWorkspace, noopWaiter)
+    await armed.flush()
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ teamId: 'team-a' })
+    expect(requests[0].body).toMatchObject({
+      cardId: allowed.id,
+      project: 'acme/repo',
+      artifacts: [
+        { repo: 'acme/repo', path: 'src/a.ts' },
+        { repo: 'acme/repo', path: 'src/b.ts' },
+      ],
+    })
+    expect(armed.status().queued).toBe(0)
+  })
+
+  it('does not enqueue hosted cards when no workspace is consented', async () => {
+    const armed = arm({ ...config, mesh: hostedMesh({ projects: [] }) })
+    queue.submit(bind(planCard('hosted-no-consent')), noopWaiter)
+    await armed.flush()
+
+    expect(requests).toHaveLength(0)
+    expect(armed.status()).toMatchObject({ queued: 0, delivered: 0, terminal: 0 })
+    expect(armed.listPublishes()).toEqual([])
+  })
+
+  it('keeps a delayed old-team queue out of a newly attached team', async () => {
+    const first = arm({
+      ...config,
+      mesh: hostedMesh({ expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+    })
+    queue.submit(bind(planCard('old-team-queued')), noopWaiter)
+    await first.flush()
+    expect(first.status().queued).toBe(1)
+    first.stop()
+    first.close()
+    forwarder = undefined
+
+    const second = arm({
+      ...config,
+      mesh: hostedMesh({ teamId: 'team-b', token: 'team-b-token' }),
+    })
+    await second.flush()
+    expect(requests).toHaveLength(0)
+    expect(second.listPublishes()).toEqual([])
   })
 
   it('attaches nothing when mesh configuration is absent', () => {

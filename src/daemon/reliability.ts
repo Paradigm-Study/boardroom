@@ -9,6 +9,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -182,7 +183,11 @@ export interface BackupManifest {
   files: Array<{ name: string; size: number; sha256: string }>
 }
 
-const BACKUP_FILES = new Set(['boardroom.sqlite', 'mesh-outbox.sqlite', 'machine.json'])
+const FIXED_BACKUP_FILES = new Set(['boardroom.sqlite', 'mesh-outbox.sqlite', 'machine.json'])
+
+function isBackupFileName(name: string): boolean {
+  return FIXED_BACKUP_FILES.has(name) || /^mesh-outbox-[a-f0-9]{16}\.sqlite$/.test(name)
+}
 
 function regularFile(path: string, label: string): void {
   let stat
@@ -199,14 +204,16 @@ function regularFile(path: string, label: string): void {
 function validateManifest(value: unknown): BackupManifest {
   if (typeof value !== 'object' || value === null) throw new Error('unsupported backup manifest')
   const manifest = value as Partial<BackupManifest>
-  if (manifest.version !== 1 || !Array.isArray(manifest.files)) throw new Error('unsupported backup manifest')
+  if (manifest.version !== 1 || !Array.isArray(manifest.files) || manifest.files.length > 102) {
+    throw new Error('unsupported backup manifest')
+  }
   const seen = new Set<string>()
   for (const candidate of manifest.files) {
     if (typeof candidate !== 'object' || candidate === null) throw new Error('invalid backup entry')
     const file = candidate as { name?: unknown; size?: unknown; sha256?: unknown }
     if (
       typeof file.name !== 'string'
-      || !BACKUP_FILES.has(file.name)
+      || !isBackupFileName(file.name)
       || file.name.includes('/')
       || file.name.includes('\\')
       || seen.has(file.name)
@@ -246,9 +253,9 @@ function checksum(path: string): string {
 export function createBackup(sourceDir: string, outputDir: string): BackupManifest {
   mkdirSync(outputDir, { recursive: true, mode: 0o700 })
   ownerOnly(outputDir, true)
-  const names = [
-    'boardroom.sqlite', 'mesh-outbox.sqlite', 'machine.json',
-  ].filter(name => existsSync(join(sourceDir, name)))
+  const names = readdirSync(sourceDir)
+    .filter(name => isBackupFileName(name) && existsSync(join(sourceDir, name)))
+    .sort()
   const files = names.map(name => {
     const source = join(sourceDir, name)
     const target = join(outputDir, name)

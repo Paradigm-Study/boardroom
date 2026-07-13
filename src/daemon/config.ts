@@ -1,12 +1,19 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 
 // Optional mesh relay wiring (mesh-v0). Present only when ALL THREE fields
 // resolve (file "mesh" object, each overridable by BOARDROOM_MESH_URL/
 // BOARDROOM_MESH_TOKEN/BOARDROOM_MESH_PERSON). Absent → boardroom behaves
 // exactly as before: nothing subscribes, nothing leaves the machine.
+export interface MeshProjectConsent {
+  /** Local-only exact workspace root. Never serialized into a Mesh record. */
+  workspaceRoot: string
+  /** Canonical GitHub repository identity: lowercase owner/repository. */
+  project: string
+}
+
 export interface MeshConfig {
   url: string
   token: string
@@ -16,6 +23,8 @@ export interface MeshConfig {
   /** Hosted rotating credential scope. Omit both for legacy static tokens. */
   deviceId?: string
   expiresAt?: string
+  /** Desktop-projected, team-scoped workspace allowlist for hosted forwarding. */
+  projects?: MeshProjectConsent[]
 }
 
 export interface Config {
@@ -29,6 +38,53 @@ export interface Config {
   mesh?: MeshConfig
   /** Install-scoped API bearer; undefined keeps legacy loopback dev behavior. */
   localToken?: string
+}
+
+function hasControlCharacters(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.charCodeAt(0)
+    return code <= 0x1f || code === 0x7f
+  })
+}
+
+function hostedMeshProjects(raw: string | undefined): MeshProjectConsent[] {
+  if (raw === undefined || raw.trim() === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error('BOARDROOM_MESH_PROJECTS_JSON must be valid JSON')
+  }
+  if (!Array.isArray(parsed) || parsed.length > 100) {
+    throw new Error('BOARDROOM_MESH_PROJECTS_JSON must contain at most 100 workspace mappings')
+  }
+  const roots = new Map<string, string>()
+  for (const value of parsed) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('BOARDROOM_MESH_PROJECTS_JSON contains an invalid workspace mapping')
+    }
+    const candidate = value as Record<string, unknown>
+    const rawRoot = typeof candidate.workspaceRoot === 'string' ? candidate.workspaceRoot.trim() : ''
+    const rawProject = typeof candidate.project === 'string' ? candidate.project.trim() : ''
+    if (
+      !rawRoot || rawRoot.length > 1_024 || !isAbsolute(rawRoot) || hasControlCharacters(rawRoot)
+      || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(rawProject)
+    ) {
+      throw new Error('BOARDROOM_MESH_PROJECTS_JSON contains an invalid workspace mapping')
+    }
+    const [owner, repository] = rawProject.split('/')
+    if (owner === '.' || owner === '..' || repository === '.' || repository === '..') {
+      throw new Error('BOARDROOM_MESH_PROJECTS_JSON contains an invalid project identity')
+    }
+    const workspaceRoot = resolve(rawRoot)
+    const project = rawProject.toLowerCase()
+    const previous = roots.get(workspaceRoot)
+    if (previous && previous !== project) {
+      throw new Error('BOARDROOM_MESH_PROJECTS_JSON maps one workspace to multiple projects')
+    }
+    roots.set(workspaceRoot, project)
+  }
+  return [...roots].map(([workspaceRoot, project]) => ({ workspaceRoot, project }))
 }
 
 export function loadConfig(configDir?: string): Config {
@@ -81,6 +137,7 @@ export function loadConfig(configDir?: string): Config {
         ...(meshTeamId ? { teamId: meshTeamId } : {}),
         ...(meshDeviceId ? { deviceId: meshDeviceId } : {}),
         ...(meshExpiresAt ? { expiresAt: meshExpiresAt } : {}),
+        ...(hostedMesh ? { projects: hostedMeshProjects(process.env.BOARDROOM_MESH_PROJECTS_JSON) } : {}),
       }
     : undefined
   const explicitTokenFile = process.env.BOARDROOM_LOCAL_TOKEN_FILE

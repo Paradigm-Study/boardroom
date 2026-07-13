@@ -106,18 +106,29 @@ required first three resolve, the daemon forwards privacy-safe card lifecycle
 records (`raised`/`decided`, no card bodies) to `/outbox/<person>`; a partial
 config is treated as "not configured" and nothing leaves the machine.
 
-Publishes are committed to `mesh-outbox.sqlite` before network I/O. Restarts
-reconcile card transitions, retries retain a stable `Idempotency-Key`, and a
-terminal 401/403 is surfaced rather than retried forever. Local diagnostics are
-available at `/api/mesh/status` and `/api/mesh/publishes`; receipt changes also
-appear as `event: mesh` on the existing `/events` stream.
+Publishes are committed to a durable Mesh outbox before network I/O. Legacy
+local mode reconciles card transitions; hosted mode re-authorizes only records
+already in its team-scoped outbox and never backfills pre-consent history.
+Retries retain a stable `Idempotency-Key`, and a terminal 401/403 is surfaced
+rather than retried forever. Local diagnostics are available at
+`/api/mesh/status` and `/api/mesh/publishes`; receipt changes also appear as
+`event: mesh` on the existing `/events` stream.
 
 For a hosted rotating credential, the mesh block additionally carries
 `"deviceId"` and `"expiresAt"` (env: `BOARDROOM_MESH_DEVICE_ID` and
-`BOARDROOM_MESH_EXPIRES_AT`). Boardroom rotates it before expiry and persists
-the successor—not the config file—to `mesh-credential.json` at mode 0600.
-Expired or revoked credentials become a terminal, user-visible publisher state
-instead of an infinite retry loop.
+`BOARDROOM_MESH_EXPIRES_AT`). Desktop remains the only credential owner and
+restarts Boardroom with a replacement before expiry; Boardroom never persists
+the bearer. Expired credentials remain queued for a Desktop-led re-enrollment.
+
+Hosted forwarding also requires `BOARDROOM_MESH_PROJECTS_JSON`, a Desktop-
+projected array of exact `{ "workspaceRoot", "project" }` mappings for the
+active team. `project` is the canonical lowercase GitHub `owner/repository`.
+Each card must carry a registered session id whose exact cwd matches one of
+those roots; otherwise it is not enqueued. Absolute workspace paths stay local
+and the canonical project replaces all producer-supplied repository labels at
+the wire boundary. Missing or empty consent keeps Boardroom useful locally but
+sends nothing to Mesh. Hosted outboxes are team-scoped so delayed records cannot
+cross a later team switch.
 
 ### Packaged local API authentication
 
@@ -153,9 +164,10 @@ carry SHA-256 manifests, are verified before any restore mutation, and restore
 first creates a pre-restore backup. A failed multi-file swap restores every
 original file.
 
-Portable backups contain only `boardroom.sqlite`, `mesh-outbox.sqlite`, and
-non-secret `machine.json`. They never contain `config.json`, `local-token`, or
-`mesh-credential.json`; restore preserves those machine-local secrets. Database,
+Portable backups contain only `boardroom.sqlite`, legacy or team-scoped
+`mesh-outbox*.sqlite` databases, and non-secret `machine.json`. They never
+contain `config.json`, `local-token`, or `mesh-credential.json`; restore
+preserves those machine-local secrets. Database,
 WAL/SHM, snapshots, backups, manifests, configuration, and credential files are
 kept owner-only. Delivered Mesh outbox rows age out after 30 days, while queued
 and terminal records remain available for recovery and diagnosis.

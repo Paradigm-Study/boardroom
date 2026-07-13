@@ -76,7 +76,11 @@ export function doctor(configDir: string, repair = false): DoctorReport {
     })
   }
 
-  for (const name of ['boardroom.sqlite', 'mesh-outbox.sqlite']) {
+  const databases = new Set([
+    'boardroom.sqlite',
+    ...readdirSync(configDir).filter(name => /^mesh-outbox(?:-[a-f0-9]{16})?\.sqlite$/.test(name)),
+  ])
+  for (const name of databases) {
     const path = join(configDir, name)
     if (!existsSync(path)) {
       push({ name: `db:${name}`, ok: true, severity: 'info', detail: 'not present' })
@@ -84,14 +88,20 @@ export function doctor(configDir: string, repair = false): DoctorReport {
     }
     const result = checkDb(path)
     push({ name: `db:${name}`, ok: result.ok, severity: result.ok ? 'info' : 'error', detail: result.detail })
-    if (repair && result.ok && name === 'mesh-outbox.sqlite') {
+    if (repair && result.ok && name.startsWith('mesh-outbox')) {
       const db = new Database(path)
       const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString()
       const changes = db.prepare(
         "DELETE FROM mesh_outbox WHERE state = 'delivered' AND updated_at < ?",
       ).run(cutoff).changes
       db.close()
-      push({ name: 'outbox-retention', ok: true, severity: 'info', detail: `pruned ${changes} old delivered rows`, repaired: changes > 0 })
+      push({
+        name: `outbox-retention:${name}`,
+        ok: true,
+        severity: 'info',
+        detail: `pruned ${changes} old delivered rows`,
+        repaired: changes > 0,
+      })
     }
   }
 
