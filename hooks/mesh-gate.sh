@@ -1,86 +1,68 @@
 #!/bin/bash
-# PreToolUse mesh gate on Edit|Write|MultiEdit. When the mesh relay is
-# configured (MESH_URL + MESH_PERSON), ask it whether another teammate has an
-# active edit or a locked spec on the same file. On a conflict, surface an
-# advisory "ask" ONCE per (session, repo) with the conflicts summarized as the
-# reason — never "deny" (house rule for the mesh gate: advisory only). The
-# sentinel mechanism is copied from redirect-ask.sh, so a session is never
-# hard-blocked: the human can approve the ask, and re-running the edit passes.
+# Claude Code PreToolUse advisory for Edit|Write|MultiEdit. This hook talks only
+# to the local Praxis Studio proxy. Studio owns active-team consent resolution,
+# canonical project/path derivation, and hosted credentials; none of those
+# credentials are ever serialized into Claude settings or this process.
 #
-#   stdin:  { "session_id": "...", "cwd": "...", "tool_name": "Edit|Write|...",
-#             "tool_input": { "file_path": "<abs path>", ... } }
-#   query:  GET ${MESH_URL}/gate?person=<MESH_PERSON>&repo=<url-enc remote>&path=<url-enc repo-rel>
-#           (Authorization: Bearer ${MESH_TOKEN}; curl --max-time 1)
-#
-# Fail-open (non-negotiable): MESH_URL/MESH_PERSON unset, weird stdin, missing
-# file_path, non-git dir, git slow (2s watchdog), relay down/slow/non-JSON —
-# every failure path exits 0 with empty stdout so agent work is never blocked
-# by mesh infrastructure.
-input=$(cat)
+# Every infrastructure or parsing failure is fail-open. A real conflict emits a
+# one-time "ask" per session/workspace, so the user can coordinate or proceed.
+input=$(head -c 1048577)
+[ "${#input}" -gt 1048576 ] && exit 0
 
-[ -n "${MESH_URL:-}" ] || exit 0
-[ -n "${MESH_PERSON:-}" ] || exit 0
+base="${PRAXIS_STUDIO_URL:-http://127.0.0.1:4319}"
+if [[ ! "$base" =~ ^http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})/?$ ]]; then exit 0; fi
+port="${BASH_REMATCH[2]}"
+if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then exit 0; fi
 
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
-[ -n "$file_path" ] || exit 0
+[ -n "$cwd" ] && [ -n "$file_path" ] || exit 0
 
-dir=$(dirname "$file_path")
-# Write may target a not-yet-existing directory; fall back to the session cwd.
-if [ ! -d "$dir" ]; then
-  dir=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
-  [ -d "$dir" ] || exit 0
+local_token="${PRAXIS_LOCAL_TOKEN:-}"
+if [ -z "$local_token" ] && [ -n "${PRAXIS_LOCAL_TOKEN_FILE:-}" ] \
+  && [ -f "$PRAXIS_LOCAL_TOKEN_FILE" ] && [ ! -L "$PRAXIS_LOCAL_TOKEN_FILE" ]; then
+  local_token=$(head -c 4097 -- "$PRAXIS_LOCAL_TOKEN_FILE" 2>/dev/null | tr -d '\r\n')
 fi
+if [ "${#local_token}" -lt 32 ] || [ "${#local_token}" -gt 4096 ]; then
+  local_token=""
+else
+  case "$local_token" in *[!A-Za-z0-9._~-]*) local_token="" ;; esac
+fi
+[ -n "$local_token" ] || exit 0
 
-# 2s watchdog around git (macOS ships no coreutils `timeout`). `remote get-url`
-# is a local config read, but a hook must never hang on a pathological repo.
-# The watchdog's stdio is detached so it can't hold the $() capture pipe open.
-guarded_git() {
-  git "$@" &
-  local pid=$!
-  ( sleep 2; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-  local wd=$!
-  wait "$pid"
-  local rc=$?
-  kill "$wd" 2>/dev/null
-  return "$rc"
-}
-
-top=$(guarded_git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
-repo=$(guarded_git -C "$dir" remote get-url origin 2>/dev/null) || exit 0
-[ -n "$top" ] && [ -n "$repo" ] || exit 0
-
-# Repo-relative path; a target outside the resolved toplevel is not ours to gate.
-case "$file_path" in
-  "$top"/*) rel="${file_path#"$top"/}" ;;
-  *) exit 0 ;;
-esac
-
-# Ask once per (session, repo): same sentinel mechanism as redirect-ask.sh,
-# keyed by session_id + a slug of the remote URL. Checked BEFORE the network
-# call so an already-warned session pays zero latency.
+# Already-warned sessions pay no network latency. The proxy still performs the
+# authoritative consent/path check on the first attempt.
 sid=$(printf '%s' "$input" | jq -r '.session_id // "unknown"' 2>/dev/null)
 [ -n "$sid" ] || sid="unknown"
-state="${TMPDIR:-/tmp}/boardroom-hooks"
-mkdir -p "$state"
-repo_slug=$(printf '%s' "$repo" | tr -c 'a-zA-Z0-9' '_')
-sentinel="$state/mesh-$sid-$repo_slug"
+state="${TMPDIR:-/tmp}/paradigm-mesh-hooks"
+mkdir -p "$state" 2>/dev/null || exit 0
+workspace_slug=$(printf '%s' "$cwd" | shasum -a 256 2>/dev/null | cut -c1-24)
+[ -n "$workspace_slug" ] || workspace_slug=$(printf '%s' "$cwd" | tr -c 'a-zA-Z0-9' '_' | cut -c1-80)
+session_slug=$(printf '%s' "$sid" | tr -c 'a-zA-Z0-9._-' '_' | cut -c1-100)
+sentinel="$state/gate-$session_slug-$workspace_slug"
 [ -f "$sentinel" ] && exit 0
 
 enc() { printf '%s' "$1" | jq -sRr '@uri' 2>/dev/null; }
-resp=$(curl -s --max-time 1 \
-  -H "Authorization: Bearer ${MESH_TOKEN:-}" \
-  "${MESH_URL%/}/gate?person=$(enc "$MESH_PERSON")&repo=$(enc "$repo")&path=$(enc "$rel")" \
+resp=$(curl -s --noproxy '*' --max-filesize 1048576 --max-time 2 \
+  -H "Authorization: Bearer $local_token" \
+  "${base%/}/api/mesh/gate?cwd=$(enc "$cwd")&path=$(enc "$file_path")" \
   2>/dev/null) || exit 0
+[ "${#resp}" -gt 1048576 ] && exit 0
 [ -n "$resp" ] || exit 0
 
 conflict=$(printf '%s' "$resp" | jq -r '.conflict // false' 2>/dev/null)
 [ "$conflict" = "true" ] || exit 0
 
-summary=$(printf '%s' "$resp" | jq -r \
-  '[.conflicts[]? | "\(.person // "a teammate") (\(.kind // "conflict")): \(.detail // "no detail")"] | join("; ")' \
-  2>/dev/null)
-[ -n "$summary" ] || summary="a teammate is actively working on this file"
+summary=$(printf '%s' "$resp" | jq -r '
+  [.conflicts[:8][]?
+    | ((.person // "Team member") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:100]) as $person
+    | ((.kind // "conflict") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:80]) as $kind
+    | ((.detail // "coordinate before editing") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:300]) as $detail
+    | "\($person) (\($kind)): \($detail)"] | join("; ")' 2>/dev/null)
+[ -n "$summary" ] || summary="a team member may be working on this file"
 
-touch "$sentinel"
-jq -nc --arg reason "Mesh gate: potential collision on $rel — $summary. Coordinate first (check the Team brief section of your context, or raise it via boardroom) before touching this file. If you have already coordinated or the user told you to proceed, re-run the edit — this gate fires only once per session per repo." \
+touch "$sentinel" 2>/dev/null || true
+relative=$(printf '%s' "$resp" | jq -r '(.path // "this file") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:240]' 2>/dev/null)
+[ -n "$relative" ] || relative="this file"
+jq -nc --arg reason "Team sync found a potential collision on $relative — $summary. Coordinate first, or re-run the edit if you already coordinated or the user told you to proceed. This advisory fires only once per session and workspace." \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$reason}}'
