@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { chmodSync } from 'node:fs'
 import Database from 'better-sqlite3'
+import { openRecoveringDatabase, ownerOnlyDatabase, refreshLastGood, runMigrations } from './reliability.js'
 
 export type MeshPublishState = 'queued' | 'delivered' | 'terminal'
 
@@ -54,28 +54,37 @@ function toEntry(row: {
 /** Durable, ordered local publisher queue. SQLite owns crash consistency. */
 export class MeshOutbox {
   private readonly db: Database.Database
+  private readonly path: string
+  private closed = false
 
   constructor(path: string) {
-    mkdirSync(dirname(path), { recursive: true })
-    this.db = new Database(path)
+    this.path = path
+    this.db = openRecoveringDatabase(path)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = FULL')
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS mesh_outbox (
-        idempotency_key TEXT PRIMARY KEY,
-        card_id        TEXT NOT NULL,
-        event          TEXT NOT NULL,
-        record_json    TEXT NOT NULL,
-        state          TEXT NOT NULL DEFAULT 'queued',
-        attempts       INTEGER NOT NULL DEFAULT 0,
-        seq            INTEGER,
-        last_error     TEXT,
-        created_at     TEXT NOT NULL,
-        updated_at     TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_mesh_outbox_state_order
-        ON mesh_outbox(state, created_at);
-    `)
+    ownerOnlyDatabase(path)
+    runMigrations(this.db, path, 'mesh-outbox', [{
+      version: 1,
+      name: 'create durable publish outbox',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS mesh_outbox (
+          idempotency_key TEXT PRIMARY KEY,
+          card_id        TEXT NOT NULL,
+          event          TEXT NOT NULL,
+          record_json    TEXT NOT NULL,
+          state          TEXT NOT NULL DEFAULT 'queued',
+          attempts       INTEGER NOT NULL DEFAULT 0,
+          seq            INTEGER,
+          last_error     TEXT,
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mesh_outbox_state_order
+          ON mesh_outbox(state, created_at);
+      `),
+    }])
+    this.pruneDelivered(new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString())
+    refreshLastGood(this.db, path)
     try { chmodSync(path, 0o600) } catch { /* best effort */ }
   }
 
@@ -170,7 +179,18 @@ export class MeshOutbox {
     }
   }
 
+  /** Delivered receipts are bounded; queued/terminal rows are never pruned. */
+  pruneDelivered(beforeIso: string): number {
+    return this.db.prepare(
+      "DELETE FROM mesh_outbox WHERE state = 'delivered' AND updated_at < ?",
+    ).run(beforeIso).changes
+  }
+
   close(): void {
+    if (this.closed) return
+    this.closed = true
+    refreshLastGood(this.db, this.path)
+    ownerOnlyDatabase(this.path)
     this.db.close()
   }
 }

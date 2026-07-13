@@ -131,6 +131,35 @@ daemon compares it in constant time and never logs or reflects it. Leaving the
 token unset preserves legacy loopback-only development behavior, but is not a
 valid packaged-supervisor configuration.
 
+### Operations and recovery
+
+```bash
+npm run doctor -- --config-dir ~/.config/boardroom
+npm run doctor -- --config-dir ~/.config/boardroom --repair
+npm run backup -- --config-dir ~/.config/boardroom --output /secure/backup-dir
+npm run restore -- --config-dir ~/.config/boardroom --input /secure/backup-dir
+```
+
+`doctor` emits a machine-readable report covering SQLite integrity and
+migration journals, configuration/credential shape, and owner-only file modes.
+`--repair` is intentionally limited to safe permission and retention repairs.
+Database startup runs `quick_check` and can recover a corrupt or partial file
+from a verified `.last-good` image while preserving the corrupt copy.
+
+Migrations take a consistent pre-migration snapshot and run in a transaction.
+Failure rolls back both schema and data changes and leaves a retryable failed
+journal entry; snapshots remain available for operator-led recovery. Backups
+carry SHA-256 manifests, are verified before any restore mutation, and restore
+first creates a pre-restore backup. A failed multi-file swap restores every
+original file.
+
+Portable backups contain only `boardroom.sqlite`, `mesh-outbox.sqlite`, and
+non-secret `machine.json`. They never contain `config.json`, `local-token`, or
+`mesh-credential.json`; restore preserves those machine-local secrets. Database,
+WAL/SHM, snapshots, backups, manifests, configuration, and credential files are
+kept owner-only. Delivered Mesh outbox rows age out after 30 days, while queued
+and terminal records remain available for recovery and diagnosis.
+
 ## Enforcement hooks (global, optional but recommended)
 
 Instructions alone are advisory — the model can lapse into its built-in

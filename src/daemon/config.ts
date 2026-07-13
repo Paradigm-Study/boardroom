@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
@@ -38,7 +38,21 @@ export function loadConfig(configDir?: string): Config {
   let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>>
     & { mesh?: Partial<MeshConfig> } = {}
   const p = join(dir, 'config.json')
-  if (existsSync(p)) file = JSON.parse(readFileSync(p, 'utf8'))
+  if (existsSync(p)) {
+    const lastGood = `${p}.last-good`
+    try {
+      file = JSON.parse(readFileSync(p, 'utf8'))
+      copyFileSync(p, lastGood)
+      try { chmodSync(p, 0o600); chmodSync(lastGood, 0o600) } catch { /* best effort */ }
+    } catch (error) {
+      if (!existsSync(lastGood)) throw error
+      const corrupt = `${p}.corrupt-${Date.now()}`
+      renameSync(p, corrupt)
+      copyFileSync(lastGood, p)
+      try { chmodSync(p, 0o600); chmodSync(corrupt, 0o600) } catch { /* best effort */ }
+      file = JSON.parse(readFileSync(p, 'utf8'))
+    }
+  }
   // Mesh (default-off): env overrides file, field by field; the resolved config
   // only carries `mesh` when url+token+person ALL resolve non-empty — a partial
   // mesh block is treated as "not configured", never a half-armed forwarder.

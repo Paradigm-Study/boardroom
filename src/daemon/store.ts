@@ -4,6 +4,7 @@ import { Card, type CardStatus } from '../shared/card.js'
 import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { CapturedSession } from '../shared/session.js'
+import { openRecoveringDatabase, refreshLastGood, runMigrations } from './reliability.js'
 
 // How long a sessions_v3 row outlives its last SessionStart before the boot
 // sweep drops it. Far beyond REATTACH_WINDOW_MS (24h, measured from decision
@@ -14,10 +15,38 @@ export const SESSION_RETENTION_MS = 30 * 24 * 60 * 60_000
 
 export class Store {
   private db: Database.Database
+  private path: string
 
   constructor(path: string) {
-    this.db = new Database(path)
+    this.path = path
+    this.db = openRecoveringDatabase(path)
     this.db.pragma('journal_mode = WAL')
+    runMigrations(this.db, path, 'boardroom', [{
+      version: 1,
+      name: 'baseline card session and entry schema',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS cards (
+          id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          project TEXT PRIMARY KEY, session_id TEXT NOT NULL, cwd TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions_v2 (
+          cwd TEXT PRIMARY KEY, session_id TEXT NOT NULL, project TEXT NOT NULL,
+          claude_session_id TEXT, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions_v3 (
+          session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, project TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS captured_sessions (
+          session_id TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS entries (
+          id TEXT PRIMARY KEY, type TEXT NOT NULL, session_id TEXT,
+          created_at TEXT NOT NULL, json TEXT NOT NULL
+        );
+      `),
+    }])
     // Lock the DB (and WAL/SHM siblings, if present) so other local users can't
     // read captured paths / card contents. :memory: has no file. Production also
     // sets a 0077 umask (index.ts) so lazily-created WAL/SHM are born locked.
@@ -116,6 +145,7 @@ export class Store {
         json       TEXT NOT NULL
       )
     `)
+    refreshLastGood(this.db, path)
   }
 
   recordSession(project: string, sessionId: string, cwd: string): void {
@@ -364,6 +394,8 @@ export class Store {
   }
 
   close(): void {
+    if (!this.db.open) return
+    refreshLastGood(this.db, this.path)
     this.db.close()
   }
 }
