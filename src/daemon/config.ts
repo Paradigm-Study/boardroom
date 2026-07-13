@@ -109,6 +109,15 @@ export function loadConfig(configDir?: string): Config {
       file = JSON.parse(readFileSync(p, 'utf8'))
     }
   }
+  const rawPort = process.env.BOARDROOM_PORT
+  let portOverride: number | undefined
+  if (rawPort !== undefined) {
+    const parsedPort = Number(rawPort)
+    if (!/^\d+$/.test(rawPort) || !Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65_535) {
+      throw new Error('BOARDROOM_PORT must be an integer between 1 and 65535')
+    }
+    portOverride = parsedPort
+  }
   // Mesh (default-off): env overrides file, field by field; the resolved config
   // only carries `mesh` when url+token+person ALL resolve non-empty — a partial
   // mesh block is treated as "not configured", never a half-armed forwarder.
@@ -164,6 +173,7 @@ export function loadConfig(configDir?: string): Config {
     openOnPending: false,
     reattachWindowMs: REATTACH_WINDOW_MS, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
+    ...(portOverride !== undefined ? { port: portOverride } : {}),
     mesh, // computed above; placed after ...file so a partial file block can't leak through
     ...(localToken ? { localToken } : {}),
     dbPath: join(dir, 'boardroom.sqlite'),

@@ -5,13 +5,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from './config.js'
 
 let dir: string
+let ambientBoardroomPort: string | undefined
 
 beforeEach(() => {
+  ambientBoardroomPort = process.env.BOARDROOM_PORT
+  delete process.env.BOARDROOM_PORT
   dir = mkdtempSync(join(tmpdir(), 'boardroom-'))
 })
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+  if (ambientBoardroomPort === undefined) delete process.env.BOARDROOM_PORT
+  else process.env.BOARDROOM_PORT = ambientBoardroomPort
 })
 
 describe('loadConfig', () => {
@@ -36,6 +41,20 @@ describe('loadConfig', () => {
     expect(cfg.openOnPending).toBe(true)
     expect(cfg.remindEveryMinutes).toBe(3)
   })
+
+  it('lets a validated BOARDROOM_PORT override the file for desktop-managed launches', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ port: 9999 }))
+    process.env.BOARDROOM_PORT = '51234'
+    expect(loadConfig(dir).port).toBe(51234)
+  })
+
+  it.each(['0', '65536', 'not-a-port', '', ' 51234', '51234 '])(
+    'rejects non-canonical BOARDROOM_PORT value %j',
+    value => {
+      process.env.BOARDROOM_PORT = value
+      expect(() => loadConfig(dir)).toThrow(/between 1 and 65535/)
+    }
+  )
 
   it('derives dbPath and configDir from the dir, ignoring any file overrides', () => {
     writeFileSync(
