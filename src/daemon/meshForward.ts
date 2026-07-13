@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PLAN_VERDICT_ID,
@@ -172,21 +172,19 @@ export function createMeshForwarder(
   config: Config,
   store?: Store,
 ): MeshForwarder | undefined {
+  const credentialPath = join(config.configDir, 'mesh-credential.json')
+  // Cleanup runs even when Team sync is currently disconnected.
+  if (existsSync(credentialPath)) rmSync(credentialPath, { force: true })
   const mesh = config.mesh
   if (!mesh) return undefined
 
   let device = 'unknown'
   try { device = loadMachineIdentity(config.configDir).machineId } catch { /* best effort */ }
-  const credentialPath = join(config.configDir, 'mesh-credential.json')
-  let credential: ActiveCredential = { ...mesh }
-  if (existsSync(credentialPath)) {
-    try {
-      const saved = JSON.parse(readFileSync(credentialPath, 'utf8')) as Partial<ActiveCredential>
-      if (saved.url === mesh.url && saved.person === mesh.person && typeof saved.token === 'string') {
-        credential = { ...mesh, ...saved }
-      }
-    } catch { /* corrupt credential cache falls back to configured bootstrap */ }
-  }
+  // Older releases cached rotated hosted credentials in plaintext. Desktop is
+  // now the sole credential owner and injects them through process env, so a
+  // daemon restart is the credential handoff boundary. Remove the legacy cache
+  // before any network work; never read a bearer from it.
+  const credential: ActiveCredential = { ...mesh }
   device = credential.deviceId ?? device
   const endpoint = (): string =>
     `${credential.url.replace(/\/+$/, '')}/outbox/${encodeURIComponent(credential.person)}`
@@ -199,52 +197,14 @@ export function createMeshForwarder(
   let blockedUntil = 0
   let chain: Promise<void> = Promise.resolve()
 
-  const persistCredential = (): void => {
-    const tmp = `${credentialPath}.${process.pid}.${Date.now()}.tmp`
-    writeFileSync(tmp, JSON.stringify(credential, null, 2), { mode: 0o600 })
-    try { chmodSync(tmp, 0o600) } catch { /* best effort */ }
-    renameSync(tmp, credentialPath)
-    try { chmodSync(credentialPath, 0o600) } catch { /* best effort */ }
-  }
-
   const ensureFreshCredential = async (): Promise<PostResult | undefined> => {
     if (!credential.expiresAt || !credential.deviceId) return undefined // legacy static token
     const expires = Date.parse(credential.expiresAt)
     if (!Number.isFinite(expires) || expires <= Date.now()) {
-      return { kind: 'terminal', error: 'mesh credential expired; re-enrollment required' }
+      return { kind: 'transient', error: 'mesh credential expired; desktop re-enrollment and service restart required' }
     }
     if (expires - Date.now() > 5 * 60_000) return undefined
-    try {
-      const response = await fetch(`${credential.url.replace(/\/+$/, '')}/v1/credentials/rotate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${credential.token}`,
-          'Content-Type': 'application/json',
-          'X-Mesh-Device-ID': credential.deviceId,
-          ...(credential.teamId ? { 'X-Mesh-Team-ID': credential.teamId } : {}),
-        },
-        body: '{}',
-        signal: AbortSignal.timeout(2000),
-      })
-      if (!response.ok) {
-        const error = `mesh credential rotation returned ${response.status}`
-        return response.status === 401 || response.status === 403
-          ? { kind: 'terminal', error }
-          : { kind: 'transient', error }
-      }
-      const body = await response.json() as Partial<ActiveCredential> & { accessToken?: unknown }
-      if (
-        typeof body.accessToken !== 'string' ||
-        typeof body.expiresAt !== 'string' ||
-        body.teamId !== credential.teamId ||
-        body.person !== credential.person
-      ) return { kind: 'terminal', error: 'mesh credential rotation returned an invalid identity' }
-      credential = { ...credential, token: body.accessToken, expiresAt: body.expiresAt }
-      persistCredential()
-      return undefined
-    } catch (error) {
-      return { kind: 'transient', error: error instanceof Error ? error.message : String(error) }
-    }
+    return { kind: 'transient', error: 'mesh credential is expiring; desktop rotation and service restart required' }
   }
 
   const emit = (entry: MeshOutboxEntry, type: MeshPublishEvent['type'], extra: Partial<MeshPublishEvent> = {}): void => {

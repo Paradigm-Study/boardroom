@@ -169,6 +169,30 @@ describe('loadConfig mesh resolution (mesh-v0, default-off)', () => {
     })
   })
 
+  it('requires rotating hosted credentials to come completely from process environment', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({
+        mesh: {
+          url: 'https://mesh.example.test', token: 'persisted-token', person: 'alice',
+          teamId: 'team-a', deviceId: 'device-a', expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+      }),
+    )
+    expect(() => loadConfig(dir)).toThrow(/supplied completely through process environment/)
+
+    process.env.BOARDROOM_MESH_URL = 'https://mesh.example.test'
+    process.env.BOARDROOM_MESH_TOKEN = 'runtime-only-token'
+    process.env.BOARDROOM_MESH_PERSON = 'alice'
+    process.env.BOARDROOM_MESH_TEAM_ID = 'team-a'
+    process.env.BOARDROOM_MESH_DEVICE_ID = 'device-a'
+    process.env.BOARDROOM_MESH_EXPIRES_AT = '2099-01-01T00:00:00.000Z'
+    expect(loadConfig(dir).mesh).toEqual({
+      url: 'https://mesh.example.test', token: 'runtime-only-token', person: 'alice',
+      teamId: 'team-a', deviceId: 'device-a', expiresAt: '2099-01-01T00:00:00.000Z',
+    })
+  })
+
   it('treats a partial mesh (file) as not configured — never a half-armed forwarder', () => {
     writeFileSync(
       join(dir, 'config.json'),

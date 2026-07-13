@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -531,40 +531,9 @@ describe('createMeshForwarder', () => {
     expect(requests[0].body).not.toHaveProperty('teamId')
   })
 
-  it('rotates an expiring hosted credential before publish and persists it at 0600', async () => {
-    await close(server)
-    const authHeaders: string[] = []
-    const hosted = createServer((req, res) => {
-      authHeaders.push(req.headers.authorization ?? '')
-      let raw = ''
-      req.setEncoding('utf8')
-      req.on('data', chunk => { raw += chunk })
-      req.on('end', () => {
-        res.setHeader('Content-Type', 'application/json')
-        if (req.url === '/v1/credentials/rotate') {
-          res.end(JSON.stringify({
-            relayUrl: `http://127.0.0.1:${relayPort}`,
-            teamId: 'team-a',
-            person: 'alice',
-            accessToken: 'rotated-token',
-            expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-          }))
-          return
-        }
-        requests.push({
-          method: req.method,
-          url: req.url,
-          auth: req.headers.authorization,
-          idempotencyKey: req.headers['idempotency-key'] as string | undefined,
-          teamId: req.headers['x-mesh-team-id'] as string | undefined,
-          raw,
-          body: JSON.parse(raw) as Record<string, unknown>,
-        })
-        res.end(JSON.stringify({ ok: true, seq: 9 }))
-      })
-    })
-    servers.push(hosted)
-    await listen(hosted, relayPort)
+  it('leaves hosted rotation to Desktop, never caches a bearer, and resumes queued delivery after restart', async () => {
+    const credentialPath = join(dir, 'mesh-credential.json')
+    writeFileSync(credentialPath, JSON.stringify({ token: 'stale-plaintext-token' }), { mode: 0o600 })
     const armed = arm({
       ...config,
       mesh: {
@@ -576,15 +545,36 @@ describe('createMeshForwarder', () => {
     })
     queue.submit(planCard('rotating'), noopWaiter)
     await armed.flush()
-    expect(authHeaders).toEqual(['Bearer tok-a', 'Bearer rotated-token'])
+    expect(requests).toHaveLength(0)
+    expect(existsSync(credentialPath)).toBe(false)
+    expect(armed.status()).toMatchObject({
+      authState: 'expiring',
+      queued: 1,
+      terminal: 0,
+      delivered: 0,
+      lastError: 'mesh credential is expiring; desktop rotation and service restart required',
+    })
+    armed.stop()
+    armed.close()
+    forwarder = undefined
+
+    const restarted = arm({
+      ...config,
+      mesh: {
+        ...config.mesh!,
+        token: 'desktop-rotated-token',
+        teamId: 'team-a',
+        deviceId: 'device-a',
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      },
+    })
+    await restarted.flush()
     expect(requests).toHaveLength(1)
-    const credentialPath = join(dir, 'mesh-credential.json')
-    expect(JSON.parse(readFileSync(credentialPath, 'utf8')).token).toBe('rotated-token')
-    expect(statSync(credentialPath).mode & 0o777).toBe(0o600)
-    expect(armed.status()).toMatchObject({ authState: 'active', terminal: 0, delivered: 1 })
+    expect(requests[0].auth).toBe('Bearer desktop-rotated-token')
+    expect(restarted.status()).toMatchObject({ queued: 0, terminal: 0, delivered: 1 })
   })
 
-  it('surfaces an expired hosted credential as terminal auth state without sending data', async () => {
+  it('holds expired hosted publishes for Desktop re-enrollment without sending or losing data', async () => {
     const armed = arm({
       ...config,
       mesh: {
@@ -599,16 +589,19 @@ describe('createMeshForwarder', () => {
     expect(requests).toHaveLength(0)
     expect(armed.status()).toMatchObject({
       authState: 'expired',
-      queued: 0,
-      terminal: 1,
-      lastError: 'mesh credential expired; re-enrollment required',
+      queued: 1,
+      terminal: 0,
+      lastError: 'mesh credential expired; desktop re-enrollment and service restart required',
     })
   })
 
   it('attaches nothing when mesh configuration is absent', () => {
+    const credentialPath = join(dir, 'mesh-credential.json')
+    writeFileSync(credentialPath, JSON.stringify({ token: 'legacy-plaintext' }), { mode: 0o600 })
     const silent = createMeshForwarder(queue, { ...config, mesh: undefined })
 
     expect(silent).toBeUndefined()
+    expect(existsSync(credentialPath)).toBe(false)
     expect(queue.listenerCount('card')).toBe(0)
   })
 

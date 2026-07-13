@@ -13,7 +13,7 @@ export interface MeshConfig {
   person: string
   /** Optional tenant selector for enrolled relay configs; omitted = legacy-local. */
   teamId?: string
-  /** Hosted rotating credential binding. Omit both for legacy static tokens. */
+  /** Hosted rotating credential scope. Omit both for legacy static tokens. */
   deviceId?: string
   expiresAt?: string
 }
@@ -62,6 +62,17 @@ export function loadConfig(configDir?: string): Config {
   const meshTeamId = process.env.BOARDROOM_MESH_TEAM_ID || file.mesh?.teamId
   const meshDeviceId = process.env.BOARDROOM_MESH_DEVICE_ID || file.mesh?.deviceId
   const meshExpiresAt = process.env.BOARDROOM_MESH_EXPIRES_AT || file.mesh?.expiresAt
+  const hostedMesh = !!(meshDeviceId || meshExpiresAt)
+  if (hostedMesh && (
+    !process.env.BOARDROOM_MESH_URL ||
+    !process.env.BOARDROOM_MESH_TOKEN ||
+    !process.env.BOARDROOM_MESH_PERSON ||
+    !process.env.BOARDROOM_MESH_TEAM_ID ||
+    !process.env.BOARDROOM_MESH_DEVICE_ID ||
+    !process.env.BOARDROOM_MESH_EXPIRES_AT
+  )) {
+    throw new Error('hosted Boardroom mesh credentials must be supplied completely through process environment')
+  }
   const mesh = meshUrl && meshToken && meshPerson
     ? {
         url: meshUrl,

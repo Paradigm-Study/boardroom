@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -97,13 +97,12 @@ export function doctor(configDir: string, repair = false): DoctorReport {
 
   const credentialPath = join(configDir, 'mesh-credential.json')
   if (existsSync(credentialPath)) {
-    try {
-      const value = JSON.parse(readFileSync(credentialPath, 'utf8')) as { token?: unknown; expiresAt?: unknown; deviceId?: unknown }
-      const ok = typeof value.token === 'string' && typeof value.expiresAt === 'string' && typeof value.deviceId === 'string'
-      push({ name: 'mesh-credential', ok, severity: ok ? 'info' : 'error', detail: ok ? 'shape valid' : 'missing token/expiresAt/deviceId' })
-    } catch (error) {
-      push({ name: 'mesh-credential', ok: false, severity: 'error', detail: error instanceof Error ? error.message : String(error) })
-    }
+    if (repair) rmSync(credentialPath, { force: true })
+    push({
+      name: 'mesh-credential-cache', ok: repair, severity: repair ? 'info' : 'error',
+      detail: repair ? 'removed deprecated plaintext credential cache' : 'deprecated plaintext credential cache exists',
+      ...(repair ? { repaired: true } : {}),
+    })
   }
   const tokenConfigured = !!process.env.BOARDROOM_LOCAL_TOKEN ||
     existsSync(process.env.BOARDROOM_LOCAL_TOKEN_FILE || join(configDir, 'local-token'))
