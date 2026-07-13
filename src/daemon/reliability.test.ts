@@ -136,10 +136,21 @@ describe('reliability operations', () => {
     const changed = new Store(dbPath)
     changed.insert(card('after-backup'))
     changed.close()
+    const postBackupOutboxName = 'mesh-outbox-aaaaaaaaaaaaaaaa.sqlite'
+    const postBackupOutbox = new MeshOutbox(join(dir, postBackupOutboxName))
+    postBackupOutbox.enqueue({
+      idempotencyKey: 'must-not-survive',
+      cardId: 'later-team',
+      event: 'raised',
+      record: { project: 'other/repo' },
+      createdAt: '2030-01-02T00:00:00.000Z',
+    })
+    postBackupOutbox.close()
     const preRestore = restoreBackup(backupDir, dir)
     let restored = new Store(dbPath)
     expect(restored.list().map(item => item.id)).toEqual(['from-backup'])
     restored.close()
+    expect(verifyBackup(preRestore).files.map(file => file.name)).toContain(postBackupOutboxName)
     const preDb = new Store(join(preRestore, 'boardroom.sqlite'))
     expect(preDb.list().map(item => item.id).sort()).toEqual(['after-backup', 'from-backup'])
     preDb.close()
@@ -148,6 +159,7 @@ describe('reliability operations', () => {
     const restoredOutbox = new MeshOutbox(join(dir, scopedOutboxName))
     expect(restoredOutbox.list()).toEqual([expect.objectContaining({ idempotencyKey: 'team-record' })])
     restoredOutbox.close()
+    expect(existsSync(join(dir, postBackupOutboxName))).toBe(false)
 
     writeFileSync(join(backupDir, 'boardroom.sqlite'), 'tampered')
     expect(() => restoreBackup(backupDir, dir)).toThrow(/checksum mismatch/)

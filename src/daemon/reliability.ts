@@ -259,6 +259,7 @@ export function createBackup(sourceDir: string, outputDir: string): BackupManife
   const files = names.map(name => {
     const source = join(sourceDir, name)
     const target = join(outputDir, name)
+    regularFile(source, name)
     if (name.endsWith('.sqlite')) {
       const db = new Database(source, { readonly: true })
       try { db.prepare('VACUUM INTO ?').run(target) } finally { db.close() }
@@ -298,14 +299,7 @@ export function restoreBackup(
   const manifest = verifyBackup(inputDir)
   const preRestore = join(targetDir, `pre-restore-${safeStamp()}`)
   createBackup(targetDir, preRestore)
-  const staged: Array<{
-    name: string
-    target: string
-    tmp: string
-    previous: string | undefined
-    previousMoved: boolean
-    installed: boolean
-  }> = []
+  const staged: Array<{ name: string; target: string; tmp: string; installed: boolean }> = []
   try {
     for (const file of manifest.files) {
       const target = join(targetDir, file.name)
@@ -316,8 +310,6 @@ export function restoreBackup(
         name: file.name,
         target,
         tmp,
-        previous: existsSync(target) ? `${target}.before-restore-${process.pid}` : undefined,
-        previousMoved: false,
         installed: false,
       })
     }
@@ -325,24 +317,45 @@ export function restoreBackup(
     for (const item of staged) rmSync(item.tmp, { force: true })
     throw error
   }
+  const manifestNames = new Set(manifest.files.map(file => file.name))
+  const managedNames = new Set([
+    ...manifestNames,
+    ...readdirSync(targetDir).filter(isBackupFileName),
+  ])
+  const quarantined: Array<{ original: string; previous: string }> = []
   try {
-    for (const item of staged) {
-      if (item.previous) {
-        renameSync(item.target, item.previous)
-        item.previousMoved = true
+    for (const name of managedNames) {
+      const target = join(targetDir, name)
+      const candidates = name.endsWith('.sqlite')
+        ? [target, `${target}-wal`, `${target}-shm`, `${target}.last-good`]
+        : [target]
+      for (const [index, candidate] of candidates.entries()) {
+        if (!existsSync(candidate)) continue
+        const previous = `${candidate}.before-restore-${process.pid}-${index}`
+        renameSync(candidate, previous)
+        quarantined.push({ original: candidate, previous })
       }
-      hooks.afterPreviousMoved?.(item.name)
+      hooks.afterPreviousMoved?.(name)
+    }
+    for (const item of staged) {
       renameSync(item.tmp, item.target)
       item.installed = true
       ownerOnly(item.target)
     }
-    for (const item of staged) if (item.previous) rmSync(item.previous, { force: true })
+    // The replacement is committed once every staged file is installed. Cleanup
+    // of quarantined originals is best-effort after that point: a cleanup error
+    // must never trigger a partial rollback after earlier originals were removed.
+    for (const item of quarantined) {
+      try { rmSync(item.previous, { force: true }) } catch { /* retained for manual cleanup */ }
+    }
     return preRestore
   } catch (error) {
-    for (const item of staged.reverse()) {
+    for (const item of [...staged].reverse()) {
       if (item.installed) rmSync(item.target, { force: true })
-      if (item.previousMoved && item.previous && existsSync(item.previous)) renameSync(item.previous, item.target)
       rmSync(item.tmp, { force: true })
+    }
+    for (const item of quarantined.reverse()) {
+      if (existsSync(item.previous)) renameSync(item.previous, item.original)
     }
     throw error
   }
