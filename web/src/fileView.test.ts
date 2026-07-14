@@ -113,4 +113,12 @@ describe('parseHash / fileHash', () => {
     // render, so a throw here is a blank dashboard from one mangled URL.
     expect(parseHash('#/session/%E0%A4%A')).toEqual({ kind: 'session', id: '%E0%A4%A' })
   })
+  it('parses the report route, decoding a percent-encoded entry id', () => {
+    expect(parseHash('#/report/e1')).toEqual({ kind: 'report', id: 'e1' })
+    expect(parseHash('/report/e1')).toEqual({ kind: 'report', id: 'e1' })
+    expect(parseHash(`#/report/${encodeURIComponent('e/weird id')}`)).toEqual({ kind: 'report', id: 'e/weird id' })
+  })
+  it('survives a malformed percent-encoding in the report id instead of blank-screening', () => {
+    expect(parseHash('#/report/%E0%A4%A')).toEqual({ kind: 'report', id: '%E0%A4%A' })
+  })
 })

@@ -1,13 +1,12 @@
-import { Archive, Armchair, ChevronRight, FolderTree, Inbox, MessagesSquare } from 'lucide-react'
+import { Archive, Armchair, ChevronRight, CircleCheck, FileText, FolderTree, Inbox, ListChecks, MessageCircleQuestion, MessagesSquare, Route, type LucideIcon } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import type { Card } from '../../src/shared/card.js'
+import type { Card, Stage } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
-import { age, isReconnecting, needsHuman } from './helpers.js'
+import { age, isReconnecting, needsHuman, orphanClockMs, REATTACH_WINDOW_MS } from './helpers.js'
 import { isImplicitlyRead, readEntrySet, readStateVersion, subscribeReadState, unreadCount } from './readState.js'
 import { STAGE } from './stage.js'
 import { StreamDrawer } from './StreamDrawer.js'
-import { parseTag } from './tagLabel.js'
 
 // How many sessions a folder shows before the "View more" control. A single
 // folder can hold hundreds of sessions; capping keeps it from burying the rest.
@@ -115,14 +114,26 @@ function statusLabel(card: Card): string {
   return card.status
 }
 
+// Fraction (0–1) of the reattach window still REMAINING for a reconnecting gate —
+// drives the width of the countdown bar under its row. Mirrors isReconnecting's
+// clock handling: prefer orphanedAt, fall back to createdAt, and fail OPEN (full
+// bar) on an unparseable timestamp so a corrupt clock never reads as "expired".
+function reattachRemaining(card: Card, nowMs: number = Date.now()): number {
+  const t = orphanClockMs(card)
+  if (!Number.isFinite(t)) return 1
+  return Math.max(0, Math.min(1, 1 - (nowMs - t) / REATTACH_WINDOW_MS))
+}
+
 function Item({ card, selected }: { card: Card; selected: boolean }) {
+  const reconnecting = isReconnecting(card)
+  const remaining = reconnecting ? reattachRemaining(card) : 0
   return (
     <a
       href={`#/card/${card.id}`}
       className={`titem${selected ? ' on' : ''}${needsHuman(card) ? '' : ' done'}`}
       title={card.headline}
     >
-      <span className={`t-state ${isReconnecting(card) ? 'reconnecting' : card.status}`} />
+      <span className={`t-state ${reconnecting ? 'reconnecting' : card.status}`} />
       <span className="t-main">
         <p className="t-title">{card.headline}</p>
         <span className="t-meta">
@@ -133,7 +144,84 @@ function Item({ card, selected }: { card: Card; selected: boolean }) {
           <span>·</span>
           <span>{age(card.createdAt)}</span>
         </span>
+        {reconnecting && (
+          <span
+            className="recon-bar"
+            role="progressbar"
+            aria-label="Reattach window remaining"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(remaining * 100)}
+          >
+            <span className="recon-bar-fill" style={{ width: `${remaining * 100}%` }} />
+          </span>
+        )}
       </span>
+    </a>
+  )
+}
+
+// ── History gate glyphs ──────────────────────────────────────────────────────
+// Each stage maps to a lucide glyph so a resolved gate collapses to a single colored
+// icon in its session's strip: the icon says WHICH gate it was, the color reinforces
+// it. An abandoned (orphaned) gate renders muted — no dashed ring, because the only
+// place a status ring earned its keep (a live reconnecting gate) now shows its state
+// as the reattach countdown bar above.
+const STAGE_ICON: Record<Stage, LucideIcon> = {
+  clarify: MessageCircleQuestion,
+  plan: Route,
+  spec: ListChecks,
+  results: CircleCheck,
+}
+
+// One history gate as its stage glyph — a compact, clickable stand-in for the full
+// Item row. Hover/title + aria-label keep the headline reachable, so collapsing the
+// row loses nothing the human needs to identify or open it.
+function GateIcon({ card, selected }: { card: Card; selected: boolean }) {
+  const Icon = STAGE_ICON[card.stage]
+  const orphaned = card.status === 'orphaned'
+  return (
+    <a
+      href={`#/card/${card.id}`}
+      className={`gate-icon${selected ? ' on' : ''}${orphaned ? ' orphaned' : ''}`}
+      style={STAGE[card.stage].vars}
+      title={card.headline}
+      // Abandoned gates read identically to decided ones by shape + color, so the
+      // status also goes in the accessible name — the old full row said "orphaned"
+      // in text, and the strip must not drop that for screen-reader / keyboard users.
+      aria-label={`${STAGE[card.stage].label}: ${card.headline}${orphaned ? ' (orphaned)' : ''}`}
+    >
+      <Icon size={18} aria-hidden />
+    </a>
+  )
+}
+
+// A history session's resolved gates as one wrapping row of stage glyphs — the
+// compaction that stops a session with many decided gates from burying the sidebar.
+// Pending / reconnecting gates never reach here; they stay full Item rows under
+// Needs-you (see the section fork in ProjectSection).
+function GateStrip({ cards, selectedId }: { cards: Card[]; selectedId: string | null }) {
+  return (
+    <div className="side-gate-strip">
+      {cards.map(c => <GateIcon key={c.id} card={c} selected={c.id === selectedId} />)}
+    </div>
+  )
+}
+
+// A session's own report entries render as first-class rows too — the human's
+// direction that a report is "additional information", never a second-class
+// citizen tucked away behind a drawer. Appended AFTER the session's card
+// rendering (the Item list OR the GateStrip) rather than interleaved by FIFO
+// timestamp: History's GateStrip is a compact icon strip, not a row list a report
+// could interleave into, so one append rule keeps both sections' structure simple
+// and uniform. `unread` is computed by the caller (readIds is read once per
+// render pass — see TaskSidebar below), so this stays a plain presentational row.
+function ReportRow({ entry, unread }: { entry: Extract<Entry, { type: 'report' }>; unread: boolean }) {
+  return (
+    <a href={`#/report/${encodeURIComponent(entry.id)}`} className="side-report-row" title={entry.headline}>
+      <FileText size={12} aria-hidden />
+      <span className="side-report-title">{entry.headline}</span>
+      {unread && <span className="side-unread-dot" aria-label="Unread report" />}
     </a>
   )
 }
@@ -238,9 +326,11 @@ function ProjectSection({
             // here too — they must surface under their project like unbound cards do.
             const vm = session.bound ? sessions?.find(s => s.sessionId === session.key) : undefined
             const sessionEntries = entriesBySession.get(session.key) ?? []
-            // Already FIFO (createdAt ASC) — entriesBySession is built that way once
-            // at the top of TaskSidebar, so no re-sort needed per session render.
-            const tags = sessionEntries.filter((e): e is Extract<Entry, { type: 'tag' }> => e.type === 'tag')
+            // NOTE: tag entries deliberately do NOT render in the sidebar. The stage
+            // chips they used to paint here said the same thing the Needs-you rows /
+            // history glyph strip already say per gate — pure duplication (human's
+            // call, results review 2026-07-13). Tags still render in the stream views;
+            // sessionEntries feeds the unread dot and the StreamDrawer below.
             // Unread dot: readIds is read from localStorage exactly ONCE per render
             // pass (in TaskSidebar), so this is a plain Set lookup per report — O(1)
             // per entry, not a localStorage re-read per entry. Age-implies-read: a
@@ -278,25 +368,14 @@ function ProjectSection({
                     <MessagesSquare size={12} aria-hidden />
                   </button>
                 </div>
-                {tags.length > 0 && (
-                  <div className="side-session-tags">
-                    {tags.map(tag => {
-                      const { stage, label } = parseTag(tag.tag)
-                      const color = stage ? STAGE[stage].color : 'var(--ink-3)'
-                      return (
-                        <a
-                          key={tag.id}
-                          className="side-tag-chip"
-                          style={{ '--stage-color': color } as React.CSSProperties}
-                          href={`#/card/${tag.cardId}`}
-                        >
-                          {label}
-                        </a>
-                      )
-                    })}
-                  </div>
-                )}
-                {session.cards.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+                {section === 'history'
+                  ? session.cards.length > 0 && <GateStrip cards={session.cards} selectedId={selectedId} />
+                  : session.cards.map(c => <Item key={c.id} card={c} selected={c.id === selectedId} />)}
+                {sessionEntries
+                  .filter((e): e is Extract<Entry, { type: 'report' }> => e.type === 'report')
+                  .map(e => (
+                    <ReportRow key={e.id} entry={e} unread={!isImplicitlyRead(e) && !readIds.has(e.id)} />
+                  ))}
                 {streamOpen && (
                   <StreamDrawer
                     session={vm ?? null}

@@ -81,6 +81,9 @@ export type Route =
   // A real Claude Code session's stream view (#/session/<claudeSessionId>) — the
   // spine view, cards in chronological order within that one session.
   | { kind: 'session'; id: string }
+  // A single report entry's main-pane view (#/report/<entryId>) — a report renders
+  // as a first-class widget in the normal content area, not a separate drawer.
+  | { kind: 'report'; id: string }
   // An in-page block anchor (#block-…, from a decision's Evidence links): a scroll
   // within the open card, NOT a route change. Without this kind it would parse as
   // root and the auto-open would yank the view to a different card.
@@ -121,6 +124,8 @@ export function parseHash(hash: string): Route {
   if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
   const session = /^\/session\/(.+)$/.exec(raw)
   if (session) return { kind: 'session', id: safeDecode(session[1]) }
+  const report = /^\/report\/(.+)$/.exec(raw)
+  if (report) return { kind: 'report', id: safeDecode(report[1]) }
   const card = /^\/card\/(.+)$/.exec(raw)
   if (card) return { kind: 'card', id: card[1] }
   if (raw.startsWith('block-')) return { kind: 'anchor', id: raw }

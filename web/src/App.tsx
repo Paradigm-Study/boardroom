@@ -1,15 +1,16 @@
 import { Armchair, Bell } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
-import type { SessionVM } from './api.js'
-import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
+import type { AuthStatusVM, SessionVM } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, getAuthStatus, subscribeStream } from './api.js'
 import { CardView } from './CardView.js'
 import { FileViewer } from './FileViewer.js'
 import { FolderColumns } from './FolderColumns.js'
 import { parseHash } from './fileView.js'
 import { needsHuman } from './helpers.js'
 import { notifyCard, notifyPermission, requestNotify } from './notify.js'
+import { ReportView } from './ReportView.js'
 import { SessionStream } from './SessionStream.js'
 import { TaskSidebar } from './TaskSidebar.js'
 
@@ -88,6 +89,10 @@ export function App() {
   // with cards) on the #/session/<id> route.
   const [entries, setEntries] = useState<Map<string, Entry>>(new Map())
   const [sessions, setSessions] = useState<SessionVM[] | null>(null)
+  // "Connect your Claude account" status. null until the first poll settles, or when
+  // the daemon lacks the auth feature (the /api/auth routes 404 → we keep it null and
+  // render nothing). See the poll effect below.
+  const [authStatus, setAuthStatus] = useState<AuthStatusVM | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
   const [loadError, setLoadError] = useState<string | null>(null)
   // False until the initial fetch settles: a deep link must show "loading", never a
@@ -276,6 +281,20 @@ export function App() {
     return () => clearInterval(timer)
   }, [route.kind])
 
+  // Poll the "Connect your Claude account" status. Fast while a browser login is
+  // in flight (to pick up the login URL, then the connected/failed transition),
+  // slow otherwise. A thrown error means the daemon has no auth feature — leave it
+  // null so nothing renders. reloadAuth() forces an immediate refresh after an action.
+  const reloadAuth = useCallback((): void => {
+    void getAuthStatus().then(setAuthStatus).catch(() => setAuthStatus(null))
+  }, [])
+  const authConnecting = authStatus?.login.state === 'running'
+  useEffect(() => {
+    reloadAuth()
+    const timer = setInterval(reloadAuth, authConnecting ? 1500 : 20000)
+    return () => clearInterval(timer)
+  }, [reloadAuth, authConnecting])
+
   useEffect(() => {
     if (onRoot && newestPendingId) {
       history.replaceState(null, '', `#/card/${newestPendingId}`)
@@ -352,6 +371,23 @@ export function App() {
     )
   }
 
+  if (route.kind === 'report') {
+    const found = entries.get(route.id)
+    const report = found?.type === 'report' ? found : undefined
+    return (
+      <div className="frame">
+        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
+        <main className="content">
+          <div className="content-inner">
+            {report
+              ? <ReportView entry={report} />
+              : <p style={{ color: 'var(--ink-3)' }}>{initialLoadDone ? 'Report not found.' : 'Loading…'}</p>}
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="frame">
       <TaskSidebar cards={all} selectedId={shown?.id ?? null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
@@ -364,7 +400,7 @@ export function App() {
         )}
         <div className="content-inner">
           {shown
-            ? <CardView key={shown.id} card={shown} cards={all} />
+            ? <CardView key={shown.id} card={shown} cards={all} authStatus={authStatus} onAuthChanged={reloadAuth} />
             : route.kind === 'card'
               ? <p style={{ color: 'var(--ink-3)' }}>{initialLoadDone ? 'Card not found.' : 'Loading…'}</p>
               : (

@@ -21,7 +21,10 @@
   --clarify: #8b6cc9;
   --plan: #2f9474;
   --spec: #3d7bc9;
-  --results: #c98a3d;
+  /* Light value darkened from #c98a3d so a bare 15px results glyph on the sidebar
+     (--bg-2, hover --bg-3) clears the 3:1 non-text-contrast floor — the other three
+     stage colors already sit in that 3.4–4.0 band. Dark mode was already 5.8:1. */
+  --results: light-dark(#ad7420, #c98a3d);
 
   --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, monospace;
@@ -146,11 +149,21 @@ a { color: inherit; }
 }
 .titem:hover { background: var(--bg-3); }
 .titem.on { background: var(--bg); border-color: var(--line-2); }
+/* Every non-done row is on the human's plate (Item renders only in Needs-you), so
+   the whole row wears the pending family — an amber wash + tinted border makes
+   "waiting on you" unmistakable against the calm decided/history strips (human:
+   couldn't tell pending apart from decided at a glance). Selection (.on) still
+   switches to the plain open-card look; hover deepens the wash instead of greying. */
+.titem:not(.on):not(.done) { background: var(--pending-soft); border-color: color-mix(in srgb, var(--pending) 22%, transparent); }
+.titem:not(.on):not(.done):hover { background: color-mix(in srgb, var(--pending) 12%, var(--pending-soft)); }
 .t-state { flex-shrink: 0; margin-top: 5px; width: 8px; height: 8px; border-radius: 50%; }
 .t-state.pending { background: var(--pending); animation: pulse 1.8s ease-in-out infinite; }
-.t-state.decided { background: var(--ok); }
-.t-state.orphaned { background: transparent; border: 1.5px dashed var(--ink-3); }
-.t-state.reconnecting { background: transparent; border: 1.5px dashed var(--pending); animation: pulse 1.8s ease-in-out infinite; }
+/* Only pending + reconnecting dots reach the sidebar now: Item renders solely in the
+   Needs-you (non-history) branch, whose cards are all needsHuman. Decided / abandoned
+   gates route to History, which is a glyph strip with no .t-state dot at all.
+   Reconnecting drops the dashed ring — the reattach countdown bar under the row now
+   carries "a restart orphaned this — you still have a window to answer it". */
+.t-state.reconnecting { background: var(--pending); animation: pulse 1.8s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .t-main { min-width: 0; flex: 1; }
 .t-title {
@@ -165,6 +178,32 @@ a { color: inherit; }
   display: flex; gap: 6px; align-items: center; white-space: nowrap; overflow: hidden;
 }
 .t-meta .stage-dot { width: 6px; height: 6px; border-radius: 2px; flex-shrink: 0; }
+
+/* Reattach countdown under a reconnecting row: a restart-orphaned gate has a bounded
+   window to be re-answered, and this depleting bar is where that state now lives. */
+.recon-bar {
+  display: block; height: 3px; margin-top: 6px;
+  border-radius: 2px; background: var(--line-2); overflow: hidden;
+}
+.recon-bar-fill { display: block; height: 100%; border-radius: 2px; background: var(--pending); }
+
+/* History gate strip: a resolved session's gates collapse to one wrapping row of
+   stage glyphs (icon = which gate, color = stage) so an old session with many gates
+   stops burying the sessions below it. Abandoned (orphaned) gates render muted. */
+.side-gate-strip { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 10px 5px; }
+.gate-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px;
+  color: var(--stage-color); border: 1px solid transparent; text-decoration: none;
+}
+.gate-icon:hover { background: var(--bg-3); }
+.gate-icon.on { background: var(--bg); border-color: var(--line-2); }
+/* Abandoned (orphaned) gate: grey + a dashed ghost ring, so "this gate died" is a
+   SHAPE difference from decided's colored glyphs, not a hue shift (human: "can't
+   really differentiate them from decided"). Grey stays --ink-2 (3:1 non-text floor);
+   the status is also in the aria-label, so none of it is color-only. */
+.gate-icon.orphaned { color: var(--ink-2); border: 1px dashed var(--ink-3); }
+
 .side-empty { padding: 10px 8px; font-size: 12.5px; color: var(--ink-3); }
 
 .content { flex: 1; min-width: 0; padding: 30px 32px 100px; }
@@ -952,6 +991,12 @@ a { color: inherit; }
 .entry-report-open:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .entry-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
 
+/* ReportView (#/report/<id> main-pane view) reuses .card-col/.decision-sheet/
+   .sheet-head/.canvas-label/.sheet-source verbatim (see App.tsx + ReportView.tsx) —
+   only this quiet footer line is new: a report is additional information, never
+   a gate, so it says so plainly instead of offering a submit bar. */
+.report-view-footer { margin: 14px 0 0; color: var(--ink-3); font-size: 12.5px; }
+
 /* Tag rows — an ambient "stage · event" annotation on the stream, slim on purpose
    (never a gate, never counts as unread) and colored with the stage's own var. */
 .entry-tag { padding: 2px 2px; }
@@ -971,21 +1016,29 @@ a { color: inherit; }
 }
 .report-drawer-body { padding: 8px 18px 24px; display: flex; flex-direction: column; gap: 14px; }
 
-/* Sidebar tag chips — a bound session's derived stage tags, FIFO, slim on purpose
-   (same "stage · event" label + stage-color convention as .entry-tag in the stream,
-   just compact enough for the sidebar's narrow column). */
-.side-session-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 10px 5px; }
-.side-tag-chip {
-  display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600;
-  color: var(--stage-color); text-decoration: none; padding: 1px 7px 1px 5px;
-  border-radius: 999px; background: color-mix(in srgb, var(--stage-color) 10%, transparent);
-}
-.side-tag-chip::before { content: ''; width: 5px; height: 5px; border-radius: 2px; background: var(--stage-color); flex: none; }
-.side-tag-chip:hover { background: color-mix(in srgb, var(--stage-color) 18%, transparent); }
+/* (Sidebar tag chips removed 2026-07-13: they restated per-gate stage info the
+   Needs-you rows / history glyph strip already carry. Tags still render in the
+   stream views via .entry-tag.) */
 
 /* Unread report dot on a session head — mirrors .entry-unread-dot's color/shape.
    Purely additive to .side-session-head; never affects .side-count (tray-separation). */
 .side-unread-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+
+/* Sidebar report row — a session's report entries rendered as first-class rows
+   (appended after the session's card Items / GateStrip), single-line and
+   truncated like the other compact sidebar rows (.side-project-label etc). */
+.side-report-row {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  padding: 5px 10px; margin: 1px 0;
+  border-radius: var(--r);
+  color: var(--ink-2); text-decoration: none; font-size: 12.5px;
+}
+.side-report-row:hover { background: var(--bg-3); color: var(--ink); }
+.side-report-row svg { flex-shrink: 0; color: var(--ink-3); }
+.side-report-title {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Per-session "open stream" affordance — a small icon button on bound session
    heads that opens the StreamDrawer for that session only. */
@@ -1005,3 +1058,33 @@ a { color: inherit; }
   display: flex; flex-direction: column; z-index: 50; overflow-y: auto;
 }
 .stream-drawer-body { padding: 8px 18px 24px; }
+
+/* Connect your Claude account — a compact inline strip on an offline (orphaned)
+   card, sitting just above the copy-paste fallback. All colors via CSS vars. */
+.account {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px;
+  border-radius: var(--r); padding: 8px 11px; margin-top: 12px; font-size: 12.5px;
+  border: 1px solid color-mix(in srgb, var(--pending) 25%, transparent);
+  background: var(--pending-soft); color: var(--pending);
+}
+.account > svg { flex-shrink: 0; }
+.account-ok { border-color: color-mix(in srgb, var(--ok) 25%, transparent); background: var(--ok-soft); color: var(--ok); }
+.account-connecting { border-color: color-mix(in srgb, var(--accent) 25%, transparent); background: var(--accent-soft); color: var(--accent); }
+.account-failed { border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
+.account-msg { flex: 1 1 240px; line-height: 1.45; }
+.account-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+}
+.account-btn:hover { filter: brightness(1.05); }
+.account-btn:disabled { opacity: 0.55; cursor: default; }
+.account-btn.ghost { color: var(--ink-2); background: transparent; border-color: var(--line); }
+.account-btn.ghost:hover { border-color: var(--ink-3); filter: none; }
+.account-link { font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: underline; }
+.account-err { flex-basis: 100%; font-size: 12px; color: var(--bad); }
+.account-paste { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.account-paste-input {
+  flex: 1 1 260px; padding: 7px 10px; font-size: 12.5px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-2); color: var(--ink);
+}
