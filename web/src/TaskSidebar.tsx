@@ -3,7 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Card, Stage } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
-import { age, isReconnecting, needsHuman, orphanClockMs, REATTACH_WINDOW_MS } from './helpers.js'
+import { age, isReconnecting, needsHuman } from './helpers.js'
 import { isImplicitlyRead, readEntrySet, readStateVersion, subscribeReadState, unreadCount } from './readState.js'
 import { STAGE } from './stage.js'
 import { StreamDrawer } from './StreamDrawer.js'
@@ -114,26 +114,14 @@ function statusLabel(card: Card): string {
   return card.status
 }
 
-// Fraction (0–1) of the reattach window still REMAINING for a reconnecting gate —
-// drives the width of the countdown bar under its row. Mirrors isReconnecting's
-// clock handling: prefer orphanedAt, fall back to createdAt, and fail OPEN (full
-// bar) on an unparseable timestamp so a corrupt clock never reads as "expired".
-function reattachRemaining(card: Card, nowMs: number = Date.now()): number {
-  const t = orphanClockMs(card)
-  if (!Number.isFinite(t)) return 1
-  return Math.max(0, Math.min(1, 1 - (nowMs - t) / REATTACH_WINDOW_MS))
-}
-
 function Item({ card, selected }: { card: Card; selected: boolean }) {
-  const reconnecting = isReconnecting(card)
-  const remaining = reconnecting ? reattachRemaining(card) : 0
   return (
     <a
       href={`#/card/${card.id}`}
       className={`titem${selected ? ' on' : ''}${needsHuman(card) ? '' : ' done'}`}
       title={card.headline}
     >
-      <span className={`t-state ${reconnecting ? 'reconnecting' : card.status}`} />
+      <span className={`t-state ${isReconnecting(card) ? 'reconnecting' : card.status}`} />
       <span className="t-main">
         <p className="t-title">{card.headline}</p>
         <span className="t-meta">
@@ -144,18 +132,6 @@ function Item({ card, selected }: { card: Card; selected: boolean }) {
           <span>·</span>
           <span>{age(card.createdAt)}</span>
         </span>
-        {reconnecting && (
-          <span
-            className="recon-bar"
-            role="progressbar"
-            aria-label="Reattach window remaining"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(remaining * 100)}
-          >
-            <span className="recon-bar-fill" style={{ width: `${remaining * 100}%` }} />
-          </span>
-        )}
       </span>
     </a>
   )

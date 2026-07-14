@@ -169,40 +169,45 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
 })
 
 // App fetches entries once and must pass them into TaskSidebar at BOTH call sites
-// (the default/root layout and the #/session/<id> layout) — otherwise a session's
-// tag chips only ever render on one of the two routes the sidebar appears on.
+// (the default/root layout and the #/session/<id> layout). Tag chips no longer
+// render in the sidebar (redundant with the gate rows/strip), so the wiring is
+// guarded via the other thing sidebar entries drive: the unread-report dot.
 describe('dashboard passes entries into the sidebar at both routes', () => {
   const bound = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z')
   const boundCard = { ...bound, claudeSessionId: 'cc-A' }
-  const tag = {
-    id: 'tag-1', type: 'tag' as const, claudeSessionId: 'cc-A',
+  // Recent createdAt keeps the report inside readState's age-implies-read TTL, so
+  // it counts as unread under these tests' real timers.
+  const report = {
+    id: 'report-wire-1', type: 'report' as const, claudeSessionId: 'cc-A',
     session: { agent: 'claude-code', project: 'repo-one' },
-    tag: 'stage:clarify:raised', cardId: 'A', createdAt: '2026-06-30T10:01:00.000Z',
+    headline: 'wiring probe findings', blocks: [{ id: 'b1', type: 'markdown' as const, text: 'body' }],
+    createdAt: new Date().toISOString(),
   }
 
-  it('renders a session\'s tag chip in the sidebar on the root route', async () => {
+  it('shows the unread-report dot in the sidebar on the root route', async () => {
     vi.mocked(fetchCards).mockResolvedValue([boundCard])
-    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
     vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session A decision' })
 
-    expect(await screen.findByText(/clarify.*raised/i)).toBeTruthy()
+    // ≥1, not exactly 1: the sidebar may legitimately mark unread in more than one
+    // place (session head dot, per-report row dot) — this test only guards that the
+    // entries prop reaches the sidebar at all on this route.
+    expect((await screen.findAllByLabelText('Unread report')).length).toBeGreaterThan(0)
   })
 
-  it('renders a session\'s tag chip in the sidebar on the #/session/<id> route', async () => {
+  it('shows the unread-report dot in the sidebar on the #/session/<id> route', async () => {
     vi.mocked(fetchCards).mockResolvedValue([boundCard])
-    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
     vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/session/cc-A'
 
     render(<App />)
 
-    // Both the sidebar's tag chip AND the session stream's own tag row render
-    // "clarify · raised" on this route — assert the SIDEBAR one specifically via
-    // its .side-tag-chip class so this test targets Task 9's wiring, not Task 8's.
-    const chip = await screen.findByText(/clarify.*raised/i, { selector: '.side-tag-chip' })
-    expect(chip).toBeTruthy()
+    // The stream view renders the report too — assert the SIDEBAR's dot
+    // specifically via its sidebar-only class, so this targets the sidebar wiring.
+    await waitFor(() => expect(document.querySelector('.sidebar .side-unread-dot')).toBeTruthy())
   })
 })
