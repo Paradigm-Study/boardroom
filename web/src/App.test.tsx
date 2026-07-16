@@ -11,6 +11,9 @@ vi.mock('./api.js', () => ({
   fetchEntries: vi.fn(),
   fetchSessions: vi.fn(),
   subscribeStream: vi.fn(),
+  // App polls this on mount; default to connected so no account banner renders in
+  // these tests (they assert card/stream behavior, not the connect affordance).
+  getAuthStatus: vi.fn(() => Promise.resolve({ connected: true, login: { state: 'idle' } })),
 }))
 
 // notify.js reaches for the Notification API / permissions; stub it so App mounts

@@ -15,7 +15,7 @@ import { App } from './App.js'
 // most-recent PENDING card across ALL sessions, with no notion of a "current" session
 // to scope to — but it renders each card's OWN content faithfully (no mixing here).
 
-vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn() }))
+vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn(), getAuthStatus: vi.fn(() => Promise.resolve({ connected: true, login: { state: 'idle' } })) }))
 vi.mock('./notify.js', () => ({
   notifyCard: vi.fn(),
   notifyPermission: () => 'granted',

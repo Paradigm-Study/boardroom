@@ -1059,6 +1059,33 @@ a { color: inherit; }
 
 /* Connect your Claude account — a compact inline strip on an offline (orphaned)
    card, sitting just above the copy-paste fallback. All colors via CSS vars. */
+.account {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px;
+  border-radius: var(--r); padding: 8px 11px; margin-top: 12px; font-size: 12.5px;
+  border: 1px solid color-mix(in srgb, var(--pending) 25%, transparent);
+  background: var(--pending-soft); color: var(--pending);
+}
+.account > svg { flex-shrink: 0; }
+.account-ok { border-color: color-mix(in srgb, var(--ok) 25%, transparent); background: var(--ok-soft); color: var(--ok); }
+.account-connecting { border-color: color-mix(in srgb, var(--accent) 25%, transparent); background: var(--accent-soft); color: var(--accent); }
+.account-failed { border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
+.account-msg { flex: 1 1 240px; line-height: 1.45; }
+.account-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+}
+.account-btn:hover { filter: brightness(1.05); }
+.account-btn:disabled { opacity: 0.55; cursor: default; }
+.account-btn.ghost { color: var(--ink-2); background: transparent; border-color: var(--line); }
+.account-btn.ghost:hover { border-color: var(--ink-3); filter: none; }
+.account-link { font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: underline; }
+.account-err { flex-basis: 100%; font-size: 12px; color: var(--bad); }
+.account-paste { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.account-paste-input {
+  flex: 1 1 260px; padding: 7px 10px; font-size: 12.5px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-2); color: var(--ink);
+}
 
 /* Dismiss (retire) affordance on an orphaned card — a quiet, secondary control:
    deciding the card is still the primary action, this is the "I don't want this" exit. */

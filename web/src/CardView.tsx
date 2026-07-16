@@ -2,8 +2,10 @@ import { ArrowRight, Check, ClipboardCopy } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
 import { CARD_ADDON_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
-import { decideCard, dismissCard, uploadAttachment } from './api.js'
+import { buildSummary } from '../../src/shared/summary.js'
+import { decideCard, dismissCard, uploadAttachment, type AuthStatusVM } from './api.js'
 import { AttachmentInput } from './AttachmentInput.js'
+import { ClaudeAccount } from './ClaudeAccount.js'
 import { BlockView } from './blocks/BlockView.js'
 import { CardHeader } from './CardHeader.js'
 import { prepareCardWorkspace } from './cardWorkspace.js'
@@ -191,9 +193,11 @@ function ResultsFinish({ addon, reviewed, total, orphaned, busy, verdict, ready,
   )
 }
 
-// Shown when a decision was recorded while the agent was offline: the summary is
-// claimed automatically on reconnect, or the human can copy it to paste by hand.
-function OfflinePickup({ summary }: { summary: string }) {
+// The recorded-decision copy-paste box. It is a PERMANENT fallback: shown on every
+// decided card whether or not the agent has already claimed the decision, so the
+// human can always re-copy the exact text the pipeline would deliver. `delivered`
+// only changes the wording (still-to-be-claimed vs already-sent), never presence.
+function OfflinePickup({ summary, delivered = false }: { summary: string; delivered?: boolean }) {
   const [copied, setCopied] = useState(false)
   const resetCopiedTimer = useRef<number | null>(null)
 
@@ -218,7 +222,11 @@ function OfflinePickup({ summary }: { summary: string }) {
 
   return (
     <div className="offline-out">
-      <p id="offline-pickup-label" style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:</p>
+      <p id="offline-pickup-label" style={{ fontSize: 13, fontWeight: 600, margin: '0 0 7px' }}>
+        {delivered
+          ? 'Sent to the agent — kept here as a fallback. Copy it to paste in by hand again if needed:'
+          : 'Recorded. The agent claims this automatically when it reconnects — or paste it in by hand:'}
+      </p>
       <textarea readOnly aria-labelledby="offline-pickup-label" value={summary} />
       <button className="copy-btn" aria-live="polite" onClick={() => void copySummary()}>
         {copied ? <Check size={14} aria-hidden /> : <ClipboardCopy size={14} aria-hidden />}
@@ -231,9 +239,14 @@ function OfflinePickup({ summary }: { summary: string }) {
 // `cards` is the app shell's full card store, threaded down for read-models that
 // span the whole session (the spec-recall drawer) — optional so an isolated mount
 // (tests, storybook-style use) renders the card alone.
-export function CardView({ card, cards = [], onDismissed }: {
+export function CardView({ card, cards = [], authStatus = null, onAuthChanged, onDismissed }: {
   card: Card
   cards?: Card[]
+  // Connect-your-account status + reload, threaded from App so an orphaned card can
+  // offer "log in to deliver this automatically". Optional → isolated mounts (tests)
+  // render the card without the affordance.
+  authStatus?: AuthStatusVM | null
+  onAuthChanged?: () => void
   // Apply the dismissed card to the app's store immediately, so the board excludes it
   // before the SSE frame arrives (else the root auto-open can bounce it right back if
   // the stream is momentarily down). Optional → isolated mounts skip it.
@@ -253,6 +266,16 @@ export function CardView({ card, cards = [], onDismissed }: {
   const [sendBackAttachments, setSendBackAttachments] = useState<AttachmentRef[]>([])
 
   const [answers, setAnswers] = useCardAnswers(card, readonly, pickupSummary)
+
+  // The copy-paste fallback is a permanent record: reconstruct it from the decided
+  // card (via the same builder the daemon delivers) so it survives navigation, not
+  // just the one render right after submitting. `pickupSummary` is the fresh-submit
+  // source that covers the gap before the decided card arrives over SSE.
+  const recordedSummary = useMemo(
+    () => (card.status === 'decided' && card.answers ? buildSummary(card, card.answers) : null),
+    [card],
+  )
+  const pickup = pickupSummary ?? recordedSummary
 
   // Plan approval and spec lock are NOT separate gates — each is the act of
   // submitting your agreement (the auto-appended verdict is driven by the submit
@@ -307,6 +330,25 @@ export function CardView({ card, cards = [], onDismissed }: {
     }
   }
 
+  // Offline-delivery gate: submitting a decision for an OFFLINE session with no
+  // Claude account connected is intercepted — the submit is parked and the human
+  // chooses: connect (the parked submit fires the moment the login completes, i.e.
+  // "log in to send it right away") or submit anyway and copy-paste by hand. A
+  // connected account, a live session, or a daemon without the auth feature
+  // (authStatus null) all skip the gate entirely.
+  const [pendingSubmit, setPendingSubmit] = useState<(() => Promise<void>) | null>(null)
+  const needsDeliveryGate = orphaned && !readonly && authStatus !== null && !authStatus.connected
+  function gatedSubmit(fn: () => Promise<void>): void {
+    if (needsDeliveryGate) setPendingSubmit(() => fn)
+    else void fn()
+  }
+  useEffect(() => {
+    if (pendingSubmit && authStatus?.connected) {
+      setPendingSubmit(null)
+      void pendingSubmit()
+    }
+  }, [pendingSubmit, authStatus?.connected])
+
   // Stamp the verdict gate's chosen verb (approve/lock, or revise on send-back) and
   // submit. No verb / no gate → a plain clarify submit of just the answers.
   async function submitVerdict(verb?: string): Promise<void> {
@@ -350,7 +392,7 @@ export function CardView({ card, cards = [], onDismissed }: {
       note={addonDraft.note}
       attachments={attachmentsForField(addonDraft, 'note')}
       placeholder={placeholder}
-      busy={busy || readonly}
+      busy={busy || pendingSubmit !== null || readonly}
       onNoteChange={note => patchAddon(d => ({ ...d, note }))}
       onUpload={async file => {
         const attachment = await uploadFor(CARD_ADDON_ID, 'note', file)
@@ -401,7 +443,7 @@ export function CardView({ card, cards = [], onDismissed }: {
               card={card}
               blockById={blockById}
               answers={answers}
-              readonly={readonly || busy}
+              readonly={readonly || busy || pendingSubmit !== null}
               onChange={(id, a) => setAnswers(prev => ({ ...prev, [id]: a }))}
               onUploadAttachment={uploadFor}
             />
@@ -411,10 +453,10 @@ export function CardView({ card, cards = [], onDismissed }: {
                 reviewed={answeredCount}
                 total={choiceDecisions.length}
                 orphaned={orphaned}
-                busy={busy}
+                busy={busy || pendingSubmit !== null}
                 verdict={resultsVerdict}
                 ready={resultsReady}
-                onSubmit={() => void submitResults(resultsVerdict)}
+                onSubmit={() => gatedSubmit(() => submitResults(resultsVerdict))}
               />
             )}
             {showAddonRecord && <div className="results-finish">{cardAddon('')}</div>}
@@ -451,7 +493,7 @@ export function CardView({ card, cards = [], onDismissed }: {
                           total={choiceDecisions.length}
                           blocks={questionBlocks}
                           answer={answers[d.id] ?? emptyDraft()}
-                          readonly={readonly || busy}
+                          readonly={readonly || busy || pendingSubmit !== null}
                           onChange={a => setAnswers(prev => ({ ...prev, [d.id]: a }))}
                           onUploadAttachment={uploadFor}
                         />
@@ -507,8 +549,8 @@ export function CardView({ card, cards = [], onDismissed }: {
                     state={ready ? verdictGate.readyState : `${answeredCount}/${choiceDecisions.length} ${verdictGate.progressWord}`}
                     label={verdictGate.approveLabel}
                     ready={ready}
-                    busy={busy}
-                    onSubmit={() => void submitVerdict(verdictGate.approve)}
+                    busy={busy || pendingSubmit !== null}
+                    onSubmit={() => gatedSubmit(() => submitVerdict(verdictGate.approve))}
                   />
                 )
             )}
@@ -518,8 +560,8 @@ export function CardView({ card, cards = [], onDismissed }: {
                 state={`${answeredCount}/${choiceDecisions.length} answered`}
                 label={orphaned ? 'Submit (agent offline)' : 'Submit decisions'}
                 ready={ready}
-                busy={busy}
-                onSubmit={() => void submitVerdict()}
+                busy={busy || pendingSubmit !== null}
+                onSubmit={() => gatedSubmit(() => submitVerdict())}
               />
             )}
           </section>
@@ -527,7 +569,18 @@ export function CardView({ card, cards = [], onDismissed }: {
 
       {error && <p className="error-text">{error}</p>}
 
-      {pickupSummary && <OfflinePickup summary={pickupSummary} />}
+      {/* The parked submit's delivery choice: connect (fires the parked submit on
+          login) or submit anyway and copy-paste (OfflinePickup below shows after). */}
+      {pendingSubmit && onAuthChanged && (
+        <ClaudeAccount
+          status={authStatus}
+          onChanged={onAuthChanged}
+          onSubmitAnyway={() => { const fn = pendingSubmit; setPendingSubmit(null); void fn() }}
+          onDismiss={() => setPendingSubmit(null)}
+        />
+      )}
+
+      {pickup && <OfflinePickup summary={pickup} delivered={!!card.deliveredAt} />}
     </div>
   )
 }

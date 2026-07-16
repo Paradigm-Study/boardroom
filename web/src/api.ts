@@ -7,6 +7,18 @@ export interface DeviceIdentity {
   deviceLabel: string
 }
 
+// The "Connect your Claude account" status. Mirrors the daemon's AuthStatus +
+// ConnectStatus (kept local like DeviceIdentity, not imported) — never the token.
+export interface AuthStatusVM {
+  connected: boolean
+  type?: 'oauth' | 'apiKey'
+  updatedAt?: string
+  // The stored login went bad after connect (a wake hit an auth error) — the UI
+  // says "expired, reconnect" instead of the first-time connect wording.
+  stale?: boolean
+  login: { state: 'idle' | 'running' | 'connected' | 'failed'; url?: string; detail?: string; awaitingCode?: boolean }
+}
+
 async function check<T>(res: globalThis.Response): Promise<T> {
   const text = await res.text()
   let body: unknown
@@ -89,6 +101,46 @@ export async function uploadAttachment(
     body: file,
   })
   return check(res)
+}
+
+// "Connect your Claude account" — lets boardroom hold a durable resume credential
+// so the background waker can authenticate. All return the fresh status. The routes
+// only exist when the daemon wired an authStore; getAuthStatus tolerates the 404 by
+// letting the caller treat a throw as "feature unavailable".
+export async function getAuthStatus(): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/status'))
+}
+
+// Start the browser-driven login (`claude setup-token`). Poll getAuthStatus until
+// login.state settles on 'connected' or 'failed'.
+export async function connectAuth(): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/connect', { method: 'POST' }))
+}
+
+export async function cancelAuthConnect(): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/connect/cancel', { method: 'POST' }))
+}
+
+// Relay the OAuth code the user pasted from the browser callback into the login.
+export async function sendAuthConnectInput(code: string): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/connect/input', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  }))
+}
+
+// Paste path: store a token the user generated themselves.
+export async function postAuthToken(type: 'oauth' | 'apiKey', value: string): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, value }),
+  }))
+}
+
+export async function disconnectAuth(): Promise<AuthStatusVM> {
+  return check(await fetch('/api/auth/disconnect', { method: 'POST' }))
 }
 
 // ONE EventSource for the whole dashboard: cards and entries are independent

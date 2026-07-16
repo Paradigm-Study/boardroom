@@ -6,6 +6,8 @@ import { AttachmentRef, CARD_ADDON_ID, DecisionAnswers, type Card, type CardStat
 import type { Entry } from '../shared/entry.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
+import type { AuthStore, CredentialKind } from './authStore.js'
+import type { AuthConnector } from './authConnect.js'
 import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import { needsHuman, REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
@@ -19,6 +21,10 @@ interface ApiOptions {
   // "reconnecting" cards against the SAME window the queue reattaches against.
   // Optional → tests and legacy callers fall back to the 24h default.
   reattachWindowMs?: number
+  // The "Connect your Claude account" surfaces. Both optional so legacy/test
+  // callers omit them — the /api/auth/* routes only register when present.
+  authStore?: AuthStore
+  authConnector?: AuthConnector
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
@@ -356,6 +362,58 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       res.json({ card: queue.dismiss(req.params.id) })
     } catch (err) { sendError(res, err) }
   })
+
+  // "Connect your Claude account": lets the user hand boardroom a durable resume
+  // credential so the launchd-spawned waker can authenticate. Registered only when
+  // the daemon wired an authStore (legacy/test callers omit it → routes 404). The
+  // status never returns the secret value — only connected/kind/age + login state.
+  const { authStore, authConnector } = options
+  if (authStore) {
+    const authStatus = (): Record<string, unknown> => ({
+      ...authStore.status(),
+      login: authConnector?.getStatus() ?? { state: 'idle' },
+    })
+
+    router.get('/api/auth/status', (_req, res) => { res.json(authStatus()) })
+
+    // Paste path: the user supplies a token they generated (`claude setup-token`).
+    router.post('/api/auth/token', (req, res) => {
+      try {
+        const type = (req.body as { type?: string }).type
+        const value = (req.body as { value?: string }).value
+        if (type !== 'oauth' && type !== 'apiKey') throw new ValidationError('type must be "oauth" or "apiKey"')
+        if (typeof value !== 'string' || !value.trim()) throw new ValidationError('a non-empty token value is required')
+        authStore.set({ type: type as CredentialKind, value: value.trim() })
+        res.json(authStatus())
+      } catch (err) { sendError(res, err) }
+    })
+
+    router.post('/api/auth/disconnect', (_req, res) => {
+      authStore.clear()
+      res.json(authStatus())
+    })
+
+    // Browser path: boardroom drives `claude setup-token` and captures the token.
+    if (authConnector) {
+      router.post('/api/auth/connect', (_req, res) => {
+        authConnector.start()
+        res.json(authStatus())
+      })
+      router.post('/api/auth/connect/cancel', (_req, res) => {
+        authConnector.cancel()
+        res.json(authStatus())
+      })
+      // Relay the OAuth code the user pasted from the browser into the login prompt.
+      router.post('/api/auth/connect/input', (req, res) => {
+        try {
+          const code = (req.body as { code?: string }).code
+          if (typeof code !== 'string' || !code.trim()) throw new ValidationError('a non-empty code is required')
+          authConnector.sendInput(code.trim())
+          res.json(authStatus())
+        } catch (err) { sendError(res, err) }
+      })
+    }
+  }
 
   router.get('/events', (req, res) => {
     res.writeHead(200, {

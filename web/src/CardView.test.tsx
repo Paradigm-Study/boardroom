@@ -623,6 +623,36 @@ describe('CardView global add-on on every gate', () => {
   })
 })
 
+// The copy-paste fallback is a PERMANENT record: once a card is decided it must be
+// reconstructable from the card itself (not just the one-shot post-submit state), so
+// switching sessions and returning to the card never loses it. It shows whether or
+// not the agent has claimed the decision (delivered) — it is the human's fallback.
+describe('CardView offline-pickup box persists as a permanent fallback', () => {
+  const decidedClarify: Card = {
+    ...pendingClarify,
+    status: 'decided',
+    answers: { detail: { chosen: ['a'] } },
+    decidedAt: '2026-06-16T12:05:00.000Z',
+  }
+
+  it('reconstructs the copyable summary on a fresh mount of an undelivered decided card', () => {
+    // No submit flow — this is the "navigated away and came back" mount.
+    render(<CardView card={decidedClarify} />)
+
+    const box = screen.getByLabelText(/claims this automatically/)
+    expect((box as HTMLTextAreaElement).value).toContain('Detail A')
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+  })
+
+  it('keeps the box as a fallback even after the agent has claimed it (delivered)', () => {
+    render(<CardView card={{ ...decidedClarify, deliveredAt: '2026-06-16T12:06:00.000Z' }} />)
+
+    const box = screen.getByLabelText(/kept here as a fallback/i)
+    expect((box as HTMLTextAreaElement).value).toContain('Detail A')
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+  })
+})
+
 // GOLDEN: these snapshots are recorded against the pre-sections renderer and MUST stay
 // green through the sections rewrite — the byte-identical guarantee for every legacy
 // (no card.sections) card. If the cardWorkspace/CardView change alters the DOM of a
