@@ -62,6 +62,14 @@ export async function decideCard(
   return check(res)
 }
 
+// Boardroom-scoped soft delete: retire a stranded/unwanted card. Returns the
+// dismissed card; the SSE 'card' event (status 'dismissed') then drops it from every
+// surface. Never touches the agent session.
+export async function dismissCard(id: string): Promise<Card> {
+  const res = await fetch(`/api/cards/${encodeURIComponent(id)}/dismiss`, { method: 'POST' })
+  return (await check<{ card: Card }>(res)).card
+}
+
 export async function uploadAttachment(
   cardId: string,
   answerId: string,

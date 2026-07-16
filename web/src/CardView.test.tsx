@@ -3,11 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { decideCard, uploadAttachment } from './api.js'
+import { decideCard, dismissCard, uploadAttachment } from './api.js'
 import { CardView } from './CardView.js'
 
 vi.mock('./api.js', () => ({
   decideCard: vi.fn(),
+  dismissCard: vi.fn(),
   uploadAttachment: vi.fn(),
   // CardView mounts the SpecAffordance, which reads cards to recall a locked spec.
   // No cards → no spec → the affordance renders nothing, leaving these tests intact.
@@ -692,5 +693,52 @@ describe('CardView sectioned render', () => {
     // the explain section block renders unscoped (and is NOT also scoped under a decision)
     expect(container.querySelector('#block-ctx')).toBeTruthy()
     expect(container.querySelector('#block-d1-ctx')).toBeNull()
+  })
+})
+
+describe('CardView dismiss — retiring a stranded orphaned card', () => {
+  const orphaned: Card = {
+    ...pendingClarify,
+    id: 'orphan-1',
+    status: 'orphaned',
+    orphanedReason: 'boot',
+    orphanedAt: new Date().toISOString(),
+  }
+
+  it('offers no dismiss control on a live pending card', () => {
+    render(<CardView card={pendingClarify} />)
+    expect(screen.queryByRole('button', { name: 'Dismiss card…' })).toBeNull()
+  })
+
+  it('dismisses an orphaned card only after the inline confirm', async () => {
+    vi.mocked(dismissCard).mockResolvedValue({ ...orphaned, status: 'dismissed' })
+    render(<CardView card={orphaned} />)
+
+    // First click reveals the confirm — it does NOT call the API yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    expect(dismissCard).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(dismissCard).toHaveBeenCalledWith('orphan-1'))
+  })
+
+  it('applies the dismissed card locally (onDismissed) so the board drops it before the SSE frame', async () => {
+    const dismissed = { ...orphaned, status: 'dismissed' as const }
+    vi.mocked(dismissCard).mockResolvedValue(dismissed)
+    const onDismissed = vi.fn()
+    render(<CardView card={orphaned} onDismissed={onDismissed} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    // Optimistic local apply happens with the returned dismissed card, not the SSE echo.
+    await waitFor(() => expect(onDismissed).toHaveBeenCalledWith(dismissed))
+  })
+
+  it('cancel backs out of the confirm without calling the API', () => {
+    render(<CardView card={orphaned} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Dismiss card…' })).toBeTruthy()   // back to the resting state
+    expect(dismissCard).not.toHaveBeenCalled()
   })
 })

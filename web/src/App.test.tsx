@@ -170,6 +170,34 @@ describe('App SSE reconnect', () => {
   })
 })
 
+describe('App hides dismissed cards', () => {
+  it('a dismissed card never renders on the board', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([
+      { ...card('gone', 'Retired duplicate'), status: 'dismissed' as const },
+      card('live', 'Still needs you'),
+    ])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+
+    expect((await screen.findAllByText('Still needs you')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Retired duplicate')).toBeNull()
+  })
+
+  it('a card dismissed live over SSE disappears from the board', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([card('c1', 'Reconnecting gate')])
+    let onCard: (c: Card) => void = () => {}
+    vi.mocked(subscribeStream).mockImplementation(cb => { onCard = cb; return () => {} })
+
+    render(<App />)
+    expect((await screen.findAllByText('Reconnecting gate')).length).toBeGreaterThan(0)
+
+    // The daemon dismisses it (e.g. a retired twin) and pushes the terminal status.
+    act(() => onCard({ ...card('c1', 'Reconnecting gate'), status: 'dismissed' as const }))
+    await waitFor(() => expect(screen.queryByText('Reconnecting gate')).toBeNull())
+  })
+})
+
 describe('session navigation scroll memory', () => {
   it('starts first-time sessions at top and restores each session on return', async () => {
     const scroll = mockWindowScroll()

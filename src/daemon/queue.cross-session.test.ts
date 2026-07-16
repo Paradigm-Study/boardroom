@@ -194,7 +194,11 @@ describe('cross-session reattach — two distinct Claude Code sessions, same pro
     const b = queue.submit(gate({ id: 'B', marker: 'THIRD', claudeSessionId: 'cc-B' }), noop)
     expect(b.cardId).toBe('B')                                 // [FIXED] session B does not land on A's card
     expect(store.list().filter(c => c.fingerprint === fp)).toHaveLength(2) // A's card + B's card
-    expect(store.get('A1')?.decisions[0].prompt).toBe('FIRST') // A's card still carries A's authored content
+    // A reconnect refreshes A's card to its OWN LATEST call (the 2026-07-14 content-
+    // refresh: an adjusted re-issue takes effect in place). It carries A's second
+    // authored content — and, crucially, still NOT session B's.
+    expect(store.get('A1')?.decisions[0].prompt).toBe('SECOND')
+    expect(store.get('A1')?.decisions[0].prompt).not.toBe('THIRD')
   })
 })
 

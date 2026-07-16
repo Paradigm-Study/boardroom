@@ -50,7 +50,12 @@ export type SessionInfo = z.infer<typeof SessionInfo>
 export const Stage = z.enum(['clarify', 'plan', 'spec', 'results'])
 export type Stage = z.infer<typeof Stage>
 
-export const CardStatus = z.enum(['pending', 'decided', 'orphaned'])
+// 'dismissed' is the terminal, boardroom-scoped retirement of a card the human no
+// longer wants on the board: a stranded duplicate, or any orphaned gate they choose
+// to clear. It is a SOFT delete — the row survives (auditable, reversible) but is
+// excluded from every actionable surface (needsHuman, the tray, session status) and
+// hidden by the dashboard. Never pushed to the agent, so it can't corrupt a session.
+export const CardStatus = z.enum(['pending', 'decided', 'orphaned', 'dismissed'])
 export type CardStatus = z.infer<typeof CardStatus>
 
 export const OTHER_OPTION_ID = '__other__'
@@ -160,6 +165,10 @@ export const Card = z.object({
   // in history, so a deploy/restart never loses a decision. Optional → legacy rows
   // (and the live `pending`/`decided` states) simply have no reason.
   orphanedReason: z.enum(['disconnect', 'park', 'boot']).optional(),
+  // When the card was dismissed (soft-deleted). Set alongside status 'dismissed';
+  // absent on every live/decided/orphaned card. Purely informational — the terminal
+  // status is what excludes it from surfaces.
+  dismissedAt: z.string().optional(),
   fingerprint: z.string().optional(),
   answers: z.record(z.string(), DecisionAnswer).optional(),
   // The behavior-driven acceptance contract. Set on spec cards (the proposed

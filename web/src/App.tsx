@@ -208,7 +208,10 @@ export function App() {
     )
   }, [])
 
-  const all = [...cards.values()]
+  // A dismissed card is retired from the board — drop it from every surface (sidebar,
+  // card view, counts, session stream). Its id stays in the map (the SSE 'card' event
+  // that dismissed it keeps the entry current), but it never renders.
+  const all = [...cards.values()].filter(c => c.status !== 'dismissed')
   // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate is
   // still awaiting the human — it must count in the title badge and participate in
   // auto-open, agreeing with the tray and the sidebar's Needs-you bucket.
@@ -250,7 +253,10 @@ export function App() {
   // keep rendering that card (tracked below) instead of treating it as a route.
   const lastCardRouteId = useRef<string | null>(null)
   const routedId = route.kind === 'card' ? route.id : route.kind === 'anchor' ? lastCardRouteId.current : null
-  const routed = routedId != null ? cards.get(routedId) : undefined
+  // A dismissed card routed to directly (or dismissed while open) reads as "not found"
+  // rather than rendering a retired gate.
+  const routedRaw = routedId != null ? cards.get(routedId) : undefined
+  const routed = routedRaw?.status === 'dismissed' ? undefined : routedRaw
   const onRoot = route.kind === 'root'
   const newestPendingId = pending[0]?.id
 
@@ -382,7 +388,7 @@ export function App() {
         )}
         <div className="content-inner">
           {shown
-            ? <CardView key={shown.id} card={shown} cards={all} />
+            ? <CardView key={shown.id} card={shown} cards={all} onDismissed={c => setCards(prev => new Map(prev).set(c.id, c))} />
             : route.kind === 'card'
               ? <p style={{ color: 'var(--ink-3)' }}>{initialLoadDone ? 'Card not found.' : 'Loading…'}</p>
               : (

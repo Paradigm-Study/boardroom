@@ -135,7 +135,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       // daemon's ACTUAL configured reattach window, not always the default.
       const windowMs = options.reattachWindowMs ?? REATTACH_WINDOW_MS
       const vms = store.listCaptured().map(s => {
-        const own = cards.filter(c => c.claudeSessionId === s.sessionId)
+        // Exclude dismissed cards: a retired card must not colour the session's status
+        // tag (deriveSessionStatus's activity clock) or its cardCount.
+        const own = cards.filter(c => c.claudeSessionId === s.sessionId && c.status !== 'dismissed')
         return {
           ...s,
           sessionStatus: deriveSessionStatus(s, own, nowMs, windowMs),
@@ -156,7 +158,7 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   router.get('/api/sessions/:id/cards', (req, res) => {
     try {
       const own = store.list()
-        .filter(c => c.claudeSessionId === req.params.id)
+        .filter(c => c.claudeSessionId === req.params.id && c.status !== 'dismissed')
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       res.json(own)
     } catch (err) { sendError(res, err) }
@@ -245,6 +247,7 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         const card = store.get(req.params.id)
         if (!card) throw new NotFoundError(`no card "${req.params.id}"`)
         if (card.status === 'decided') throw new ConflictError('card is already decided')
+        if (card.status === 'dismissed') throw new ConflictError('card was dismissed')
         const answerId = String(req.header('x-answer-id') ?? '')
         // CARD_ADDON_ID is the reserved card-level add-on channel — a valid
         // upload target on every card, though never a decision id by design.
@@ -343,6 +346,16 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   // tab keeps working (and never hits Express's HTML 404) — decide() already
   // handles orphaned cards and returns { card, summary }.
   router.post('/api/cards/:id/offline-answer', decideHandler)
+
+  // Boardroom-scoped soft delete: retire a card the human no longer wants on the
+  // board (a stranded duplicate, or any orphaned gate). Terminal 'dismissed' status
+  // drops it from every surface; nothing is pushed to the agent. 404 unknown, 409 on
+  // an already-decided card (its decision is history) — same error mapping as decide.
+  router.post('/api/cards/:id/dismiss', (req: Request<{ id: string }>, res: Response) => {
+    try {
+      res.json({ card: queue.dismiss(req.params.id) })
+    } catch (err) { sendError(res, err) }
+  })
 
   router.get('/events', (req, res) => {
     res.writeHead(200, {

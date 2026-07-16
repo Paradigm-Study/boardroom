@@ -2,7 +2,7 @@ import { ArrowRight, Check, ClipboardCopy } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
 import { CARD_ADDON_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
-import { decideCard, uploadAttachment } from './api.js'
+import { decideCard, dismissCard, uploadAttachment } from './api.js'
 import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
 import { CardHeader } from './CardHeader.js'
@@ -231,9 +231,13 @@ function OfflinePickup({ summary }: { summary: string }) {
 // `cards` is the app shell's full card store, threaded down for read-models that
 // span the whole session (the spec-recall drawer) — optional so an isolated mount
 // (tests, storybook-style use) renders the card alone.
-export function CardView({ card, cards = [] }: {
+export function CardView({ card, cards = [], onDismissed }: {
   card: Card
   cards?: Card[]
+  // Apply the dismissed card to the app's store immediately, so the board excludes it
+  // before the SSE frame arrives (else the root auto-open can bounce it right back if
+  // the stream is momentarily down). Optional → isolated mounts skip it.
+  onDismissed?: (card: Card) => void
 }) {
   const meta = STAGE[card.stage]
   const orphaned = card.status === 'orphaned'
@@ -241,6 +245,8 @@ export function CardView({ card, cards = [] }: {
 
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [dismissConfirm, setDismissConfirm] = useState(false)
+  const [dismissBusy, setDismissBusy] = useState(false)
   const [pickupSummary, setPickupSummary] = useState<string | null>(null)
   const [sendingBack, setSendingBack] = useState(false)
   const [sendBackNote, setSendBackNote] = useState('')
@@ -266,6 +272,25 @@ export function CardView({ card, cards = [] }: {
 
   async function uploadFor(answerId: string, field: string, file: File): Promise<AttachmentRef> {
     return uploadAttachment(card.id, answerId, field, file)
+  }
+
+  // Boardroom-scoped retirement of a stranded/unwanted orphaned card. Navigates back
+  // to the root (which re-opens the next thing needing the human) on success; the SSE
+  // 'card' event then drops this card from every surface. Nothing reaches the agent.
+  async function dismiss(): Promise<void> {
+    setDismissBusy(true)
+    setError(null)
+    try {
+      const dismissed = await dismissCard(card.id)
+      // Apply locally FIRST so the board drops it before we navigate — otherwise the
+      // root's auto-open can re-select this still-"pending"-in-the-map card and bounce
+      // it back if the SSE 'card' frame hasn't landed yet.
+      onDismissed?.(dismissed)
+      window.location.hash = '#/'
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setDismissBusy(false)
+    }
   }
 
   async function commit(payload: Record<string, DraftAnswer>): Promise<void> {
@@ -347,6 +372,23 @@ export function CardView({ card, cards = [] }: {
   return (
     <div className="card-col" style={meta.vars}>
       <CardHeader card={card} workspace={workspace} readonly={readonly} pickupSummary={pickupSummary} />
+
+      {/* Retire a stranded/unwanted orphaned card. Boardroom-scoped: it leaves the
+          board without signalling the agent, so it can't corrupt a session. An inline
+          confirm guards the misclick; a live pending card never offers this. */}
+      {orphaned && (
+        <div className="dismiss-row">
+          {dismissConfirm
+            ? (
+              <>
+                <span className="dismiss-q">Retire this card? It leaves the board — the agent isn’t affected.</span>
+                <button className="dismiss-do" disabled={dismissBusy} onClick={() => void dismiss()}>Dismiss</button>
+                <button className="dismiss-cancel" disabled={dismissBusy} onClick={() => setDismissConfirm(false)}>Cancel</button>
+              </>
+            )
+            : <button className="dismiss-open" onClick={() => setDismissConfirm(true)}>Dismiss card…</button>}
+        </div>
+      )}
 
       {/* Recall the session's locked acceptance contract and cross-compare it
           against results, any time — renders nothing until a spec is locked. */}

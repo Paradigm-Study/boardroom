@@ -1059,3 +1059,22 @@ a { color: inherit; }
 
 /* Connect your Claude account — a compact inline strip on an offline (orphaned)
    card, sitting just above the copy-paste fallback. All colors via CSS vars. */
+
+/* Dismiss (retire) affordance on an orphaned card — a quiet, secondary control:
+   deciding the card is still the primary action, this is the "I don't want this" exit. */
+.dismiss-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 2px 0 10px; }
+.dismiss-open {
+  background: none; border: none; padding: 2px 0; font: inherit; font-size: 12px;
+  color: var(--ink-3); cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.dismiss-open:hover { color: var(--ink-2); }
+.dismiss-q { font-size: 12.5px; color: var(--ink-2); }
+.dismiss-do, .dismiss-cancel {
+  padding: 4px 12px; font: inherit; font-size: 12px; font-weight: 600;
+  border-radius: var(--r); cursor: pointer; border: 1px solid var(--line);
+}
+.dismiss-do { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: var(--bg-2); }
+.dismiss-do:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 12%, var(--bg-2)); }
+.dismiss-cancel { color: var(--ink-2); background: var(--bg-2); }
+.dismiss-cancel:hover:not(:disabled) { background: var(--bg-3); }
+.dismiss-do:disabled, .dismiss-cancel:disabled { opacity: 0.55; cursor: default; }

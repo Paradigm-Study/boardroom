@@ -146,6 +146,25 @@ describe('POST /api/cards/:id/decide', () => {
   })
 })
 
+describe('POST /api/cards/:id/dismiss', () => {
+  it('dismisses an orphaned card and drops it from the actionable surfaces', async () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)                                   // orphaned
+    const res = await request(app).post('/api/cards/c1/dismiss').expect(200)
+    expect(res.body.card.status).toBe('dismissed')
+    expect(store.get('c1')?.status).toBe('dismissed')
+    await request(app).get('/api/cards?status=orphaned').expect(200).then(r => expect(r.body).toHaveLength(0))
+  })
+
+  it('maps errors: 404 unknown, 409 on an already-decided card', async () => {
+    await request(app).post('/api/cards/nope/dismiss').expect(404)
+    queue.submit(card('c1'), noop)
+    queue.decide('c1', { d1: { chosen: ['a'] } })
+    const res = await request(app).post('/api/cards/c1/dismiss').expect(409)
+    expect(res.body.error).toMatch(/decided/)
+  })
+})
+
 describe('POST /api/cards/:id/attachments', () => {
   it('stores an uploaded file and returns a durable attachment reference', async () => {
     queue.submit(card('c1'), noop)
@@ -597,6 +616,16 @@ describe('GET /api/sessions', () => {
     expect(s.pendingCount).toBe(0)
     expect(s.cardCount).toBe(0)
     expect(s.sessionStatus).toBe('idle')
+  })
+
+  it('excludes dismissed cards from session status and cardCount', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-dis', status: 'ended' }))
+    store.insert(cardFixture({ id: 'gone', claudeSessionId: 'cc-dis', status: 'dismissed', dismissedAt: new Date().toISOString() }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-dis')
+    expect(s.cardCount).toBe(0)                 // a dismissed card is not counted
+    expect(s.pendingCount).toBe(0)
+    expect(s.sessionStatus).toBe('ended')       // not derived from the dismissed card's createdAt
   })
 
   // NEW: the route must thread options.reattachWindowMs into deriveSessionStatus —

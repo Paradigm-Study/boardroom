@@ -406,6 +406,200 @@ describe('Queue.submit — reattach & claim', () => {
   })
 })
 
+// A session-bound gate: fingerprint + claudeSessionId set — the real-world case,
+// since every hooked session passes its sessionKey. stage/headline/createdAt are
+// overridable so a coalesce can be exercised across an adjusted headline, a
+// different stage, or a specific age.
+function boundCard(
+  id: string,
+  opts: { session: string; stage?: Card['stage']; headline?: string; fingerprint?: string; createdAt?: string },
+): Card {
+  return {
+    ...card(id, opts.fingerprint ?? `fp-${id}`),
+    claudeSessionId: opts.session,
+    ...(opts.stage ? { stage: opts.stage } : {}),
+    headline: opts.headline ?? 'h',
+    ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+  }
+}
+
+describe('Queue.submit — same-session reconnect coalescing', () => {
+  it('coalesces a reconnect onto the session\'s still-PENDING gate instead of duplicating (the pending-race bug)', () => {
+    const firstReject = vi.fn()
+    queue.submit(boundCard('a', { session: 'S', fingerprint: 'fp' }), { resolve: vi.fn(), reject: firstReject })
+    // The client re-issues before the daemon has orphaned A (A is still pending) —
+    // the proven race that used to insert a duplicate.
+    const retry = queue.submit(boundCard('b', { session: 'S', fingerprint: 'fp' }), noop)
+    expect(retry.cardId).toBe('a')                                       // reused A's card
+    expect(store.get('b')).toBeUndefined()                              // no duplicate inserted
+    expect(store.list().filter(c => c.claudeSessionId === 'S')).toHaveLength(1)
+    expect(firstReject).toHaveBeenCalled()                             // stale connection superseded
+  })
+
+  it('an ADJUSTED re-issue (same session+stage, reworded headline) refreshes the same card in place', () => {
+    queue.submit(boundCard('a', { session: 'S', headline: 'first wording', fingerprint: 'fp-1' }), noop)
+    const retry = queue.submit(boundCard('b', { session: 'S', headline: 'adjusted wording', fingerprint: 'fp-2' }), noop)
+    expect(retry.cardId).toBe('a')                                     // same row reused, no twin
+    expect(store.get('a')?.headline).toBe('adjusted wording')          // content refreshed to the latest call
+    expect(store.get('a')?.fingerprint).toBe('fp-2')
+    expect(store.get('b')).toBeUndefined()
+  })
+
+  it('preserves the reconnect target\'s ORIGINAL createdAt even when the re-issue is newer (identity, not a new gate)', () => {
+    // A reconnect keeps the gate's identity: its id AND createdAt. createdAt is the
+    // recency sort key (findReattachable/findSessionGate) and the activity-clock
+    // fallback, so re-aging it on every retry would reshuffle the board.
+    const OLD = new Date(Date.now() - 60 * 60_000).toISOString()      // gate first raised 1h ago
+    store.insert({ ...boundCard('a', { session: 'S', fingerprint: 'fp', createdAt: OLD }), status: 'orphaned', orphanedAt: new Date(Date.now() - 60_000).toISOString(), orphanedReason: 'disconnect' })
+    queue.submit(boundCard('b', { session: 'S', headline: 'reworded', fingerprint: 'fp-2', createdAt: new Date().toISOString() }), noop)
+    expect(store.get('a')?.createdAt).toBe(OLD)                       // NOT re-aged to the re-issue's clock
+    expect(store.get('a')?.headline).toBe('reworded')                // content still refreshed
+  })
+
+  it('revives an ORPHANED same-session gate on reconnect, refreshing to the latest content', () => {
+    const first = queue.submit(boundCard('a', { session: 'S', fingerprint: 'fp' }), noop)
+    queue.disconnect(first.cardId, first.gen)
+    const retry = queue.submit(boundCard('b', { session: 'S', headline: 'reworded', fingerprint: 'fp-2' }), noop)
+    expect(retry.cardId).toBe('a')
+    expect(store.get('a')?.status).toBe('pending')
+    expect(store.get('a')?.headline).toBe('reworded')
+    expect(store.get('b')).toBeUndefined()
+  })
+
+  it('does NOT coalesce across DIFFERENT sessions, even while one is live (no cross-session steal)', () => {
+    queue.submit(boundCard('a', { session: 'S1', fingerprint: 'fp' }), noop)       // live pending
+    const other = queue.submit(boundCard('b', { session: 'S2', fingerprint: 'fp' }), noop)
+    expect(other.cardId).toBe('b')                                     // its own card
+    expect(store.get('a')?.status).toBe('pending')
+    expect(store.list()).toHaveLength(2)
+  })
+
+  it('does NOT coalesce a DIFFERENT stage for the same session (a plan gate is not a clarify gate)', () => {
+    queue.submit(boundCard('a', { session: 'S', stage: 'clarify', fingerprint: 'fp-c' }), noop)
+    const retry = queue.submit(boundCard('b', { session: 'S', stage: 'plan', fingerprint: 'fp-p' }), noop)
+    expect(retry.cardId).toBe('b')                                     // distinct gate → its own card
+    expect(store.list().filter(c => c.claudeSessionId === 'S')).toHaveLength(2)
+  })
+
+  it('preserves the legacy no-session guarantee: a live no-session pending card is not coalesced onto', () => {
+    queue.submit(card('c1', 'shared-fp'), noop)                        // no claudeSessionId, still pending
+    const second = queue.submit(card('c2', 'shared-fp'), noop)
+    expect(second.cardId).toBe('c2')                                   // fresh card — no steal, exactly as before
+    expect(store.get('c1')?.status).toBe('pending')
+  })
+
+  it('auto-retires an already-stranded orphaned twin of the same session+stage on reconnect', () => {
+    // Two pre-existing orphaned twins for one session+stage — the residue the
+    // pre-fix pending-race left behind. Recent orphan clocks so both are in-window.
+    const older = new Date(Date.now() - 120_000).toISOString()
+    const newer = new Date(Date.now() - 60_000).toISOString()
+    store.insert({ ...boundCard('old', { session: 'S', fingerprint: 'fp', createdAt: older }), status: 'orphaned', orphanedAt: older, orphanedReason: 'disconnect' })
+    store.insert({ ...boundCard('new', { session: 'S', fingerprint: 'fp', createdAt: newer }), status: 'orphaned', orphanedAt: newer, orphanedReason: 'disconnect' })
+    const retry = queue.submit(boundCard('retry', { session: 'S', fingerprint: 'fp' }), noop)
+    expect(retry.cardId).toBe('new')                                   // reused the most-recent twin
+    expect(store.get('new')?.status).toBe('pending')
+    expect(store.get('old')?.status).toBe('dismissed')                 // the stranded twin retired
+    expect(store.list().filter(c => c.claudeSessionId === 'S' && c.status !== 'dismissed')).toHaveLength(1)
+  })
+
+  it('emits a card event for the retired twin so the dashboard drops it live (not just on reload)', () => {
+    const older = new Date(Date.now() - 120_000).toISOString()
+    const newer = new Date(Date.now() - 60_000).toISOString()
+    store.insert({ ...boundCard('old', { session: 'S', fingerprint: 'fp', createdAt: older }), status: 'orphaned', orphanedAt: older, orphanedReason: 'disconnect' })
+    store.insert({ ...boundCard('new', { session: 'S', fingerprint: 'fp', createdAt: newer }), status: 'orphaned', orphanedAt: newer, orphanedReason: 'disconnect' })
+    const events: Card[] = []
+    queue.on('card', (c: Card) => events.push(c))
+    queue.submit(boundCard('retry', { session: 'S', fingerprint: 'fp' }), noop)
+    // The superseded twin must broadcast its terminal 'dismissed' status over SSE,
+    // mirroring Queue.dismiss — otherwise the stale duplicate lingers until reload.
+    expect(events.some(e => e.id === 'old' && e.status === 'dismissed')).toBe(true)
+  })
+
+  it('does NOT retire a genuinely DIFFERENT (different-fingerprint) orphaned gate of the same session+stage', () => {
+    // A true-duplicate pair (fp-DUP) plus a DISTINCT still-actionable gate (fp-OTHER),
+    // all orphaned in the same session+stage. Inserted directly so the reconnect below
+    // resolves via findReattachable's EXACT-fingerprint match (not findSessionGate's
+    // by-stage coalesce), isolating retireSupersededTwins' scope.
+    const ts = new Date(Date.now() - 30_000).toISOString()
+    store.insert({ ...boundCard('dup', { session: 'S', fingerprint: 'fp-DUP', createdAt: ts }), status: 'orphaned', orphanedAt: ts, orphanedReason: 'disconnect' })
+    store.insert({ ...boundCard('distinct', { session: 'S', fingerprint: 'fp-OTHER', createdAt: ts }), status: 'orphaned', orphanedAt: ts, orphanedReason: 'disconnect' })
+    const retry = queue.submit(boundCard('retry', { session: 'S', fingerprint: 'fp-DUP' }), noop)
+    expect(retry.cardId).toBe('dup')                                 // reconnected the true duplicate (exact fp)
+    expect(store.get('distinct')?.status).toBe('orphaned')          // the DIFFERENT gate is untouched, not retired
+  })
+
+  it('retires a stranded same-ORIGINAL-fingerprint twin even when the reconnect ADJUSTED the headline', () => {
+    // Two pre-existing race twins carrying the ORIGINAL fingerprint, both in-window.
+    const older = new Date(Date.now() - 120_000).toISOString()
+    const newer = new Date(Date.now() - 60_000).toISOString()
+    store.insert({ ...boundCard('old', { session: 'S', fingerprint: 'fp-orig', createdAt: older }), status: 'orphaned', orphanedAt: older, orphanedReason: 'boot' })
+    store.insert({ ...boundCard('new', { session: 'S', fingerprint: 'fp-orig', createdAt: newer }), status: 'orphaned', orphanedAt: newer, orphanedReason: 'boot' })
+    // Re-issue the SAME logical gate with a reworded headline → a NEW fingerprint.
+    const retry = queue.submit(boundCard('retry', { session: 'S', fingerprint: 'fp-new', headline: 'reworded' }), noop)
+    expect(retry.cardId).toBe('new')                                  // coalesced onto the most-recent twin (session+stage)
+    expect(store.get('new')?.status).toBe('pending')
+    expect(store.get('new')?.fingerprint).toBe('fp-new')             // refreshed to the adjusted content
+    expect(store.get('old')?.status).toBe('dismissed')               // the same-ORIGINAL-gate twin is still retired
+  })
+
+  it('does NOT retire a same-fingerprint twin that has aged out of the reattach window', () => {
+    const ancient = new Date(Date.now() - 48 * 60 * 60_000).toISOString()   // 48h ago, beyond the 24h window
+    store.insert({ ...boundCard('ancient', { session: 'S', fingerprint: 'fp', createdAt: ancient }), status: 'orphaned', orphanedAt: ancient, orphanedReason: 'disconnect' })
+    const first = queue.submit(boundCard('a', { session: 'S', fingerprint: 'fp' }), noop)
+    queue.disconnect(first.cardId, first.gen)
+    queue.submit(boundCard('b', { session: 'S', fingerprint: 'fp' }), noop)       // reconnect onto 'a'
+    expect(store.get('ancient')?.status).toBe('orphaned')            // out of window → left alone (symmetric with findSessionGate)
+  })
+})
+
+describe('Queue.dismiss', () => {
+  it('marks an orphaned card dismissed and drops it from every actionable surface', () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)                                      // orphaned
+    queue.dismiss('c1')
+    expect(store.get('c1')?.status).toBe('dismissed')
+    expect(store.get('c1')?.dismissedAt).toBeTruthy()
+    expect(store.list('pending')).toHaveLength(0)
+    expect(store.list('orphaned')).toHaveLength(0)
+  })
+
+  it('rejects the live waiter when dismissing a pending card (boardroom-scoped, graceful)', () => {
+    const reject = vi.fn()
+    queue.submit(card('c1'), { resolve: vi.fn(), reject })
+    queue.dismiss('c1')
+    expect(store.get('c1')?.status).toBe('dismissed')
+    expect(reject).toHaveBeenCalled()
+  })
+
+  it('refuses to dismiss a decided card (its decision is history, not clutter)', () => {
+    queue.submit(card('c1'), noop)
+    queue.decide('c1', { d1: { chosen: ['a'] } })
+    expect(() => queue.dismiss('c1')).toThrow(ConflictError)
+    expect(store.get('c1')?.status).toBe('decided')
+  })
+
+  it('refuses to DECIDE a dismissed card — a retired card is never resurrected or pushed to the agent', () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)                                   // orphaned
+    queue.dismiss('c1')                                             // retired
+    expect(() => queue.decide('c1', { d1: { chosen: ['a'] } })).toThrow(ConflictError)
+    expect(store.get('c1')?.status).toBe('dismissed')              // stayed dismissed, not flipped to decided
+  })
+
+  it('throws NotFoundError for an unknown card', () => {
+    expect(() => queue.dismiss('nope')).toThrow(NotFoundError)
+  })
+
+  it('emits a card event so the dashboard removes it live', () => {
+    const events: Card[] = []
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)
+    queue.on('card', (c: Card) => events.push(c))
+    queue.dismiss('c1')
+    expect(events.at(-1)?.status).toBe('dismissed')
+  })
+})
+
 describe('Queue events', () => {
   it('emits card on submit, decide, and disconnect', () => {
     const events: string[] = []

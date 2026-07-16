@@ -271,6 +271,33 @@ export class Store {
     return eligible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
   }
 
+  // The session's LIVE-or-reattachable gate of a given stage — the reconnect target
+  // `findReattachable` deliberately misses. Boardroom runs one gate per stage at a
+  // time per session, so a still-PENDING same-session+stage card (the caller re-issued
+  // before the daemon observed the previous request's socket close — the pending-race)
+  // or an orphaned one whose HEADLINE changed (an adjusted re-issue → a different
+  // fingerprint) is the SAME logical gate, not a duplicate. Matched by session id +
+  // stage (not fingerprint), so both cases coalesce onto the one card.
+  //
+  // Session-scoped ONLY: an un-hooked caller (no claudeSessionId) has no durable
+  // identity, so it gets no match here — its "no stealing a live pending card"
+  // guarantee (findReattachable's fingerprint-only, orphaned-only path) is preserved.
+  // Most recent wins, mirroring findReattachable's tiebreak.
+  findSessionGate(
+    caller: Pick<Card, 'claudeSessionId' | 'stage'>,
+    nowMs: number,
+    windowMs = REATTACH_WINDOW_MS,
+  ): Card | undefined {
+    if (!caller.claudeSessionId) return undefined
+    const matches = this.list().filter(c =>
+      c.claudeSessionId === caller.claudeSessionId &&
+      c.stage === caller.stage &&
+      (c.status === 'pending' ||
+        (c.status === 'orphaned' && nowMs - Date.parse(c.orphanedAt ?? c.createdAt) < windowMs)),
+    )
+    return matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  }
+
   // Observe-all session capture (separate from the hook-fed `sessions` table the
   // waker reads — registry capture must never influence `claude --resume`).
   upsertCaptured(session: CapturedSession): void {
