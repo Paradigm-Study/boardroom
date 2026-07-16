@@ -145,6 +145,49 @@ if [ -n "$session_id" ]; then
 Boardroom session key: ${session_id} — pass it as sessionKey on EVERY boardroom call. Recovery/reattach is scoped to this key."
 fi
 
+# mesh team brief — BEGIN (guarded by MESH_URL + MESH_PERSON, default-off)
+# Fetch GET ${MESH_URL}/brief?person=${MESH_PERSON}&project=$(basename cwd)&cwd=$cwd
+# (Authorization: Bearer ${MESH_TOKEN}, curl --max-time 2) and, on a parsable
+# JSON answer with content, append a short '## Team brief (mesh)' digest of
+# teammates' active intents and locked specs to $ctx. Fail-open: no MESH_URL,
+# relay down/slow, non-JSON, or an empty brief all leave the injected context
+# byte-identical to the pre-mesh hook.
+if [ -n "${MESH_URL:-}" ] && [ -n "${MESH_PERSON:-}" ]; then
+  mesh_enc() { printf '%s' "$1" | jq -sRr '@uri' 2>/dev/null; }
+  mesh_brief=$(curl -s --max-time 2 \
+    -H "Authorization: Bearer ${MESH_TOKEN:-}" \
+    "${MESH_URL%/}/brief?person=$(mesh_enc "$MESH_PERSON")&project=$(mesh_enc "$(basename "${cwd:-.}")")&cwd=$(mesh_enc "${cwd:-}")" \
+    2>/dev/null) || mesh_brief=""
+  if [ -n "$mesh_brief" ]; then
+    # jq -e exits non-zero when the program yields `empty`, so garbage JSON and
+    # contentless briefs both land in the `|| mesh_md=""` fail-open arm.
+    mesh_md=$(printf '%s' "$mesh_brief" | jq -er '
+      def arts: ((.artifacts // []) | map(.path // "" | select(. != ""))
+                 | if length > 0 then " — " + join(", ") else "" end);
+      if type == "object" then
+        ([ (.teammates // [])[]
+           | "- \(.person // "?"): \(.intent // "?")" + arts ]) as $tm
+        | ([ (.lockedSpecs // [])[]
+             | "- \(.person // "?") locked spec \(.cardId // "?")" + arts
+               + (((.specCriteria // []) | map(.behavior // "" | select(. != ""))) as $c
+                  | if ($c | length) > 0 then " — criteria: " + ($c | join("; ")) else "" end) ]) as $ls
+        | (if ($tm | length) > 0 then ["Teammates active now:"] + $tm else [] end)
+          + (if ($ls | length) > 0 then
+               (if ($tm | length) > 0 then [""] else [] end)
+               + ["Locked specs (coordinate before contradicting):"] + $ls
+             else [] end)
+        | if length > 0 then join("\n") else empty end
+      else empty end' 2>/dev/null) || mesh_md=""
+    if [ -n "$mesh_md" ]; then
+      ctx="${ctx}
+
+## Team brief (mesh)
+${mesh_md}"
+    fi
+  fi
+fi
+# mesh team brief — END
+
 # MUST remain the LAST statement: `read -r -d ''` exits 1 at EOF (no NUL found),
 # so the hook's exit status is this jq's (0), not a misleading non-zero.
 jq -nc --arg ctx "$ctx" \

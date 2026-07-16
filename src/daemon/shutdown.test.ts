@@ -433,6 +433,98 @@ describe('installSignalHandlers', () => {
     store.close()
   })
 
+  it('detaches the mesh forwarder immediately and awaits flush() before closing the store', async () => {
+    const { proc, emit } = fakeProcess()
+    const server = new FakeServer()
+    const order: string[] = []
+    const store = { close: () => order.push('store') }
+    let releaseFlush!: () => void
+    const meshForwarder = {
+      stop: () => order.push('mesh-stop'),
+      flush: () => {
+        order.push('mesh-flush')
+        return new Promise<void>(resolve => { releaseFlush = resolve })
+      },
+    }
+    const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+    installSignalHandlers({
+      server: server as unknown as import('node:http').Server,
+      store,
+      meshForwarder,
+      proc,
+      exit: exit as unknown as (code?: number) => never,
+    })
+
+    emit('SIGTERM')
+    // Detached up front (like the capturer) so no new lifecycle records enqueue
+    // mid-drain; flush is NOT requested until the server has finished closing.
+    expect(order).toEqual(['mesh-stop'])
+    server.finishClose()
+    // The close callback kicks off the flush, and the store must stay open (and
+    // the process alive) while the in-flight relay POST / spool write settles.
+    expect(order).toEqual(['mesh-stop', 'mesh-flush'])
+    releaseFlush()
+    await Promise.resolve()
+    expect(order).toEqual(['mesh-stop', 'mesh-flush', 'store', 'exit:0'])
+  })
+
+  it('the watchdog still force-exits when a mesh flush never settles', () => {
+    vi.useFakeTimers()
+    try {
+      const { proc, emit } = fakeProcess()
+      const server = new FakeServer()
+      const order: string[] = []
+      const store = { close: () => order.push('store') }
+      const meshForwarder = {
+        stop: () => {},
+        flush: () => new Promise<void>(() => {}), // wedged: never settles
+      }
+      const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+      installSignalHandlers({
+        server: server as unknown as import('node:http').Server,
+        store,
+        meshForwarder,
+        proc,
+        exit: exit as unknown as (code?: number) => never,
+        forceExitMs: 5_000,
+      })
+
+      emit('SIGTERM')
+      server.finishClose() // the server drains fine, but the flush hangs
+      expect(order).toEqual([])
+      vi.advanceTimersByTime(5_000)
+      expect(order).toEqual(['store', 'exit:0'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still exits if the mesh forwarder stop() throws (logged), like every other drain step', async () => {
+    const { proc, emit } = fakeProcess()
+    const server = new FakeServer()
+    const order: string[] = []
+    const store = { close: () => order.push('store') }
+    const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+    const log = vi.fn()
+
+    installSignalHandlers({
+      server: server as unknown as import('node:http').Server,
+      store,
+      meshForwarder: { stop: () => { throw new Error('detach wedged') }, flush: () => Promise.resolve() },
+      proc,
+      exit: exit as unknown as (code?: number) => never,
+      log,
+    })
+
+    emit('SIGTERM')
+    server.finishClose()
+    await Promise.resolve()
+    expect(order).toEqual(['store', 'exit:0'])
+    expect(log).toHaveBeenCalledWith('[shutdown] mesh forwarder stop failed:', expect.any(Error))
+  })
+
   it('exits even if store.close() throws (logs the failure), so a redeploy is never blocked', async () => {
     const { proc, emit } = fakeProcess()
     const server = new FakeServer()

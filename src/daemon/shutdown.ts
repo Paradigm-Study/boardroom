@@ -29,6 +29,12 @@ export interface ShutdownOpts {
   // reconnecting surfaces (tray, dashboard Needs-you) deliberately exclude, and the
   // gate would silently vanish from the actionable view across the redeploy.
   quiesce?: () => void
+  // Mesh forwarder (optional, mesh-v0): stop() detaches its queue listeners early
+  // in the drain (like the capturer) so no new lifecycle records enqueue
+  // mid-shutdown, and flush() is awaited after the server drains so an in-flight
+  // relay POST / spool write completes before the process exits. A wedged flush
+  // cannot pin the daemon — the force-exit watchdog still fires.
+  meshForwarder?: { stop(): void; flush(): Promise<void>; close?(): void }
   // Injected so the real process is never touched in unit tests. Defaults wire to
   // the live process in production (index.ts).
   proc?: NodeJS.EventEmitter
@@ -74,6 +80,10 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     // interval would otherwise tick mid-drain and write into an already-closed DB.
     try { opts.capturer?.stop() } catch (err) { log('[shutdown] capturer stop failed:', err) }
 
+    // Detach the mesh forwarder's queue listeners now so nothing new enqueues a
+    // relay POST while we drain; already-enqueued records are flushed below.
+    try { opts.meshForwarder?.stop() } catch (err) { log('[shutdown] mesh forwarder stop failed:', err) }
+
     // Orphan in-flight gates as 'boot' while the store is still open and BEFORE
     // closeAllConnections() destroys their sockets — see ShutdownOpts.quiesce.
     try { opts.quiesce?.() } catch (err) { log('[shutdown] quiesce failed:', err) }
@@ -82,12 +92,15 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     const finish = (): void => {
       if (exited) return
       exited = true
+      clearTimeout(timer)
       // try/finally so a future cleanup throw can never skip the exit — a daemon
       // that fails to exit on SIGTERM would block the redeploy it was asked to make.
+      try { opts.meshForwarder?.close?.() } catch (err) { log('[shutdown] mesh forwarder close failed:', err) }
       try { opts.store.close() } catch (err) { log('[shutdown] store close failed:', err) } finally { exit(code) }
     }
 
-    // Force-exit watchdog so a wedged connection can't pin the daemon forever.
+    // Force-exit watchdog so a wedged connection (or a wedged mesh flush) can't
+    // pin the daemon forever.
     const ms = opts.forceExitMs ?? 5_000
     const timer = setTimeout(() => {
       log('[shutdown] server did not close in time — forcing exit')
@@ -98,9 +111,15 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     let graceTimer: ReturnType<typeof setTimeout> | undefined
     opts.server.close((err?: Error) => {
       if (err) log('[shutdown] server close error:', err)
-      clearTimeout(timer)
+      // The sentinel-flush grace window is moot once close() has completed —
+      // every socket (and the PARKED tool-results riding them) is settled.
       if (graceTimer) clearTimeout(graceTimer)
-      finish()
+      // Let an in-flight mesh relay POST / spool write settle before exiting.
+      // flush() never rejects by construction; the rejection arm only guards a
+      // future regression from stranding the drain. The watchdog above stays
+      // armed (cleared in finish, not here) so a wedged flush is still bounded.
+      const flushed = opts.meshForwarder ? opts.meshForwarder.flush() : Promise.resolve()
+      flushed.then(finish, finish)
     })
     // A hanging gate call's SSE connection never ends on its own, so a bare
     // server.close() would wait out the full watchdog on every redeploy-during-a-gate

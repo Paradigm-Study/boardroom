@@ -7,7 +7,7 @@ import { installSignalHandlers } from './shutdown.js'
 
 process.umask(0o077)
 const config = loadConfig()
-const { app, queue, store, capturer, orphanedOnBoot } = createDaemon(config)
+const { app, queue, store, capturer, orphanedOnBoot, meshForwarder } = createDaemon(config)
 
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`boardroom daemon on http://127.0.0.1:${config.port}`)
@@ -15,6 +15,13 @@ const server = app.listen(config.port, '127.0.0.1', () => {
   if (orphanedOnBoot > 0) console.log(`  recovered ${orphanedOnBoot} pending card(s) as orphaned`)
 })
 guardListen(server, config.port)
+
+// Mesh forwarding (mesh-v0, default-off): only attaches when config.json "mesh"
+// {url,token,person} or BOARDROOM_MESH_URL/TOKEN/PERSON env is present. With no
+// mesh config, createMeshForwarder returns undefined and nothing subscribes —
+// the daemon behaves byte-identically to before. Created BEFORE the signal
+// handlers so the drain can stop it and flush its in-flight relay POSTs.
+if (meshForwarder) console.log(`  mesh forwarding live for "${meshForwarder.mesh.person}" → ${meshForwarder.mesh.url}`)
 
 // Bind the daemon to clean process signals: a redeploy SIGTERMs us (launchctl
 // kickstart) and KeepAlive respawns. Drain the server + close the store cleanly so
@@ -27,9 +34,11 @@ guardListen(server, config.port)
 // STOP sentinel — a clean sever the agent understands, not a raw dropped socket),
 // then orphans any remaining still-pending gate as 'boot'. Both leave the card
 // "reconnecting" (never 'disconnect'), so a redeploy-during-a-gate is reattachable.
+// The mesh forwarder rides along so shutdown can stop + flush its outbox.
 installSignalHandlers({
   server, store, capturer,
   quiesce: () => { queue.parkAllLive(); store.orphanAllPending() },
+  meshForwarder,
 })
 
 startNotifications(queue, config)

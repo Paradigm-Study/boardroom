@@ -98,19 +98,112 @@ Config: `~/.config/boardroom/config.json` — `port` (4140),
 binds 127.0.0.1; that is hardwired (it is the security predicate for
 running without auth).
 
+Optional mesh relay (mesh-v0, default-off): add `"mesh": { "url", "token",
+"person", "teamId"? }` to `config.json` (or set `BOARDROOM_MESH_URL` /
+`BOARDROOM_MESH_TOKEN` / `BOARDROOM_MESH_PERSON` / optional
+`BOARDROOM_MESH_TEAM_ID` — env overrides the file field-by-field). When the
+required first three resolve, the daemon forwards privacy-safe card lifecycle
+records (`raised`/`decided`, no card bodies) to `/outbox/<person>`; a partial
+config is treated as "not configured" and nothing leaves the machine.
+
+Publishes are committed to a durable Mesh outbox before network I/O. Legacy
+local mode reconciles card transitions; hosted mode re-authorizes only records
+already in its team-scoped outbox and never backfills pre-consent history.
+Retries retain a stable `Idempotency-Key`, and a terminal 401/403 is surfaced
+rather than retried forever. Local diagnostics are available at
+`/api/mesh/status` and `/api/mesh/publishes`; receipt changes also appear as
+`event: mesh` on the existing `/events` stream.
+
+For a hosted rotating credential, the mesh block additionally carries
+`"deviceId"` and `"expiresAt"` (env: `BOARDROOM_MESH_DEVICE_ID` and
+`BOARDROOM_MESH_EXPIRES_AT`). Desktop remains the only credential owner and
+restarts Boardroom with a replacement before expiry; Boardroom never persists
+the bearer. Expired credentials remain queued for a Desktop-led re-enrollment.
+
+Hosted forwarding also requires `BOARDROOM_MESH_PROJECTS_JSON`, a Desktop-
+projected array of exact `{ "workspaceRoot", "project" }` mappings for the
+active team. `project` is the canonical lowercase GitHub `owner/repository`.
+Each card must carry a registered session id whose exact cwd matches one of
+those roots; otherwise it is not enqueued. Absolute workspace paths stay local
+and the canonical project replaces all producer-supplied repository labels at
+the wire boundary. Missing or empty consent keeps Boardroom useful locally but
+sends nothing to Mesh. Hosted outboxes are team-scoped so delayed records cannot
+cross a later team switch.
+
+### Packaged local API authentication
+
+A packaged supervisor must set a random install-scoped bearer in
+`BOARDROOM_LOCAL_TOKEN`, or write it to a 0600 file and set
+`BOARDROOM_LOCAL_TOKEN_FILE` (the default discovered file is
+`<configDir>/local-token`). When configured, the bearer protects every daemon
+surface: MCP, cards/admin writes, mesh status/publishes, attachments, static
+content, and `/events` SSE. Clients send `Authorization: Bearer <token>`; the
+daemon compares it in constant time and never logs or reflects it. Leaving the
+token unset preserves legacy loopback-only development behavior, but is not a
+valid packaged-supervisor configuration.
+
+### Operations and recovery
+
+```bash
+npm run doctor -- --config-dir ~/.config/boardroom
+npm run doctor -- --config-dir ~/.config/boardroom --repair
+npm run backup -- --config-dir ~/.config/boardroom --output /secure/backup-dir
+npm run restore -- --config-dir ~/.config/boardroom --input /secure/backup-dir
+```
+
+`doctor` emits a machine-readable report covering SQLite integrity and
+migration journals, configuration/credential shape, and owner-only file modes.
+`--repair` is intentionally limited to safe permission and retention repairs.
+Database startup runs `quick_check` and can recover a corrupt or partial file
+from a verified `.last-good` image while preserving the corrupt copy.
+
+Migrations take a consistent pre-migration snapshot and run in a transaction.
+Failure rolls back both schema and data changes and leaves a retryable failed
+journal entry; snapshots remain available for operator-led recovery. Backups
+carry SHA-256 manifests, are verified before any restore mutation, and restore
+first creates a pre-restore backup. A failed multi-file swap restores every
+original file.
+
+Portable backups contain only `boardroom.sqlite`, legacy or team-scoped
+`mesh-outbox*.sqlite` databases, and non-secret `machine.json`. They never
+contain `config.json`, `local-token`, or `mesh-credential.json`; restore
+preserves those machine-local secrets. Database,
+WAL/SHM, snapshots, backups, manifests, configuration, and credential files are
+kept owner-only. Delivered Mesh outbox rows age out after 30 days, while queued
+and terminal records remain available for recovery and diagnosis.
+
 ## Enforcement hooks (global, optional but recommended)
 
 Instructions alone are advisory — the model can lapse into its built-in
-question UI. Two `PreToolUse` hooks in `~/.claude/settings.json` redirect
+question UI. `PreToolUse` hooks in `~/.claude/settings.json` redirect
 those lapses to the dashboard (see `hooks/`):
 
 - `redirect-ask.sh` — denies `AskUserQuestion` once per session with a
-  pointer to `clarify`, when the daemon is reachable.
+  pointer to `clarify`, when the daemon is reachable. Matcher:
+  `AskUserQuestion`.
 - `check-plan.sh` — denies `ExitPlanMode` once per session unless a plan
-  card for this project already exists on the dashboard.
+  card for this project already exists on the dashboard. Matcher:
+  `ExitPlanMode`.
+- `mesh-gate.sh` (mesh-v0, default-off) — on `Edit|Write|MultiEdit` (register
+  with that matcher), asks the mesh relay whether a teammate has an active
+  edit or a locked spec on the same file, and surfaces an advisory `ask` once
+  per (session, repo) on a conflict — never `deny`. Armed only when
+  `MESH_URL` + `MESH_PERSON` (and usually `MESH_TOKEN`) are present in the
+  hook's environment; fails open on every relay/git/parse failure.
 
-Both are deny-once: a second attempt always passes, so sessions are nudged,
-never caged, and a downed daemon disables them automatically.
+All are fire-once per session: a second attempt always passes, so sessions
+are nudged, never caged, and a downed daemon (or relay) disables them
+automatically.
+
+`session-start.sh` additionally appends a `## Team brief (mesh)` digest of
+teammates' active intents and locked specs to the injected context when
+`MESH_URL` + `MESH_PERSON` are set; without them (or with the relay down) its
+output is byte-identical to the pre-mesh hook.
+
+Note the deliberate env split: the **daemon** reads `BOARDROOM_MESH_*` (or
+`config.json` `"mesh"`), while the **hooks** read `MESH_URL` / `MESH_PERSON` /
+`MESH_TOKEN` from the environment Claude Code gives them — hooks never read
+the daemon's config file. Set both if you want forwarding and the gate/brief.
 
 ## Menu-bar app (macOS)
 
