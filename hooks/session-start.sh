@@ -5,8 +5,8 @@
 # It never suppresses the protocol — fail-CLOSED on guidance, fail-open on the
 # probe. (Previously a single `curl || exit 0` dropped the whole protocol whenever
 # the daemon was slow/cold at session start, e.g. right after a reboot.)
-# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040).
-port="${BOARDROOM_PORT:-4040}"
+# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4140).
+port="${BOARDROOM_PORT:-4140}"
 input=$(cat)
 
 # Liveness probe: any HTTP response within 2s → connected. Unreachable or

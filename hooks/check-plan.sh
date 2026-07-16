@@ -17,10 +17,10 @@ state="${TMPDIR:-/tmp}/boardroom-hooks"
 mkdir -p "$state"
 sentinel="$state/plan-$sid"
 [ -f "$sentinel" ] && exit 0
-# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040, the
-# config.json default). Hardcoding 4040 would make the curl fail and this gate
+# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4140, the
+# config.json default). Hardcoding 4140 would make the curl fail and this gate
 # silently fail-open if the daemon was relocated.
-port="${BOARDROOM_PORT:-4040}"
+port="${BOARDROOM_PORT:-4140}"
 cards=$(curl -s --max-time 2 "http://127.0.0.1:${port}/api/cards") || exit 0
 [ -z "$cards" ] && exit 0
 # Null-safe match: was a plan presented for this project? Bind $sp so the
