@@ -5,7 +5,7 @@ export { CARD_ADDON_ID, OTHER_OPTION_ID }
 // The "reconnecting"/"needs the human" predicate and the reattach window now live in
 // src/shared so the daemon's tray view-model and the dashboard share ONE definition.
 // Re-exported here so existing dashboard imports (from './helpers.js') keep working.
-export { REATTACH_WINDOW_MS, isReconnecting, needsHuman } from '../../src/shared/needsHuman.js'
+export { REATTACH_WINDOW_MS, isReconnecting, needsHuman, orphanClockMs } from '../../src/shared/needsHuman.js'
 
 export interface DraftAnswer {
   chosen: string[]

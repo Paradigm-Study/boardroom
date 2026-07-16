@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
 import type { SessionVM } from './api.js'
+import { markRead } from './readState.js'
 import { groupCardsByProjectAndSession, TaskSidebar } from './TaskSidebar.js'
 
 afterEach(() => {
@@ -86,7 +87,6 @@ describe('TaskSidebar session grouping', () => {
 
     const checkout = within(project).getByRole('group', { name: 'Checkout sprint' })
     expect(within(checkout).getByRole('heading', { name: 'Checkout sprint' })).toBeTruthy()
-    expect(within(checkout).getByText('2 cards')).toBeTruthy()
     expect(within(checkout).getByText('Folder upload plan')).toBeTruthy()
     expect(within(checkout).getByText('Canvas upload review')).toBeTruthy()
 
@@ -207,6 +207,74 @@ describe('TaskSidebar history gate strip', () => {
     const strip = document.querySelector('.side-gate-strip')!
     const hrefs = [...strip.querySelectorAll('a')].map(a => a.getAttribute('href'))
     expect(hrefs).toEqual(['#/card/h1', '#/card/h2'])
+  })
+})
+
+describe('TaskSidebar reattach countdown bar', () => {
+  it('shows a countdown progressbar on a reconnecting gate and keeps it a full clickable row', () => {
+    const recent = new Date().toISOString()
+    render(
+      <TaskSidebar
+        selectedId={null}
+        cards={[card({ id: 'r', headline: 'Was waiting on me', stage: 'plan', status: 'orphaned', orphanedReason: 'boot', orphanedAt: recent, createdAt: recent })]}
+      />,
+    )
+    expect(screen.getByText('reconnecting')).toBeTruthy()
+    expect(screen.getByText('Was waiting on me')).toBeTruthy()
+    expect(screen.getByRole('progressbar', { name: /reattach/i })).toBeTruthy()
+  })
+
+  it('does not show a countdown bar on a live pending gate', () => {
+    render(
+      <TaskSidebar
+        selectedId={null}
+        cards={[card({ id: 'p', headline: 'Decide now', createdAt: new Date().toISOString(), status: 'pending' })]}
+      />,
+    )
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+
+  it('reflects how much of the reattach window remains', () => {
+    const halfAgo = new Date(Date.now() - 12 * 60 * 60_000).toISOString() // 12h into a 24h window
+    render(
+      <TaskSidebar
+        selectedId={null}
+        cards={[card({ id: 'r', headline: 'Half gone', status: 'orphaned', orphanedReason: 'boot', orphanedAt: halfAgo, createdAt: halfAgo })]}
+      />,
+    )
+    const now = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
+    expect(now).toBeGreaterThan(40)
+    expect(now).toBeLessThan(60)
+  })
+
+  it('measures the window from orphanedAt, not createdAt (a boot re-orphan of an old card)', () => {
+    // An old card (created 20h ago) re-orphaned on boot 1h ago must read its FRESH
+    // orphanedAt (~96% left), never the stale createdAt (~17%) — the whole reason
+    // orphanedAt exists. A createdAt-only regression would read ~17 and fail here.
+    render(
+      <TaskSidebar
+        selectedId={null}
+        cards={[card({
+          id: 'r', headline: 'Old but freshly orphaned', status: 'orphaned', orphanedReason: 'boot',
+          orphanedAt: new Date(Date.now() - 1 * 60 * 60_000).toISOString(),
+          createdAt: new Date(Date.now() - 20 * 60 * 60_000).toISOString(),
+        })]}
+      />,
+    )
+    expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(90)
+  })
+
+  it('fails open to a full bar when the orphan clock is unparseable', () => {
+    render(
+      <TaskSidebar
+        selectedId={null}
+        cards={[card({ id: 'r', headline: 'Corrupt clock', status: 'orphaned', orphanedReason: 'boot', orphanedAt: 'not-a-date', createdAt: 'also-bad' })]}
+      />,
+    )
+    // isReconnecting fails open (still on the human's plate) AND the bar reads 100 —
+    // never a broken/empty 0% for a gate whose decision is still deliverable.
+    expect(screen.getByText('reconnecting')).toBeTruthy()
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100')
   })
 })
 
@@ -358,7 +426,7 @@ describe('TaskSidebar FIFO within session stacks (group order stays recency)', (
 })
 
 describe('TaskSidebar renders no tag chips (removed as redundant with the gate rows/strip)', () => {
-  it('renders NO chips for a bound session\'s tags — they surface in the stream drawer instead', () => {
+  it('renders NO chips for a bound session\'s tags — the #/session stream view owns tag display', () => {
     const bound = card({
       id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
       session: { agent: 'x', project: 'p', title: 't' },
@@ -368,16 +436,12 @@ describe('TaskSidebar renders no tag chips (removed as redundant with the gate r
 
     const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[tagNew, tagOld]} />)
 
-    // No chips anywhere in the sidebar: the stage info lives in the gate rows/strip.
+    // No chips anywhere in the sidebar: the stage info lives in the gate rows/strip,
+    // and tag history lives behind the session title's #/session link (SessionStream).
     expect(container.querySelector('.side-tag-chip')).toBeNull()
     const sessionGroup = screen.getByRole('group', { name: 't' })
     expect(within(sessionGroup).queryByText(/clarify.*raised/i)).toBeNull()
-
-    // Not lost, though — the same tags still render inside the session's stream.
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-    const stream = screen.getByLabelText('Session stream')
-    expect(within(stream).getByText(/clarify.*raised/i)).toBeTruthy()
-    expect(within(stream).getByText(/plan.*decided/i)).toBeTruthy()
+    expect(within(sessionGroup).getByRole('link', { name: 't' }).getAttribute('href')).toBe('#/session/cc-A')
   })
 
   it('still synthesizes an entry-only group for a foreign tag — head only, chip-free', () => {
@@ -515,12 +579,9 @@ describe('TaskSidebar entry-only sessions (no cards) still surface', () => {
     const head = sessionGroup.querySelector('.side-session-head') as HTMLElement
     expect(within(head).getByLabelText(/unread/i)).toBeTruthy()
 
-    // The stream affordance opens the drawer showing the report — the read path exists.
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-    const stream = screen.getByLabelText('Session stream')
-    expect(within(stream).getByText('pre-gate findings')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /open report/i }))
-    expect(container.querySelector('.side-unread-count')).toBeNull() // read → badge clears
+    // The read path is the report's own row: it links straight to the report view.
+    const row = within(sessionGroup).getByRole('link', { name: /pre-gate findings/ })
+    expect(row.getAttribute('href')).toBe('#/report/r1')
   })
 
   it('links a bound entry-only group to its #/session/<id> stream view', () => {
@@ -542,11 +603,10 @@ describe('TaskSidebar entry-only sessions (no cards) still surface', () => {
     })
     render(<TaskSidebar selectedId={null} cards={[]} entries={[report]} />)
 
+    // Unbound groups have no #/session link; the report's own row IS the access path.
     const sessionGroup = screen.getByRole('group', { name: 'Legacy run' })
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-    // Scoped to the drawer: the report's own sidebar row (this task) also shows the
-    // headline, so an unscoped query would now match twice.
-    expect(within(screen.getByLabelText('Session stream')).getByText('orphan unbound findings')).toBeTruthy()
+    const row = within(sessionGroup).getByRole('link', { name: /orphan unbound findings/ })
+    expect(row.getAttribute('href')).toBe('#/report/r1')
   })
 
   it('does NOT duplicate a session that already has cards (entry joins the card group)', () => {
@@ -579,10 +639,10 @@ describe('TaskSidebar entry-only sessions (no cards) still surface', () => {
 })
 
 describe('TaskSidebar unread aggregate reactivity', () => {
-  // markRead fires inside the ReportDrawer (a grandchild); the sidebar's aggregate
-  // count reads localStorage — without a readState subscription it would stay
-  // stale until some unrelated re-render.
-  it('clears the sidebar unread count the moment the report is opened from a stream drawer', () => {
+  // markRead fires OUTSIDE this component (the #/report/<id> view); the sidebar's
+  // dots and aggregate count read localStorage during render — without a readState
+  // subscription they would stay stale until some unrelated re-render.
+  it('clears the unread count and dot the moment the entry is marked read elsewhere', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-06-16T12:05:00.000Z'))
     const bound = card({
@@ -593,10 +653,10 @@ describe('TaskSidebar unread aggregate reactivity', () => {
     const { container } = render(<TaskSidebar selectedId={null} cards={[bound]} entries={[r1]} />)
     expect(container.querySelector('.side-unread-count')?.textContent).toBe('1 unread')
 
-    fireEvent.click(within(screen.getByRole('group', { name: 't' })).getByRole('button', { name: /stream/i }))
-    fireEvent.click(screen.getByRole('button', { name: /open report/i }))
+    act(() => markRead('r1'))
 
     expect(container.querySelector('.side-unread-count')).toBeNull()
+    expect(screen.queryByLabelText(/unread/i)).toBeNull()
     vi.useRealTimers()
   })
 })
@@ -619,108 +679,222 @@ describe('TaskSidebar age-implies-read (no false re-lighting)', () => {
   })
 })
 
-describe('TaskSidebar stream drawer affordance', () => {
-  it('opens the StreamDrawer from a bound session\'s stream affordance, default closed on mount', () => {
+describe('TaskSidebar session head (two lines, no drawer affordance)', () => {
+  // The stream/chat button and its StreamDrawer are GONE (human, round 3: it went
+  // "nowhere with no information") — the bound title link to #/session/<id> is the
+  // stream access path, and reports carry their own rows.
+  it('renders no stream/chat button on any session head', () => {
     const bound = card({
       id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
       session: { agent: 'x', project: 'p', title: 't' },
     })
-    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+    const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'q', title: 'u' } })
+    render(<TaskSidebar selectedId={null} cards={[bound, legacy]} entries={[]} />)
 
-    // Default closed: no stream drawer/dialog present on mount.
+    expect(screen.queryByRole('button', { name: /stream/i })).toBeNull()
     expect(screen.queryByLabelText('Session stream')).toBeNull()
-
-    const sessionGroup = screen.getByRole('group', { name: 't' })
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-
-    expect(screen.getByLabelText('Session stream')).toBeTruthy()
+    // The bound head still links to the full #/session stream view.
+    expect(screen.getByRole('link', { name: 't' }).getAttribute('href')).toBe('#/session/cc-A')
   })
 
-  it('closes the StreamDrawer via its close callback', () => {
+  it('splits the head into a title line and a separate meta line (title gets the full width)', () => {
     const bound = card({
       id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
-      session: { agent: 'x', project: 'p', title: 't' },
+      session: { agent: 'codex-mcp-client', project: 'p', title: 'A long, readable session title' },
     })
-    render(<TaskSidebar selectedId={null} cards={[bound]} entries={[]} />)
+    render(<TaskSidebar selectedId={null} cards={[bound]} />)
 
-    const sessionGroup = screen.getByRole('group', { name: 't' })
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-    expect(screen.getByLabelText('Session stream')).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: /close/i }))
-    expect(screen.queryByLabelText('Session stream')).toBeNull()
+    const group = screen.getByRole('group', { name: 'A long, readable session title' })
+    const head = group.querySelector('.side-session-head')!
+    const meta = group.querySelector('.side-session-meta')!
+    // The agent lives in the meta line as its vendor MARK (full name in aria/title),
+    // not as text beside the title; the redundant card count is gone entirely.
+    expect(within(head as HTMLElement).queryByLabelText('codex-mcp-client')).toBeNull()
+    expect(within(meta as HTMLElement).getByLabelText('codex-mcp-client')).toBeTruthy()
+    expect(within(group).queryByText(/\d+ cards?/)).toBeNull()
+    // Last-activity age replaces it (fixture is months old → rendered in days).
+    expect(within(meta as HTMLElement).getByText(/\d+d/)).toBeTruthy()
   })
 
-  it('shows the stream affordance on an unbound (legacy pseudo-key) session too — SessionStream accepts session={null}', () => {
-    const legacy = card({ id: 'l', headline: 'L', createdAt: '2026-06-16T12:00:00.000Z', session: { agent: 'x', project: 'p', title: 't' } })
-    render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[]} />)
-    const sessionGroup = screen.getByRole('group', { name: 't' })
-    expect(within(sessionGroup).queryByRole('button', { name: /stream/i })).toBeTruthy()
+  it('gate glyphs carry no per-stage inline color — status classes alone drive color', () => {
+    const decided = card({
+      id: 'g1', headline: 'Done gate', stage: 'plan', status: 'decided',
+      createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const orphaned = card({
+      id: 'g2', headline: 'Dead gate', stage: 'spec', status: 'orphaned',
+      createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[decided, orphaned]} />)
+
+    // Shape = which gate; color = STATUS via CSS classes. The old per-stage
+    // --stage-color inline style must not come back on any glyph.
+    const done = screen.getByRole('link', { name: 'Plan approval: Done gate' })
+    const dead = screen.getByRole('link', { name: 'Spec gate: Dead gate (orphaned)' })
+    expect(done.getAttribute('style')).toBeNull()
+    expect(dead.getAttribute('style')).toBeNull()
+    expect(done.className).not.toContain('orphaned')
+    expect(dead.className).toContain('orphaned')
   })
 
-  // The drawer is a fixed right-anchored overlay — two of them just stack. Opening
-  // a stream anywhere must close whichever stream was open before, across projects
-  // AND across the pending/history sections (state must live in TaskSidebar, not
-  // per ProjectSection instance).
-  it('keeps at most one StreamDrawer open when streams are opened in two different sessions', () => {
-    const a = card({
-      id: 'a', headline: 'A', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
-      session: { agent: 'x', project: 'p1', title: 'tA' },
+  it('maps agents to vendor marks: claude→starburst, codex→openai, unknown→bot', () => {
+    const mk = (id: string, agent: string, title: string): Card => card({
+      id, headline: id, createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: `cc-${id}`,
+      session: { agent, project: 'p', title },
     })
-    const b = card({
-      id: 'b', headline: 'B', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-B',
-      session: { agent: 'x', project: 'p2', title: 'tB' },
-    })
-    render(<TaskSidebar selectedId={null} cards={[a, b]} entries={[]} />)
+    render(<TaskSidebar selectedId={null} cards={[mk('a', 'claude-code', 'S1'), mk('b', 'codex-mcp-client', 'S2'), mk('c', 'my-custom-agent', 'S3')]} />)
 
-    fireEvent.click(within(screen.getByRole('group', { name: 'tA' })).getByRole('button', { name: /stream/i }))
-    fireEvent.click(within(screen.getByRole('group', { name: 'tB' })).getByRole('button', { name: /stream/i }))
-
-    expect(screen.getAllByLabelText('Session stream')).toHaveLength(1)
-    expect(within(screen.getByLabelText('Session stream')).getByText('B')).toBeTruthy()
+    expect(screen.getByLabelText('claude-code').className).toContain('agent-mark-claude')
+    expect(screen.getByLabelText('codex-mcp-client').className).toContain('agent-mark-openai')
+    expect(screen.getByLabelText('my-custom-agent').className).toContain('agent-mark-other')
   })
 
-  it('keeps at most one StreamDrawer open for the SAME session split across pending and history', () => {
-    const pendingCard = card({
-      id: 'p1', headline: 'Pending gate', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
-      session: { agent: 'x', project: 'p', title: 't' },
-    })
-    const decidedCard = card({
-      id: 'd1', headline: 'Decided gate', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A', status: 'decided',
-      session: { agent: 'x', project: 'p', title: 't' },
-    })
-    render(<TaskSidebar selectedId={null} cards={[pendingCard, decidedCard]} entries={[]} />)
+  it('leads a Needs-you row with its pulsing stage icon and drops the redundant "needs you" word', () => {
+    const pending = card({ id: 'p1', headline: 'Decide now', createdAt: new Date().toISOString(), stage: 'plan', status: 'pending' })
+    render(<TaskSidebar selectedId={null} cards={[pending]} />)
 
-    // The session appears once under Needs-you and once under History.
-    const groups = screen.getAllByRole('group', { name: 't' })
-    expect(groups).toHaveLength(2)
-    fireEvent.click(within(groups[0]).getByRole('button', { name: /stream/i }))
-    fireEvent.click(within(groups[1]).getByRole('button', { name: /stream/i }))
+    const row = screen.getByRole('link', { name: /Decide now/ })
+    expect(row.querySelector('.t-icon')).toBeTruthy()
+    // Stage label + age remain; the status word is gone for plain pending rows
+    // ("needs you" restated the section header) but stays for reconnecting ones.
+    expect(within(row).getByText('Plan approval')).toBeTruthy()
+    expect(within(row).queryByText('needs you')).toBeNull()
+  })
+})
 
-    expect(screen.getAllByLabelText('Session stream')).toHaveLength(1)
+describe('TaskSidebar gate-glyph tooltip', () => {
+  const decided = card({
+    id: 'h1', headline: 'Approve migration plan', stage: 'plan', status: 'decided',
+    createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
+    session: { agent: 'x', project: 'p', title: 't' },
   })
 
-  // The drawer promises "the SAME SessionStream the #/session/<id> route renders"
-  // (StreamDrawer.tsx) — the FULL session, not the subset of cards that happens to
-  // sit in the section the affordance was clicked in.
-  it('shows the full session stream — history cards included — when opened from the pending section', () => {
-    const pendingCard = card({
-      id: 'p1', headline: 'Pending gate', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+  it('shows a tooltip with stage, headline and status on hover; hides it on leave', () => {
+    render(<TaskSidebar selectedId={null} cards={[decided]} />)
+    const glyph = screen.getByRole('link', { name: 'Plan approval: Approve migration plan' })
+
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.mouseEnter(glyph)
+    const tip = screen.getByRole('tooltip')
+    expect(within(tip).getByText('Plan approval')).toBeTruthy()
+    expect(within(tip).getByText('Approve migration plan')).toBeTruthy()
+    expect(within(tip).getByText(/decided/)).toBeTruthy()
+
+    fireEvent.mouseLeave(glyph)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('shows the tooltip on keyboard focus too, and marks an abandoned gate as orphaned', () => {
+    const dropped = card({
+      id: 'h2', headline: 'Agent dropped mid-run', stage: 'results', status: 'orphaned',
+      orphanedReason: 'disconnect', orphanedAt: '2026-06-16T12:00:00.000Z',
+      createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A',
       session: { agent: 'x', project: 'p', title: 't' },
     })
-    const decidedCard = card({
-      id: 'd1', headline: 'Decided gate', createdAt: '2026-06-16T12:00:00.000Z', claudeSessionId: 'cc-A', status: 'decided',
+    render(<TaskSidebar selectedId={null} cards={[dropped]} />)
+    const glyph = screen.getByRole('link', { name: 'Results review: Agent dropped mid-run (orphaned)' })
+
+    fireEvent.focus(glyph)
+    const tip = screen.getByRole('tooltip')
+    expect(within(tip).getByText(/orphaned/)).toBeTruthy()
+
+    fireEvent.blur(glyph)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('shows at most one tooltip when moving between glyphs in a strip', () => {
+    const second = card({
+      id: 'h3', headline: 'Lock the spec', stage: 'spec', status: 'decided',
+      createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
       session: { agent: 'x', project: 'p', title: 't' },
     })
-    render(<TaskSidebar selectedId={null} cards={[pendingCard, decidedCard]} entries={[]} />)
+    render(<TaskSidebar selectedId={null} cards={[decided, second]} />)
 
-    // Open the stream from the PENDING section's group (rendered first).
-    const groups = screen.getAllByRole('group', { name: 't' })
-    fireEvent.click(within(groups[0]).getByRole('button', { name: /stream/i }))
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Plan approval: Approve migration plan' }))
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Spec gate: Lock the spec' }))
 
-    const stream = screen.getByLabelText('Session stream')
-    expect(within(stream).getByText('Pending gate')).toBeTruthy()
-    expect(within(stream).getByText('Decided gate')).toBeTruthy()
+    const tips = screen.getAllByRole('tooltip')
+    expect(tips).toHaveLength(1)
+    expect(within(tips[0]).getByText('Lock the spec')).toBeTruthy()
+  })
+
+  it('flips below the glyph when there is no headroom, renders above when there is', () => {
+    render(<TaskSidebar selectedId={null} cards={[decided]} />)
+    const glyph = screen.getByRole('link', { name: 'Plan approval: Approve migration plan' })
+
+    // jsdom rects default to 0 — a glyph at the very top of the viewport → flipped.
+    fireEvent.mouseEnter(glyph)
+    expect(screen.getByRole('tooltip').className).toContain('below')
+    fireEvent.mouseLeave(glyph)
+
+    // Plenty of headroom → the normal above-the-glyph placement.
+    glyph.getBoundingClientRect = () => ({ top: 300, bottom: 326, left: 40, right: 66, width: 26, height: 26, x: 40, y: 300, toJSON: () => ({}) }) as DOMRect
+    fireEvent.mouseEnter(glyph)
+    expect(screen.getByRole('tooltip').className).not.toContain('below')
+  })
+
+  it('dismisses the tooltip on scroll and on Escape (WCAG 1.4.13)', () => {
+    render(<TaskSidebar selectedId={null} cards={[decided]} />)
+    const glyph = screen.getByRole('link', { name: 'Plan approval: Approve migration plan' })
+
+    // Scroll anywhere (the sidebar scrolls itself — the listener is capture-phase).
+    fireEvent.mouseEnter(glyph)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+    fireEvent.scroll(window)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    // Escape, without moving the pointer.
+    fireEvent.mouseEnter(glyph)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('drops the tooltip when a live update removes the hovered card from the strip', () => {
+    const second = card({
+      id: 'h3', headline: 'Lock the spec', stage: 'spec', status: 'decided',
+      createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    const { rerender } = render(<TaskSidebar selectedId={null} cards={[decided, second]} />)
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Plan approval: Approve migration plan' }))
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    // The hovered card leaves the list (e.g. re-classified by an SSE update): no
+    // boundary event will ever fire for it — the tip must not float forever.
+    rerender(<TaskSidebar selectedId={null} cards={[second]} />)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('does not let another glyph\'s leave/blur clear the active tooltip', () => {
+    const second = card({
+      id: 'h3', headline: 'Lock the spec', stage: 'spec', status: 'decided',
+      createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: 'cc-A',
+      session: { agent: 'x', project: 'p', title: 't' },
+    })
+    render(<TaskSidebar selectedId={null} cards={[decided, second]} />)
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: 'Plan approval: Approve migration plan' }))
+    // A stray leave from a glyph that does NOT own the tooltip must be ignored.
+    fireEvent.mouseLeave(screen.getByRole('link', { name: 'Spec gate: Lock the spec' }))
+
+    expect(within(screen.getByRole('tooltip')).getByText('Approve migration plan')).toBeTruthy()
+  })
+
+  it('wires aria-describedby from the active glyph to the open tooltip', () => {
+    render(<TaskSidebar selectedId={null} cards={[decided]} />)
+    const glyph = screen.getByRole('link', { name: 'Plan approval: Approve migration plan' })
+    expect(glyph.getAttribute('aria-describedby')).toBeNull()
+
+    fireEvent.focus(glyph)
+    const tip = screen.getByRole('tooltip')
+    expect(tip.id).toBeTruthy()
+    expect(glyph.getAttribute('aria-describedby')).toBe(tip.id)
+
+    fireEvent.blur(glyph)
+    expect(glyph.getAttribute('aria-describedby')).toBeNull()
   })
 })
 
@@ -760,7 +934,7 @@ describe('TaskSidebar unbound entries (no claudeSessionId) surface under their p
     expect(within(head).getByLabelText(/unread/i)).toBeTruthy()
   })
 
-  it('renders no chip for an unbound tag — it joins its (project, title, agent) group\'s stream instead', () => {
+  it('renders no chip for an unbound tag — it joins its (project, title, agent) group silently', () => {
     const tag = tagEntry({
       id: 't1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined, tag: 'stage:plan:decided', cardId: 'l',
       session: { agent: 'x', project: 'p', title: 't' },
@@ -768,15 +942,14 @@ describe('TaskSidebar unbound entries (no claudeSessionId) surface under their p
 
     render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[tag]} />)
 
-    // Chip-free in the sidebar (the pseudo-key grouping still routes the tag)…
+    // Chip-free in the sidebar; the pseudo-key grouping still routes the tag to the
+    // legacy group (no phantom "Untitled session" twin spawns for it).
     const sessionGroup = screen.getByRole('group', { name: 't' })
     expect(within(sessionGroup).queryByText(/plan.*decided/i)).toBeNull()
-    // …and the tag still renders inside that group's stream drawer.
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-    expect(within(screen.getByLabelText('Session stream')).getByText(/plan.*decided/i)).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Untitled session' })).toBeNull()
   })
 
-  it('opens the StreamDrawer for an unbound group and shows the report inside it', () => {
+  it('gives an unbound group\'s report a row linking to its #/report view', () => {
     const report = reportEntry({
       id: 'r1', createdAt: '2026-06-16T12:01:00.000Z', claudeSessionId: undefined, headline: 'unbound findings',
       session: { agent: 'x', project: 'p', title: 't' },
@@ -784,14 +957,12 @@ describe('TaskSidebar unbound entries (no claudeSessionId) surface under their p
 
     render(<TaskSidebar selectedId={null} cards={[legacy]} entries={[report]} />)
 
+    // An unbound group has no #/session link; the report row IS its access path.
     const sessionGroup = screen.getByRole('group', { name: 't' })
-    fireEvent.click(within(sessionGroup).getByRole('button', { name: /stream/i }))
-
-    const stream = screen.getByLabelText('Session stream')
-    // Scoped to the drawer: the report's own sidebar row (this task) also shows the
-    // headline, so an unscoped query would now match twice.
-    expect(within(stream).getByText('unbound findings')).toBeTruthy()
+    const row = within(sessionGroup).getByRole('link', { name: /unbound findings/ })
+    expect(row.getAttribute('href')).toBe('#/report/r1')
   })
+
 })
 
 describe('TaskSidebar report rows (reports render as first-class rows, not tucked away)', () => {

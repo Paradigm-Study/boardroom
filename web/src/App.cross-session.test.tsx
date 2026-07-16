@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
 import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
@@ -209,5 +209,28 @@ describe('dashboard passes entries into the sidebar at both routes', () => {
     // The stream view renders the report too — assert the SIDEBAR's dot
     // specifically via its sidebar-only class, so this targets the sidebar wiring.
     await waitFor(() => expect(document.querySelector('.sidebar .side-unread-dot')).toBeTruthy())
+  })
+})
+
+// The sidebar's StreamDrawer used to promise "the FULL session, not the section's
+// subset"; the drawer is gone and the #/session route is now the only stream
+// surface — so THAT promise is pinned here instead: the route renders every one of
+// the session's cards, pending and decided alike.
+describe('#/session route renders the full session stream', () => {
+  it('shows both a pending and a decided gate of the same session', async () => {
+    const pendingGate = { ...gate('P', 'Pending gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T11:00:00.000Z'), claudeSessionId: 'cc-A' }
+    const decidedGate = {
+      ...gate('D', 'Decided gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z'),
+      claudeSessionId: 'cc-A', status: 'decided' as const,
+    }
+    vi.mocked(fetchCards).mockResolvedValue([pendingGate, decidedGate])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/session/cc-A'
+
+    render(<App />)
+
+    const stream = await screen.findByLabelText('Session stream')
+    expect(within(stream).getByText('Pending gate')).toBeTruthy()
+    expect(within(stream).getByText('Decided gate')).toBeTruthy()
   })
 })
