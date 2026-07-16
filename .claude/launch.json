@@ -4,13 +4,19 @@
     {
       "name": "boardroom",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 4040
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 4041
     },
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:web"],
+      "runtimeArgs": [
+        "run",
+        "dev:web"
+      ],
       "port": 5173
     }
   ]
