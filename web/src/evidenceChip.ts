@@ -2,7 +2,7 @@ import type { Block } from '../../src/shared/blocks.js'
 
 // Collapse a claim's evidence blocks into one short, glanceable chip label for
 // the results checklist. Full evidence lives behind the row's expand toggle.
-const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+export const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 export function evidenceChip(blocks: Block[]): string {
   if (blocks.length === 0) return ''
