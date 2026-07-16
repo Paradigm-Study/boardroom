@@ -1,6 +1,6 @@
-import { OTHER_OPTION_ID, type AttachmentRef, type Decision, type DecisionAnswer, type ResultsVerdict } from '../../src/shared/card.js'
+import { CARD_ADDON_ID, OTHER_OPTION_ID, type AttachmentRef, type Decision, type DecisionAnswer, type ResultsVerdict } from '../../src/shared/card.js'
 
-export { OTHER_OPTION_ID }
+export { CARD_ADDON_ID, OTHER_OPTION_ID }
 
 // The "reconnecting"/"needs the human" predicate and the reattach window now live in
 // src/shared so the daemon's tray view-model and the dashboard share ONE definition.
@@ -66,11 +66,20 @@ export function claimNotesValid(claims: Decision[], answers: Record<string, Draf
   })
 }
 
+// Whether the global card-level add-on carries anything worth sending: a
+// non-blank note or at least one attachment. Gates both the payload (an empty
+// add-on never rides the wire) and the results verdict derivation below.
+export function addonHasContent(addon: DraftAnswer): boolean {
+  return addon.note.trim() !== '' || (addon.attachments?.length ?? 0) > 0
+}
+
 // The results gate collapses to ONE submit button whose verdict is derived, never
 // hand-picked: the per-claim votes plus the card-level add-on already say whether
 // there is work left. It is "complete" ONLY when every claim is approved AND the
 // add-on carries no instruction (note or attachment); any reject/revise, any
 // unreviewed claim, or any add-on means "continue" (the agent acts and re-submits).
+// Standing instructions ≠ a flag on the decisions: the claim approvals ride
+// through unchanged — the add-on only says the session still has work.
 export function deriveResultsVerdict(
   claims: Decision[],
   answers: Record<string, DraftAnswer>,
@@ -80,8 +89,7 @@ export function deriveResultsVerdict(
     const a = answers[d.id]
     return !!a && a.chosen.length === 1 && a.chosen[0] === 'approve'
   })
-  const addonEmpty = addon.note.trim() === '' && (addon.attachments?.length ?? 0) === 0
-  return allApproved && addonEmpty ? 'complete' : 'continue'
+  return allApproved && !addonHasContent(addon) ? 'complete' : 'continue'
 }
 
 // Draft-attachment helpers — the per-field filter and the immutable add/remove
@@ -100,11 +108,15 @@ export function withoutAttachment(answer: DraftAnswer, id: string): DraftAnswer 
 
 export function toApiAnswers(answers: Record<string, DraftAnswer>): Record<string, DecisionAnswer> {
   return Object.fromEntries(
-    Object.entries(answers).map(([id, a]) => [id, {
-      chosen: a.chosen,
-      ...(a.note.trim() ? { note: a.note.trim() } : {}),
-      ...(a.chosen.includes(OTHER_OPTION_ID) && a.custom.trim() ? { custom: a.custom.trim() } : {}),
-      ...(a.attachments?.length ? { attachments: a.attachments } : {}),
-    }]),
+    Object.entries(answers)
+      // The global add-on is a channel, not a decision: when the human left it
+      // empty there is nothing to say — drop the key entirely from the wire.
+      .filter(([id, a]) => id !== CARD_ADDON_ID || addonHasContent(a))
+      .map(([id, a]) => [id, {
+        chosen: a.chosen,
+        ...(a.note.trim() ? { note: a.note.trim() } : {}),
+        ...(a.chosen.includes(OTHER_OPTION_ID) && a.custom.trim() ? { custom: a.custom.trim() } : {}),
+        ...(a.attachments?.length ? { attachments: a.attachments } : {}),
+      }]),
   )
 }

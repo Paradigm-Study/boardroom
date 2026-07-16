@@ -70,6 +70,19 @@ describe('ClarifyInput', () => {
     if (!r.success) expect(r.error.issues.some(i => /duplicate decision ids/.test(i.message))).toBe(true)
   })
 
+  // "card_addon" keys the global card-level add-on in the answers map: an
+  // agent-authored decision with that id would be silently overwritten by the
+  // human's add-on text (and vice versa) at decide time.
+  it('rejects a decision using the reserved card_addon id', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [{ ...decisionWithContext, id: 'card_addon' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /card_addon.*reserved/i.test(i.message))).toBe(true)
+  })
+
   it('rejects duplicate block ids', () => {
     const r = ClarifyInput.safeParse({
       project: 'demo', headline: 'h',
@@ -104,6 +117,16 @@ describe('PresentPlanInput', () => {
   it('accepts a plan with structural block and zero extra decisions', () => {
     const r = PresentPlanInput.safeParse({ project: 'demo', headline: 'h', blocks: [structural], planRef: '/tmp/plan.md' })
     expect(r.success).toBe(true)
+  })
+
+  it('rejects a decision using the reserved card_addon id', () => {
+    const r = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [structural, localBlock, globalBlock],
+      decisions: [{ ...decisionWithContext, id: 'card_addon' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /card_addon.*reserved/i.test(i.message))).toBe(true)
   })
 
   it('requires local context for every plan decision and global plan context', () => {

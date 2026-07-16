@@ -4,7 +4,7 @@ import { OTHER_OPTION_ID, PLAN_VERDICT_ID, PLAN_VERDICTS, RESULTS_VERDICT_ID, RE
 import { Entry } from '../shared/entry.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import type { Store } from './store.js'
-import { buildSummary } from './summary.js'
+import { buildSummary } from '../shared/summary.js'
 
 export class NotFoundError extends Error {}
 export class ConflictError extends Error {}

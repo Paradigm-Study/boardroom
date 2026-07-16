@@ -2,7 +2,7 @@ import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
+import { AttachmentRef, CARD_ADDON_ID, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import type { Entry } from '../shared/entry.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
@@ -246,7 +246,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         if (!card) throw new NotFoundError(`no card "${req.params.id}"`)
         if (card.status === 'decided') throw new ConflictError('card is already decided')
         const answerId = String(req.header('x-answer-id') ?? '')
-        if (!card.decisions.some(d => d.id === answerId)) {
+        // CARD_ADDON_ID is the reserved card-level add-on channel — a valid
+        // upload target on every card, though never a decision id by design.
+        if (answerId !== CARD_ADDON_ID && !card.decisions.some(d => d.id === answerId)) {
           throw new ValidationError(`unknown answer id "${answerId}"`)
         }
         if (!Buffer.isBuffer(req.body) || req.body.length === 0) {

@@ -95,6 +95,24 @@ describe('Queue.decide', () => {
     expect(summary).toContain('p: A')
   })
 
+  // The reserved global add-on rides the answers map as an extra key that is
+  // never a decision: decide must tolerate it (verdict-neutral), persist it,
+  // deliver it through the waiter, and render it as its own summary section.
+  it('accepts, persists, and delivers the card_addon channel', () => {
+    const resolve = vi.fn()
+    queue.submit(card('c1'), { resolve, reject: vi.fn() })
+    const answers = {
+      d1: { chosen: ['a'] },
+      card_addon: { chosen: [], note: 'also update the changelog' },
+    }
+    const { card: updated, summary } = queue.decide('c1', answers)
+    expect(updated.status).toBe('decided')
+    expect(updated.answers?.card_addon.note).toBe('also update the changelog')
+    expect(resolve).toHaveBeenCalledWith({ cardId: 'c1', decisions: answers, summary })
+    expect(summary).toContain('Added instructions — act on these:')
+    expect(summary).toContain('also update the changelog')
+  })
+
   it('rejects double-decide with ConflictError', () => {
     queue.submit(card('c1'), noop)
     queue.decide('c1', { d1: { chosen: ['a'] } })

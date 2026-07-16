@@ -1,7 +1,7 @@
 import { ArrowRight, Check, ClipboardCopy } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
-import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
+import { CARD_ADDON_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type ResultsVerdict } from '../../src/shared/card.js'
 import { decideCard, uploadAttachment } from './api.js'
 import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
@@ -9,7 +9,7 @@ import { CardHeader } from './CardHeader.js'
 import { prepareCardWorkspace } from './cardWorkspace.js'
 import { DecisionSection } from './Decision.js'
 import { clearDrafts } from './drafts.js'
-import { answersComplete, attachmentsForField, claimNotesValid, decisionAnswered, deriveResultsVerdict, emptyDraft, toApiAnswers, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
+import { addonHasContent, answersComplete, attachmentsForField, claimNotesValid, decisionAnswered, deriveResultsVerdict, emptyDraft, toApiAnswers, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
 import { ResultsChecklist } from './ResultsChecklist.js'
 import { SendBackForm } from './SendBackForm.js'
 import { SpecAffordance } from './SpecAffordance.js'
@@ -118,34 +118,29 @@ function SubmitBar({ state, label, ready, busy, onSubmit, className, leading }: 
   )
 }
 
-// The results gate's footer. Unlike the binary clarify/plan submit, the human
-// always gets a free-text add-on (rides on the verdict's own note/attachments),
-// and ONE submit button whose verdict the per-claim states DERIVE — the human
-// never picks complete vs continue. It reads "Mark complete" only when every
-// claim is approved with no add-on; any reject/revise, unreviewed claim, or
-// add-on flips it to "Keep going" (the send-back analog — the agent acts and
-// re-submits). Either way the per-claim votes and the add-on are sent.
-function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, verdict, ready, onNoteChange, onUpload, onRemoveAttachment, onSubmit }: {
+// The GLOBAL card-level add-on: the last input on EVERY gate card — any stage,
+// current or future — where the human appends instructions to the session (text
+// + attachments) alongside whatever they decided above. Rides the reserved
+// CARD_ADDON_ID slot of the answers map (drafted like any answer, dropped from
+// the payload when empty) and renders as its own "Added instructions" section
+// in the summary the agent receives. Verdict-neutral: it never alters the
+// decisions above it. A fragment, so each stage's footer owns the layout.
+function CardAddon({ note, attachments, placeholder, busy, onNoteChange, onUpload, onRemoveAttachment }: {
   note: string
   attachments: AttachmentRef[]
-  reviewed: number
-  total: number
-  orphaned: boolean
+  placeholder: string
   busy: boolean
-  verdict: ResultsVerdict
-  ready: boolean
   onNoteChange(note: string): void
   onUpload(file: File): Promise<AttachmentRef>
   onRemoveAttachment(id: string): void
-  onSubmit(): void
 }) {
-  const label = verdict === 'complete' ? 'Mark complete' : 'Keep going'
   return (
-    <div className="results-finish">
+    <>
+      <span className="canvas-label">Added instructions</span>
       <textarea
         className="note addon"
         aria-label="Add instructions for the agent"
-        placeholder="Add anything for the agent (optional) — sent whether or not you mark complete"
+        placeholder={placeholder}
         value={note}
         disabled={busy}
         onChange={e => onNoteChange(e.target.value)}
@@ -157,6 +152,34 @@ function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, ver
         onUpload={onUpload}
         onRemove={onRemoveAttachment}
       />
+    </>
+  )
+}
+
+// The results gate's footer. Unlike the binary clarify/plan submit, the human
+// always gets the global add-on plus ONE submit button whose verdict the
+// per-claim states DERIVE — the human never picks complete vs continue. It
+// reads "Mark complete" only when every claim is approved with no add-on; any
+// reject/revise, unreviewed claim, or standing add-on instruction flips it to
+// "Keep going" (the send-back analog — the agent acts and re-submits). Either
+// way the per-claim votes and the add-on are sent.
+function ResultsFinish({ addon, reviewed, total, orphaned, busy, verdict, ready, onSubmit }: {
+  addon: ReactNode
+  reviewed: number
+  total: number
+  orphaned: boolean
+  busy: boolean
+  verdict: ResultsVerdict
+  ready: boolean
+  onSubmit(): void
+}) {
+  const label = verdict === 'complete' ? 'Mark complete' : 'Keep going'
+  // The submit bar is a SIBLING of the add-on wrapper: nested inside the short
+  // .results-finish, position:sticky would confine it there and let it slide
+  // over the add-on while scrolling.
+  return (
+    <>
+      <div className="results-finish">{addon}</div>
       <div className="submit-bar results-submit">
         <span className="submit-state">{reviewed}/{total} reviewed</span>
         <button className="submit" disabled={!ready || busy} onClick={onSubmit}>
@@ -164,7 +187,7 @@ function ResultsFinish({ note, attachments, reviewed, total, orphaned, busy, ver
           <ArrowRight size={16} aria-hidden />
         </button>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -208,7 +231,10 @@ function OfflinePickup({ summary }: { summary: string }) {
 // `cards` is the app shell's full card store, threaded down for read-models that
 // span the whole session (the spec-recall drawer) — optional so an isolated mount
 // (tests, storybook-style use) renders the card alone.
-export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
+export function CardView({ card, cards = [] }: {
+  card: Card
+  cards?: Card[]
+}) {
   const meta = STAGE[card.stage]
   const orphaned = card.status === 'orphaned'
   const readonly = card.status === 'decided'
@@ -274,26 +300,46 @@ export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
       : answers)
   }
 
-  // Results gate: the verdict's note/attachments are the card-level add-on, kept
-  // in the answers map like any other draft; we only stamp the chosen verdict here.
+  // Results gate: only the chosen verdict is stamped, from a CLEAN draft — the
+  // card-level add-on rides its own reserved CARD_ADDON_ID slot, and a stale
+  // pre-migration verdict draft must never ship an invisible note.
   async function submitResults(verdict: ResultsVerdict): Promise<void> {
-    await commit({ ...answers, [RESULTS_VERDICT_ID]: { ...verdictDraft, chosen: [verdict] } })
+    await commit({ ...answers, [RESULTS_VERDICT_ID]: { ...emptyDraft(), chosen: [verdict] } })
   }
 
   const ready = answersComplete(choiceDecisions, answers)
   const answeredCount = choiceDecisions.filter(d => decisionAnswered(d, answers[d.id])).length
 
-  // The results verdict's own draft carries the card-level add-on note/attachments;
-  // read it once and route every edit through patchVerdict instead of re-deriving
-  // `answers[RESULTS_VERDICT_ID] ?? emptyDraft()` at each call site.
-  const verdictDraft = answers[RESULTS_VERDICT_ID] ?? emptyDraft()
-  const patchVerdict = (fn: (d: DraftAnswer) => DraftAnswer): void =>
-    setAnswers(prev => ({ ...prev, [RESULTS_VERDICT_ID]: fn(prev[RESULTS_VERDICT_ID] ?? emptyDraft()) }))
+  // The global add-on's draft — seeded by useCardAnswers for every stage; read it
+  // once and route every edit through patchAddon instead of re-deriving
+  // `answers[CARD_ADDON_ID] ?? emptyDraft()` at each call site.
+  const addonDraft = answers[CARD_ADDON_ID] ?? emptyDraft()
+  const patchAddon = (fn: (d: DraftAnswer) => DraftAnswer): void =>
+    setAnswers(prev => ({ ...prev, [CARD_ADDON_ID]: fn(prev[CARD_ADDON_ID] ?? emptyDraft()) }))
+
+  // On a decided card the add-on stays visible as a read-only record (only when
+  // it carries content) — the one input a human should still be able to re-read.
+  const showAddonRecord = readonly && addonHasContent(addonDraft)
+  const cardAddon = (placeholder: string): ReactNode => (
+    <CardAddon
+      note={addonDraft.note}
+      attachments={attachmentsForField(addonDraft, 'note')}
+      placeholder={placeholder}
+      busy={busy || readonly}
+      onNoteChange={note => patchAddon(d => ({ ...d, note }))}
+      onUpload={async file => {
+        const attachment = await uploadFor(CARD_ADDON_ID, 'note', file)
+        patchAddon(d => withAttachment(d, attachment))
+        return attachment
+      }}
+      onRemoveAttachment={id => patchAddon(d => withoutAttachment(d, id))}
+    />
+  )
 
   // ONE finish button: the per-claim states + add-on DERIVE the verdict, so the
   // human never picks complete vs continue. Readiness follows the derived verdict —
   // complete needs every claim reviewed; continue only needs voted claims noted.
-  const resultsVerdict = deriveResultsVerdict(choiceDecisions, answers, verdictDraft)
+  const resultsVerdict = deriveResultsVerdict(choiceDecisions, answers, addonDraft)
   const resultsReady = resultsVerdict === 'complete'
     ? answersComplete(choiceDecisions, answers)
     : claimNotesValid(choiceDecisions, answers)
@@ -319,24 +365,17 @@ export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
             />
             {!readonly && !pickupSummary && (
               <ResultsFinish
-                note={verdictDraft.note}
-                attachments={attachmentsForField(verdictDraft, 'note')}
+                addon={cardAddon('Add anything for the agent (optional) — adding instructions keeps the session going')}
                 reviewed={answeredCount}
                 total={choiceDecisions.length}
                 orphaned={orphaned}
                 busy={busy}
                 verdict={resultsVerdict}
                 ready={resultsReady}
-                onNoteChange={note => patchVerdict(d => ({ ...d, note }))}
-                onUpload={async file => {
-                  const attachment = await uploadFor(RESULTS_VERDICT_ID, 'note', file)
-                  patchVerdict(d => withAttachment(d, attachment))
-                  return attachment
-                }}
-                onRemoveAttachment={id => patchVerdict(d => withoutAttachment(d, id))}
                 onSubmit={() => void submitResults(resultsVerdict)}
               />
             )}
+            {showAddonRecord && <div className="results-finish">{cardAddon('')}</div>}
           </>
         )
         : (
@@ -389,6 +428,15 @@ export function CardView({ card, cards = [] }: { card: Card; cards?: Card[] }) {
                     )}
                   </Fragment>
                 ),
+            )}
+
+            {!readonly && !pickupSummary && !sendingBack && (
+              <div className="card-addon">
+                {cardAddon('Add anything for the agent (optional) — rides along with whatever you decide above')}
+              </div>
+            )}
+            {showAddonRecord && (
+              <div className="card-addon">{cardAddon('')}</div>
             )}
 
             {!readonly && !pickupSummary && verdictGate && (

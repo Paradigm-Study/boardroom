@@ -174,6 +174,25 @@ describe('POST /api/cards/:id/attachments', () => {
     expect(Buffer.from(downloaded.body).toString('utf8')).toBe('fake-image-bytes')
   })
 
+  // The global card-level add-on is a reserved answer channel, never a decision
+  // id — the answer-id guard must accept it or the add-on is attachment-dead on
+  // every stage (the human's file just 400s).
+  it('accepts an upload for the reserved card_addon channel', async () => {
+    queue.submit(card('c1'), noop)
+
+    const res = await request(app)
+      .post('/api/cards/c1/attachments')
+      .set('content-type', 'image/png')
+      .set('x-answer-id', 'card_addon')
+      .set('x-field', 'note')
+      .set('x-file-name', 'mockup.png')
+      .send(Buffer.from('addon-bytes'))
+      .expect(201)
+
+    expect(res.body).toMatchObject({ name: 'mockup.png', field: 'note' })
+    expect(existsSync(res.body.path)).toBe(true)
+  })
+
   it('returns 404 when uploading to a nonexistent card', async () => {
     const res = await request(app)
       .post('/api/cards/nope/attachments')

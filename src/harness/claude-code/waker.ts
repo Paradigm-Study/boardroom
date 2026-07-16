@@ -3,7 +3,7 @@ import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, un
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import type { Card } from '../../shared/card.js'
-import { buildSummary } from '../../daemon/summary.js'
+import { buildSummary, flat } from '../../shared/summary.js'
 import type { Store } from '../../daemon/store.js'
 
 // The spawn implementation settles exactly one hook: onSuccess when the resumed
@@ -144,8 +144,12 @@ export class Waker {
 
 function resumeMessage(card: Card): string {
   const summary = buildSummary(card, card.answers ?? {})
+  // Flatten the agent-authored headline: buildSummary already flattens every field it
+  // renders, but this resume prompt interpolates the headline directly — a newline-laced
+  // headline would otherwise forge the "Added instructions — act on these:" section the
+  // resumed agent treats as the human's authoritative tasks. card.id is a generated UUID.
   return (
-    `The human decided on the boardroom (card ${card.id}, "${card.headline}"). ` +
+    `The human decided on the boardroom (card ${card.id}, "${flat(card.headline)}"). ` +
     'Continue the work you paused, using this decision. Do NOT re-call the boardroom tool for it — the decision is below.\n\n' +
     summary
   )

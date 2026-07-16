@@ -85,6 +85,19 @@ export type PlanVerdict = (typeof PLAN_VERDICTS)[number]
 export const RESULTS_VERDICTS = ['complete', 'continue'] as const
 export type ResultsVerdict = (typeof RESULTS_VERDICTS)[number]
 
+// The reserved answer id for the GLOBAL card-level add-on: the always-visible
+// input at the bottom of every gate card (any stage, current or future) where
+// the human appends instructions to the session — text and attachments —
+// alongside whatever they decided above. It is NOT a decision: no card ever
+// compiles a decision with this id (inputs.ts rejects agent-authored
+// collisions), so Queue.validateAnswers never sees it and it rides the open
+// DecisionAnswers record as `{ chosen: [], note, attachments }`. buildSummary
+// renders it as its own closing "Added instructions" section on every stage.
+// Verdict-neutral by design: it never alters the decisions above it. The one
+// derived behavior lives client-side in deriveResultsVerdict — standing
+// instructions keep a results session alive ("continue").
+export const CARD_ADDON_ID = 'card_addon'
+
 // The spec gate's verdict: lock the contract as-is, or send it back to revise.
 // No "reject" — a spec is never thrown away wholesale; the human reshapes it via
 // per-criterion drop + the revise note, then locks.

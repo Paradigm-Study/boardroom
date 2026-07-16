@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
-import { Decision, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
+import { CARD_ADDON_ID, Decision, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
 import { Criterion } from './criterion.js'
 import { Section } from './section.js'
 
@@ -30,6 +30,17 @@ function checkUniqueIds(
   const decisionIds = (input.decisions ?? []).map(d => d.id)
   if (new Set(decisionIds).size !== decisionIds.length) {
     ctx.addIssue({ code: 'custom', message: 'duplicate decision ids', path: ['decisions'] })
+  }
+  // CARD_ADDON_ID keys the human's global add-on in the answers map — an
+  // agent-authored decision with that id would be overwritten by the add-on
+  // text at decide time (and its answer misread as the add-on).
+  const addonIdx = decisionIds.indexOf(CARD_ADDON_ID)
+  if (addonIdx !== -1) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `decision id "${CARD_ADDON_ID}" is reserved for the card-level add-on`,
+      path: ['decisions', addonIdx, 'id'],
+    })
   }
 }
 
