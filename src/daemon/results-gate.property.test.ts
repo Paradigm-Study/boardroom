@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Card, RESULTS_VERDICT_ID, type DecisionAnswer } from '../shared/card.js'
 import { ReviewResultsInput } from '../shared/inputs.js'
 import { compileResults } from './compile.js'
-import { buildSummary } from './summary.js'
+import { buildSummary } from '../shared/summary.js'
 import { Queue, ValidationError } from './queue.js'
 import { Store } from './store.js'
 

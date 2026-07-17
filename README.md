@@ -12,7 +12,7 @@ acceptance contract between plan and results):
 ```bash
 npm install
 npm run build:web
-npm run dev          # daemon + dashboard on http://127.0.0.1:4040
+npm run dev          # isolated dev daemon + dashboard on http://127.0.0.1:4041
 ```
 
 ## Global setup (one-time per machine — no per-project config)

@@ -13,7 +13,7 @@ const {
   reconcileNotifications,
 } = require('./trayRender')
 
-const PORT = process.env.BOARDROOM_PORT || '4040'
+const PORT = process.env.BOARDROOM_PORT || '4140'
 const BASE = `http://127.0.0.1:${PORT}`
 const icon = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'))
 

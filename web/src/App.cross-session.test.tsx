@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
 import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
@@ -15,7 +15,7 @@ import { App } from './App.js'
 // most-recent PENDING card across ALL sessions, with no notion of a "current" session
 // to scope to — but it renders each card's OWN content faithfully (no mixing here).
 
-vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn() }))
+vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn(), getAuthStatus: vi.fn(() => Promise.resolve({ connected: true, login: { state: 'idle' } })) }))
 vi.mock('./notify.js', () => ({
   notifyCard: vi.fn(),
   notifyPermission: () => 'granted',
@@ -169,40 +169,68 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
 })
 
 // App fetches entries once and must pass them into TaskSidebar at BOTH call sites
-// (the default/root layout and the #/session/<id> layout) — otherwise a session's
-// tag chips only ever render on one of the two routes the sidebar appears on.
+// (the default/root layout and the #/session/<id> layout). Tag chips no longer
+// render in the sidebar (redundant with the gate rows/strip), so the wiring is
+// guarded via the other thing sidebar entries drive: the unread-report dot.
 describe('dashboard passes entries into the sidebar at both routes', () => {
   const bound = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z')
   const boundCard = { ...bound, claudeSessionId: 'cc-A' }
-  const tag = {
-    id: 'tag-1', type: 'tag' as const, claudeSessionId: 'cc-A',
+  // Recent createdAt keeps the report inside readState's age-implies-read TTL, so
+  // it counts as unread under these tests' real timers.
+  const report = {
+    id: 'report-wire-1', type: 'report' as const, claudeSessionId: 'cc-A',
     session: { agent: 'claude-code', project: 'repo-one' },
-    tag: 'stage:clarify:raised', cardId: 'A', createdAt: '2026-06-30T10:01:00.000Z',
+    headline: 'wiring probe findings', blocks: [{ id: 'b1', type: 'markdown' as const, text: 'body' }],
+    createdAt: new Date().toISOString(),
   }
 
-  it('renders a session\'s tag chip in the sidebar on the root route', async () => {
+  it('shows the unread-report dot in the sidebar on the root route', async () => {
     vi.mocked(fetchCards).mockResolvedValue([boundCard])
-    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
     vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session A decision' })
 
-    expect(await screen.findByText(/clarify.*raised/i)).toBeTruthy()
+    // ≥1, not exactly 1: the sidebar may legitimately mark unread in more than one
+    // place (session head dot, per-report row dot) — this test only guards that the
+    // entries prop reaches the sidebar at all on this route.
+    expect((await screen.findAllByLabelText('Unread report')).length).toBeGreaterThan(0)
   })
 
-  it('renders a session\'s tag chip in the sidebar on the #/session/<id> route', async () => {
+  it('shows the unread-report dot in the sidebar on the #/session/<id> route', async () => {
     vi.mocked(fetchCards).mockResolvedValue([boundCard])
-    vi.mocked(fetchEntries).mockResolvedValue([tag])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
     vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/session/cc-A'
 
     render(<App />)
 
-    // Both the sidebar's tag chip AND the session stream's own tag row render
-    // "clarify · raised" on this route — assert the SIDEBAR one specifically via
-    // its .side-tag-chip class so this test targets Task 9's wiring, not Task 8's.
-    const chip = await screen.findByText(/clarify.*raised/i, { selector: '.side-tag-chip' })
-    expect(chip).toBeTruthy()
+    // The stream view renders the report too — assert the SIDEBAR's dot
+    // specifically via its sidebar-only class, so this targets the sidebar wiring.
+    await waitFor(() => expect(document.querySelector('.sidebar .side-unread-dot')).toBeTruthy())
+  })
+})
+
+// The sidebar's StreamDrawer used to promise "the FULL session, not the section's
+// subset"; the drawer is gone and the #/session route is now the only stream
+// surface — so THAT promise is pinned here instead: the route renders every one of
+// the session's cards, pending and decided alike.
+describe('#/session route renders the full session stream', () => {
+  it('shows both a pending and a decided gate of the same session', async () => {
+    const pendingGate = { ...gate('P', 'Pending gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T11:00:00.000Z'), claudeSessionId: 'cc-A' }
+    const decidedGate = {
+      ...gate('D', 'Decided gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z'),
+      claudeSessionId: 'cc-A', status: 'decided' as const,
+    }
+    vi.mocked(fetchCards).mockResolvedValue([pendingGate, decidedGate])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/session/cc-A'
+
+    render(<App />)
+
+    const stream = await screen.findByLabelText('Session stream')
+    expect(within(stream).getByText('Pending gate')).toBeTruthy()
+    expect(within(stream).getByText('Decided gate')).toBeTruthy()
   })
 })

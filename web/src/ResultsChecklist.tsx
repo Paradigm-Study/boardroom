@@ -1,10 +1,10 @@
-import { Check, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleX, ListChecks, Pencil, X, type LucideIcon } from 'lucide-react'
+import { BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleX, FlaskConical, Hammer, ListChecks, Pencil, Target, X, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import type { Block } from '../../src/shared/blocks.js'
-import { RESULTS_VERDICT_ID, type AttachmentRef, type Card, type Decision } from '../../src/shared/card.js'
+import { RESULTS_VERDICT_ID, type AttachmentRef, type Card, type Criterion, type Decision } from '../../src/shared/card.js'
 import { AttachmentInput } from './AttachmentInput.js'
 import { BlockView } from './blocks/BlockView.js'
-import { evidenceChip } from './evidenceChip.js'
+import { clip, evidenceChip } from './evidenceChip.js'
 import { attachmentsForField, decisionAnswered, emptyDraft, noteMissing, withAttachment, withoutAttachment, type DraftAnswer } from './helpers.js'
 
 // The visual "kind" of a verdict, decoupled from the raw option id. Buttons are
@@ -32,9 +32,23 @@ const KIND_UI: Record<VerdictKind, { BtnIcon: LucideIcon; RowIcon: LucideIcon; i
   reject: { BtnIcon: X, RowIcon: CircleX, iconClass: 'bad', aria: 'Reason for rejection', placeholder: "Why drop this? — this becomes the agent's next instruction" },
 }
 
-function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploadAttachment }: {
+// The context toggle's accessible name folds in the same Ask/Did/Proof preview a
+// sighted user sees inline. The segments live INSIDE the button, so an aria-label
+// would otherwise suppress them for screen readers (a leaf widget is announced by
+// its name alone) — this restores the parity the old sibling claim-chip had.
+function contextToggleLabel(open: boolean, criterion: Criterion | undefined, notes: number, proofChip: string): string {
+  const preview = [
+    criterion?.behavior,
+    notes > 0 ? `${notes} note${notes === 1 ? '' : 's'}` : '',
+    proofChip,
+  ].filter(Boolean).join(', ')
+  return `${open ? 'Hide' : 'Show'} context${preview ? `: ${preview}` : ''}`
+}
+
+function ClaimRow({ decision, index, criterion, blocks, answer, readonly, onChange, onUploadAttachment }: {
   decision: Decision
   index: number
+  criterion?: Criterion
   blocks: Block[]
   answer: DraftAnswer
   readonly: boolean
@@ -47,10 +61,14 @@ function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploa
   const kind = selected ? VERDICT_KIND[selected] : undefined
   const rejected = kind === 'reject'
   const revised = kind === 'revise'
-  // Proof first (tests/diff/graph), the agent's prose explanation last — so the
-  // chip and the expanded view lead with what verifies the claim, not an essay.
-  const ordered = [...blocks].sort((a, b) => (a.type === 'markdown' ? 1 : 0) - (b.type === 'markdown' ? 1 : 0))
-  const chip = evidenceChip(ordered)
+  // The context panel tells the claim's story in order: Ask (the criterion this
+  // claim answers) → Did (the agent's own account, its markdown notes) → Proof
+  // (the verifying artifacts: commands, diffs, tables). Same split feeds the
+  // toggle's segments, each with its own icon + hue so they read apart at a glance.
+  const did = blocks.filter(b => b.type === 'markdown')
+  const proof = blocks.filter(b => b.type !== 'markdown')
+  const proofChip = evidenceChip(proof)
+  const hasContext = criterion !== undefined || blocks.length > 0
   const RowIcon = kind ? KIND_UI[kind].RowIcon : Circle
   const iconClass = kind ? KIND_UI[kind].iconClass : 'idle'
   const noteAttachments = attachmentsForField(answer, 'note')
@@ -73,12 +91,6 @@ function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploa
       <div className="claim-row">
         <RowIcon size={18} className={`claim-icon ${iconClass}`} aria-hidden />
         <span className="claim-text">{decision.prompt}</span>
-        {chip && <span className="claim-chip">{chip}</span>}
-        {blocks.length > 0 && (
-          <button className="claim-expand" onClick={() => setOpen(o => !o)} aria-label={open ? 'Hide evidence' : 'Show evidence'}>
-            {open ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />}
-          </button>
-        )}
         <span className="verdicts">
           {decision.options.map(opt => {
             // Buttons come from the card's own options — the UI can never offer an
@@ -101,9 +113,62 @@ function ClaimRow({ decision, index, blocks, answer, readonly, onChange, onUploa
         </span>
       </div>
 
-      {open && ordered.length > 0 && (
-        <div className="claim-evidence">
-          {ordered.map(b => <BlockView key={b.id} block={b} forceOpen />)}
+      {hasContext && (
+        <button
+          className={`claim-context-toggle${open ? ' open' : ''}`}
+          onClick={() => setOpen(o => !o)}
+          aria-label={contextToggleLabel(open, criterion, did.length, proofChip)}
+        >
+          <BookOpen size={13} className="ctx-toggle-icon" aria-hidden />
+          <span className="claim-context-label">Context</span>
+          {criterion && (
+            <span className="ctx-seg ask">
+              <Target size={12} aria-hidden />
+              <span>{clip(criterion.behavior, 44)}</span>
+            </span>
+          )}
+          {did.length > 0 && (
+            <span className="ctx-seg did">
+              <Hammer size={12} aria-hidden />
+              <span>{did.length} note{did.length === 1 ? '' : 's'}</span>
+            </span>
+          )}
+          {proofChip && (
+            <span className="ctx-seg proof">
+              <FlaskConical size={12} aria-hidden />
+              <span>{proofChip}</span>
+            </span>
+          )}
+          {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+        </button>
+      )}
+
+      {open && (
+        <div className="claim-context-panel">
+          {criterion && (
+            <div className="ctx-section">
+              <span className="ctx-label ask">Ask</span>
+              <p className="ctx-content">{criterion.behavior}</p>
+              <div className="crit-good"><span className="crit-mark good" aria-hidden>✓</span>{criterion.good}</div>
+              <div className="crit-bad"><span className="crit-mark bad" aria-hidden>✗</span>{criterion.bad}</div>
+            </div>
+          )}
+          {did.length > 0 && (
+            <div className="ctx-section">
+              <span className="ctx-label did">Did</span>
+              <div className="ctx-blocks">
+                {did.map(b => <BlockView key={b.id} block={b} forceOpen />)}
+              </div>
+            </div>
+          )}
+          {proof.length > 0 && (
+            <div className="ctx-section">
+              <span className="ctx-label proof">Proof</span>
+              <div className="ctx-blocks">
+                {proof.map(b => <BlockView key={b.id} block={b} forceOpen />)}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -142,6 +207,7 @@ export function ResultsChecklist({ card, blockById, answers, readonly, onChange,
   // The synthetic session verdict lives on the submit bar, not as a claim row.
   const claims = card.decisions.filter(d => d.id !== RESULTS_VERDICT_ID)
   const reviewed = claims.filter(d => decisionAnswered(d, answers[d.id])).length
+  const criteriaById = new Map((card.criteria ?? []).map(c => [c.id, c]))
 
   function approveAll(): void {
     for (const d of claims) {
@@ -166,6 +232,7 @@ export function ResultsChecklist({ card, blockById, answers, readonly, onChange,
           key={d.id}
           decision={d}
           index={index}
+          criterion={d.criterionId ? criteriaById.get(d.criterionId) : undefined}
           blocks={(d.blockRefs ?? []).map(id => blockById.get(id)).filter(b => b !== undefined)}
           answer={answers[d.id] ?? emptyDraft()}
           readonly={readonly}

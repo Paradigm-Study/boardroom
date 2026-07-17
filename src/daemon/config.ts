@@ -94,6 +94,16 @@ export function loadConfig(configDir?: string): Config {
   let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>>
     & { mesh?: Partial<MeshConfig> } = {}
   const p = join(dir, 'config.json')
+  // BOARDROOM_PORT is the port convention seed.ts and every hook already honor;
+  // the daemon reads it too so a dev daemon can run on its own port (paired with
+  // BOARDROOM_CONFIG_DIR for its own DB) beside the production one. A non-numeric
+  // value is ignored rather than crashing the boot on a typo.
+  // Default 4040 (2026-07-16 decision, reverting the brief 4140 move): Paradigm.app's
+  // bundled boardroom is built FROM this repo, so a diverging repo default just moves
+  // the collision instead of fixing it — the repo and the app share 4040, and a
+  // standalone daemon that must coexist with the running app overrides via
+  // BOARDROOM_PORT or config.json rather than a forked default.
+  const envPort = Number(process.env.BOARDROOM_PORT)
   if (existsSync(p)) {
     const lastGood = `${p}.last-good`
     try {
@@ -164,6 +174,7 @@ export function loadConfig(configDir?: string): Config {
     openOnPending: false,
     reattachWindowMs: REATTACH_WINDOW_MS, // how long an orphaned card stays reattachable (from orphan time)
     ...file,
+    ...(Number.isInteger(envPort) && envPort > 0 ? { port: envPort } : {}),
     mesh, // computed above; placed after ...file so a partial file block can't leak through
     ...(localToken ? { localToken } : {}),
     dbPath: join(dir, 'boardroom.sqlite'),

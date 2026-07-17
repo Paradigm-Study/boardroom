@@ -3,7 +3,7 @@ import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { Router, type Request, type Response } from 'express'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
-import type { Card, CardResponse } from '../shared/card.js'
+import type { Card, CardResponse, ParkedMarker } from '../shared/card.js'
 import { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 import { compileClarify, compilePlan, compileReport, compileResults, compileSpec, type CompileMeta } from './compile.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
@@ -32,11 +32,6 @@ const STREAM_HEARTBEAT_MS = 120_000
 const PARKED_TEXT =
   '⏸ Boardroom: no decision yet — your turn is over. STOP here. Do NOT guess, infer, or proceed on an assumption about what the human would choose. The human will decide on the dashboard; the decision is not lost. To receive it, re-issue this EXACT same call (identical sessionKey, project and headline) on a later turn — reattachment is automatic and re-runs no work.'
 
-interface ParkedMarker {
-  parked: true
-  cardId: string
-}
-
 // Positive-duration env override, falling back to the default for a missing,
 // non-numeric, or non-positive value. (`Number(x) || default` reads as a footgun
 // — it also swallows a legit 0 — so use an explicit finite-and-positive guard.)
@@ -58,18 +53,24 @@ export function parkWindowMs(env: NodeJS.ProcessEnv = process.env): number | und
   return Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_TIMEOUT_MS) : undefined
 }
 
+// Appended to every BLOCKING gate: the dashboard offers the human a global
+// card-level add-on input on every card, so any gate's resolution may carry
+// standing instructions the agent must treat as tasks.
+const ADDON =
+  ' On any gate the human may append "Added instructions" — a card-level add-on (text and attachments) that rides alongside their decision without changing it. When the resolved summary carries an "Added instructions — act on these:" section, treat each item as a task in the current session.'
+
 const GLANCEABLE =
   ' AUTHORING RULES (the human reads like a CEO — keep it glanceable): every clarify/plan card must include at least one unreferenced global block plus at least one question-local block for each decision. Put question-local context in blocks and wire that decision\'s blockRefs to those block ids; leave only whole-card context unreferenced. For UI change requests, include lightweight wireframes or layout sketches in the option context and let each wireframe use its natural dimensions; do not force all options into one fixed card size unless readability requires it. Omit context that does not change the answer. Put anything tabular/comparative/quantitative/sequential in a structured block (table, options_compare, phases, graph, diff_stat), NOT in prose. Keep markdown to 1–2 sentences — never multi-paragraph essays; long prose gets clamped behind "show more" and just wastes the reader.'
 
 const DESCRIPTIONS = {
   clarify:
-    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical sessionKey, project and headline reattaches to the same card or returns the already-made decision. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
+    'Ask the human scoping questions as visual decision cards. Use BEFORE forming a plan whenever requirements are ambiguous. Each question is a decision with button options; attach blocks when a visual helps, and wire each decision\'s blockRefs to the block ids that inform that specific question — the dashboard renders that context inside the question row. The call blocks until the human decides. If you ever receive a PARKED result instead of an answer — that means STOP: end your turn, do NOT guess or proceed; the decision is saved, and re-issuing this identical call later claims it (no work is re-run). Idempotent on retry: calling again with identical sessionKey, project and headline reattaches to the same card or returns the already-made decision. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + ADDON + GLANCEABLE,
   present_plan:
-    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical sessionKey, project and headline reattaches to the same card. Always pass your sessionKey (injected at session start) — it binds the card to your session." + GLANCEABLE,
+    "Present a formed plan for human approval as a visual card: structural blocks (graph/phases/options_compare) plus plan-level decisions, each with exactly one recommended option and blockRefs pointing at the question-local blocks that inform it. A final approve/revise/reject verdict is appended automatically. Boardroom approval is advisory-before-the-gate: still surface your app's native plan approval afterwards; never auto-accept. This call blocks until the human decides; if you receive a PARKED result instead of a verdict — that means STOP: end your turn, do NOT infer, guess, or proceed on approval; the card is saved and re-issuing this identical call later claims the verdict (re-runs no work). Idempotent on retry: re-issuing identical sessionKey, project and headline reattaches to the same card. Always pass your sessionKey (injected at session start) — it binds the card to your session." + ADDON + GLANCEABLE,
   present_spec:
-    'Lock in the acceptance contract AFTER the plan is approved and BEFORE you build: the behavior-driven definition of done. Pass `goal` plus `criteria` — each criterion a `good` outcome (the pass condition), a `bad` anti-goal (the failure to avoid), and `tracesTo` (the decision/goal it enforces). Boardroom owns the GATE, not the authoring: derive criteria from the locked plan decisions (or your own spec/acceptance skill) — do not over-engineer it. The human reviews each criterion (keep / adjust / drop), may add more, and locks the contract (or sends it back to revise). On lock you get the final contract back as your definition of done: write it to `specRef` so it survives later turns, build until every criterion is MET, then call review_results echoing the spec (read back from `specRef`) with each claim tagged by `criterionId`. This call blocks until the human decides; a PARKED result means STOP and re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict. Idempotent on retry. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
+    'Lock in the acceptance contract AFTER the plan is approved and BEFORE you build: the behavior-driven definition of done. Pass `goal` plus `criteria` — each criterion a `good` outcome (the pass condition), a `bad` anti-goal (the failure to avoid), and `tracesTo` (the decision/goal it enforces). Boardroom owns the GATE, not the authoring: derive criteria from the locked plan decisions (or your own spec/acceptance skill) — do not over-engineer it. The human reviews each criterion (keep / adjust / drop), may add more, and locks the contract (or sends it back to revise). On lock you get the final contract back as your definition of done: write it to `specRef` so it survives later turns, build until every criterion is MET, then call review_results echoing the spec (read back from `specRef`) with each claim tagged by `criterionId`. This call blocks until the human decides; a PARKED result means STOP and re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict. Idempotent on retry. Always pass your sessionKey (injected at session start) — it binds the card to your session.' + ADDON + GLANCEABLE,
   review_results:
-    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict (no work is re-run). Always pass your sessionKey (injected at session start) — it binds the card to your session.' + GLANCEABLE,
+    'Submit your completed work for human review as claims with evidence. Each claim ("all 42 tests pass") needs at least one evidence block. Evidence must be PROOF the claim is true — test output, a diff_stat, a before/after — NOT prose explaining how you implemented it (the human is verifying, not code-reviewing your narration). For each claim the human picks approve / revise / reject (revise = on the right track, reject = drop it; both carry a note), can add free-form instructions of their own, and sets an explicit verdict: "complete" (work accepted, you are done) or "keep going". Treat the returned summary as authoritative: if it says NOT complete, the rejected claims, the revise notes, and any added instructions ARE your next tasks — do them, then call review_results again. Call this before declaring work done. The call blocks until the human reviews. If you receive a PARKED result — that means STOP: end your turn, do NOT assume approval; re-issue this EXACT same call (identical sessionKey, project and headline) later to claim the verdict (no work is re-run). Always pass your sessionKey (injected at session start) — it binds the card to your session.' + ADDON + GLANCEABLE,
   present_report:
     'Post a report the human can READ — results, findings, explanations — with NO decision attached. Fire-and-forget: returns immediately, never blocks, never parks. Use it to convey information mid-session; do NOT use it to finish — review_results remains the only completion path. Always pass your sessionKey so the report lands in your session stream. Keep the blocks glanceable; the dashboard offers a full-size drawer view.',
 } as const
@@ -84,7 +85,11 @@ const MAX_TRANSCRIPT_OPTIONS = 5
 const MAX_TRANSCRIPT_TEXT = 180
 
 function clip(text: string, max = MAX_TRANSCRIPT_TEXT): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
+  // Collapse whitespace AND U+0085/NEL (which \s misses): this text is the agent-facing
+  // gate transcript, so it must enforce the same "Added instructions — act on these:"
+  // trust boundary as summary.ts flat() — no agent-authored field may forge a section
+  // header by starting a new visual line. Then truncate.
+  const flat = text.replace(/[\s\u0085]+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max - 1)}...` : flat
 }
 

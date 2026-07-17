@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Card, Criterion } from '../shared/card.js'
 import { SPEC_VERDICT_ID } from '../shared/card.js'
 import { compileResults } from './compile.js'
-import { buildSummary } from './summary.js'
+import { buildSummary } from '../shared/summary.js'
 
 // Adversarial coverage for the spec gate, mirroring the results-gate adversarial
 // suites: the awkward shapes a real agent/human can produce that must degrade

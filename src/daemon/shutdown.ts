@@ -4,6 +4,17 @@ interface Closable {
   close(): void
 }
 
+const DEFAULT_DRAIN_GRACE_MS = 300
+
+// Resolve the flush grace: explicit opt wins, else BOARDROOM_DRAIN_GRACE_MS, else
+// the default. A negative/non-numeric env value falls back; an explicit 0 opt is
+// honored (synchronous force-close), so `?? ` on the opt — not `||` — is required.
+function drainGraceMs(opt: number | undefined): number {
+  if (opt !== undefined) return opt
+  const env = Number(process.env.BOARDROOM_DRAIN_GRACE_MS)
+  return Number.isFinite(env) && env >= 0 ? env : DEFAULT_DRAIN_GRACE_MS
+}
+
 export interface ShutdownOpts {
   server: Server
   store: Closable
@@ -33,6 +44,13 @@ export interface ShutdownOpts {
   // anyway so launchd KeepAlive can respawn from a known state instead of leaving a
   // half-dead daemon bound to the port.
   forceExitMs?: number
+  // Flush window between quiesce (which resolves live gates with a PARKED sentinel)
+  // and the hard closeAllConnections that destroys their sockets. Resolving a gate
+  // schedules an async MCP tool-result write; without a brief grace the socket dies
+  // before it lands and the agent gets a raw drop instead of the STOP. Idle
+  // keep-alives are closed immediately regardless. 0 = force-close synchronously
+  // (no live gates to flush, or tests). Defaults to BOARDROOM_DRAIN_GRACE_MS or 300ms.
+  drainGraceMs?: number
 }
 
 // Bind the daemon's lifecycle to clean process signals. The daemon has no hot
@@ -90,8 +108,12 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     }, ms)
     timer.unref?.()
 
+    let graceTimer: ReturnType<typeof setTimeout> | undefined
     opts.server.close((err?: Error) => {
       if (err) log('[shutdown] server close error:', err)
+      // The sentinel-flush grace window is moot once close() has completed —
+      // every socket (and the PARKED tool-results riding them) is settled.
+      if (graceTimer) clearTimeout(graceTimer)
       // Let an in-flight mesh relay POST / spool write settle before exiting.
       // flush() never rejects by construction; the rejection arm only guards a
       // future regression from stranding the drain. The watchdog above stays
@@ -101,10 +123,25 @@ export function installSignalHandlers(opts: ShutdownOpts): void {
     })
     // A hanging gate call's SSE connection never ends on its own, so a bare
     // server.close() would wait out the full watchdog on every redeploy-during-a-gate
-    // (the common case) and risk the respawn racing the still-held port. Forcibly end
-    // open sockets so close() completes in ms. This drops the agent's connection — it
-    // recovers the human's REAL decision by re-issuing; nothing is fabricated here.
-    opts.server.closeAllConnections?.()
+    // (the common case) and risk the respawn racing the still-held port. Idle
+    // keep-alive sockets can be dropped at once; the ACTIVE gate sockets get a brief
+    // flush window first so the PARKED sentinel that quiesce just resolved reaches
+    // the agent before the socket is destroyed (clean sever, not a raw drop). After
+    // the grace we force-end whatever remains so close() completes in ms. The agent
+    // recovers the human's REAL decision by re-issuing regardless; nothing is
+    // fabricated here, and the outer watchdog still bounds a wedged drain.
+    opts.server.closeIdleConnections?.()
+    // Clamp the grace strictly under the watchdog: a grace >= forceExitMs would let
+    // the watchdog fire first and skip closeAllConnections entirely, silently
+    // degrading the clean sever back to a raw drop. Keep a margin so the forced
+    // close still lands before the exit.
+    const graceMs = Math.min(drainGraceMs(opts.drainGraceMs), Math.max(0, ms - 500))
+    if (graceMs <= 0) {
+      opts.server.closeAllConnections?.()
+    } else {
+      graceTimer = setTimeout(() => opts.server.closeAllConnections?.(), graceMs)
+      graceTimer.unref?.()
+    }
   }
 
   proc.on('SIGTERM', () => shutdown(0, 'SIGTERM'))

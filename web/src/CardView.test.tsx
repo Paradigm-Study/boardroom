@@ -3,11 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { decideCard } from './api.js'
+import { decideCard, dismissCard, uploadAttachment } from './api.js'
 import { CardView } from './CardView.js'
 
 vi.mock('./api.js', () => ({
   decideCard: vi.fn(),
+  dismissCard: vi.fn(),
   uploadAttachment: vi.fn(),
   // CardView mounts the SpecAffordance, which reads cards to recall a locked spec.
   // No cards → no spec → the affordance renders nothing, leaving these tests intact.
@@ -302,7 +303,7 @@ describe('CardView pending plan actions', () => {
     }))
   })
 
-  it('"Keep going" submits a continue verdict carrying the add-on note, even with claims unreviewed', async () => {
+  it('"Keep going" submits a continue verdict with the add-on riding the global card_addon channel, even with claims unreviewed', async () => {
     vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
     render(<CardView card={pendingResults} />)
 
@@ -312,8 +313,20 @@ describe('CardView pending plan actions', () => {
     fireEvent.click(keepGoing)
 
     await waitFor(() => expect(decideCard).toHaveBeenCalledWith('results-1', expect.objectContaining({
-      results_verdict: { chosen: ['continue'], note: 'also bump the version' },
+      results_verdict: { chosen: ['continue'] },
+      card_addon: { chosen: [], note: 'also bump the version' },
     })))
+  })
+
+  it('standing instructions keep the derived button on "Keep going" even with every claim approved', async () => {
+    render(<CardView card={pendingResults} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
+    expect(await screen.findByRole('button', { name: 'Mark complete' })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'now wire the settings page' } })
+    expect(await screen.findByRole('button', { name: 'Keep going' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Mark complete' })).toBeNull()
   })
 
   it('offers file upload on the plan send-back note', () => {
@@ -428,6 +441,218 @@ describe('CardView pending plan actions', () => {
   })
 })
 
+// The GLOBAL card add-on: every gate — any stage, current or future — ends with the
+// same always-visible input where the human appends instructions to the session
+// (text + attachments) alongside whatever they decided above. It rides the reserved
+// `card_addon` answer id, is dropped from the payload when empty, and never alters
+// the decisions above it.
+describe('CardView global add-on on every gate', () => {
+  it.each([
+    ['clarify', pendingClarify],
+    ['plan', pendingPlan],
+    ['spec', pendingSpec],
+    ['results', pendingResults],
+  ] as const)('renders the always-visible add-on box with file attach on a %s card', (_stage, card) => {
+    render(<CardView card={card} />)
+    expect(screen.getByLabelText('Add instructions for the agent')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Attach file to your add-on' })).toBeTruthy()
+  })
+
+  it('clarify: submits card_addon alongside the answers when the add-on has text', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingClarify, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingClarify} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detail A' }))
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'also update the README' } })
+    const submit = screen.getByRole('button', { name: 'Submit decisions' })
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(submit)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('clarify-1', {
+      detail: { chosen: ['a'] },
+      card_addon: { chosen: [], note: 'also update the README' },
+    }))
+  })
+
+  it('plan: approve stays approve — the add-on rides card_addon, never the verdict note', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingPlan, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingPlan} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve fix scope' }))
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'approved — but add telemetry' } })
+    const approve = screen.getByRole('button', { name: 'Approve plan & proceed' })
+    await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(approve)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('plan-1', {
+      scope: { chosen: ['approve'] },
+      plan_verdict: { chosen: ['approve'] },
+      card_addon: { chosen: [], note: 'approved — but add telemetry' },
+    }))
+  })
+
+  it('spec: lock carries the add-on on card_addon', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingSpec, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingSpec} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }))
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'start with the token module' } })
+    const lock = screen.getByRole('button', { name: 'Lock spec' })
+    await waitFor(() => expect((lock as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(lock)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('spec-1', {
+      'crit:cr1': { chosen: ['keep'] },
+      spec_verdict: { chosen: ['lock'] },
+      card_addon: { chosen: [], note: 'start with the token module' },
+    }))
+  })
+
+  // An empty add-on never rides: the exact-payload submit tests above (clarify /
+  // plan approve / spec lock / mark complete) double as the omit-when-empty guard —
+  // none of them list a card_addon key.
+  it('the add-on never blocks submitting: readiness ignores it', async () => {
+    render(<CardView card={pendingClarify} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detail A' }))
+    const submit = screen.getByRole('button', { name: 'Submit decisions' })
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('the add-on drafts to localStorage and survives a remount', async () => {
+    const first = render(<CardView card={pendingClarify} />)
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'remember me' } })
+    first.unmount()
+
+    render(<CardView card={pendingClarify} />)
+    expect((screen.getByLabelText('Add instructions for the agent') as HTMLTextAreaElement).value).toBe('remember me')
+  })
+
+  it('send-back mode replaces the add-on composer, and the add-on still rides the revise submit', async () => {
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingPlan, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingPlan} />)
+
+    fireEvent.change(screen.getByLabelText('Add instructions for the agent'), { target: { value: 'and add telemetry' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send back…' }))
+    // one composer at a time: the send-back form owns the footer while open
+    expect(screen.queryByLabelText('Add instructions for the agent')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Send-back note'), { target: { value: 'wrong direction' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send back' }))
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('plan-1', expect.objectContaining({
+      plan_verdict: expect.objectContaining({ chosen: ['revise'], note: 'wrong direction' }),
+      card_addon: { chosen: [], note: 'and add telemetry' },
+    })))
+  })
+
+  it('a decided card shows the recorded add-on read-only; no box when there was none', () => {
+    const decidedWith: Card = {
+      ...pendingClarify,
+      status: 'decided',
+      answers: { detail: { chosen: ['a'] }, card_addon: { chosen: [], note: 'recorded instructions' } },
+      decidedAt: '2026-07-14T00:00:00.000Z',
+    }
+    const first = render(<CardView card={decidedWith} />)
+    const box = screen.getByLabelText('Add instructions for the agent') as HTMLTextAreaElement
+    expect(box.value).toBe('recorded instructions')
+    expect(box.disabled).toBe(true)
+    first.unmount()
+
+    const decidedWithout: Card = { ...decidedWith, answers: { detail: { chosen: ['a'] } } }
+    render(<CardView card={decidedWithout} />)
+    expect(screen.queryByLabelText('Add instructions for the agent')).toBeNull()
+  })
+
+  // A pre-deploy draft kept the results add-on on the verdict draft. It must
+  // migrate into the visible add-on box (never ride invisibly), and the verdict
+  // is always stamped from a clean draft at submit.
+  it('migrates a legacy pre-deploy results draft into the add-on box', () => {
+    localStorage.setItem(`boardroom-draft-${pendingResults.id}`, JSON.stringify({
+      'claim-1': { chosen: [], note: '', custom: '' },
+      'claim-2': { chosen: [], note: '', custom: '' },
+      results_verdict: { chosen: [], note: 'typed before the deploy', custom: '' },
+    }))
+    render(<CardView card={pendingResults} />)
+    expect((screen.getByLabelText('Add instructions for the agent') as HTMLTextAreaElement).value).toBe('typed before the deploy')
+  })
+
+  it('"Mark complete" stamps a clean verdict even when a stray draft note exists on it', async () => {
+    localStorage.setItem(`boardroom-draft-${pendingResults.id}`, JSON.stringify({
+      'claim-1': { chosen: [], note: '', custom: '' },
+      'claim-2': { chosen: [], note: '', custom: '' },
+      results_verdict: { chosen: [], note: 'stray invisible text', custom: '' },
+      card_addon: { chosen: [], note: '', custom: '' },
+    }))
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingResults} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
+    const complete = await screen.findByRole('button', { name: 'Mark complete' })
+    await waitFor(() => expect((complete as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(complete)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('results-1', {
+      'claim-1': { chosen: ['approve'] },
+      'claim-2': { chosen: ['approve'] },
+      results_verdict: { chosen: ['complete'] },
+    }))
+  })
+
+  it('an attachments-only add-on rides the payload and keeps the session going', async () => {
+    const ref = { id: 'att-1', name: 'mock.png', size: 5, path: '/tmp/mock.png', field: 'note', uploadedAt: '2026-07-14T00:00:00.000Z' }
+    vi.mocked(uploadAttachment).mockResolvedValue(ref)
+    vi.mocked(decideCard).mockResolvedValue({ card: { ...pendingResults, status: 'decided' }, summary: 'ok', delivered: true })
+    render(<CardView card={pendingResults} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve all' }))
+    expect(await screen.findByRole('button', { name: 'Mark complete' })).toBeTruthy()
+
+    const attachField = screen.getByRole('button', { name: 'Attach file to your add-on' }).closest('.attach-field')!
+    const input = attachField.querySelector('input[type="file"]')!
+    fireEvent.change(input, { target: { files: [new File(['x'], 'mock.png', { type: 'image/png' })] } })
+
+    // a standing attachment is a standing instruction: the derived verdict flips
+    const keepGoing = await screen.findByRole('button', { name: 'Keep going' })
+    await waitFor(() => expect((keepGoing as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(keepGoing)
+
+    await waitFor(() => expect(decideCard).toHaveBeenCalledWith('results-1', expect.objectContaining({
+      card_addon: { chosen: [], attachments: [ref] },
+    })))
+  })
+})
+
+// The copy-paste fallback is a PERMANENT record: once a card is decided it must be
+// reconstructable from the card itself (not just the one-shot post-submit state), so
+// switching sessions and returning to the card never loses it. It shows whether or
+// not the agent has claimed the decision (delivered) — it is the human's fallback.
+describe('CardView offline-pickup box persists as a permanent fallback', () => {
+  const decidedClarify: Card = {
+    ...pendingClarify,
+    status: 'decided',
+    answers: { detail: { chosen: ['a'] } },
+    decidedAt: '2026-06-16T12:05:00.000Z',
+  }
+
+  it('reconstructs the copyable summary on a fresh mount of an undelivered decided card', () => {
+    // No submit flow — this is the "navigated away and came back" mount.
+    render(<CardView card={decidedClarify} />)
+
+    const box = screen.getByLabelText(/claims this automatically/)
+    expect((box as HTMLTextAreaElement).value).toContain('Detail A')
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+  })
+
+  it('keeps the box as a fallback even after the agent has claimed it (delivered)', () => {
+    render(<CardView card={{ ...decidedClarify, deliveredAt: '2026-06-16T12:06:00.000Z' }} />)
+
+    const box = screen.getByLabelText(/kept here as a fallback/i)
+    expect((box as HTMLTextAreaElement).value).toContain('Detail A')
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+  })
+})
+
 // GOLDEN: these snapshots are recorded against the pre-sections renderer and MUST stay
 // green through the sections rewrite — the byte-identical guarantee for every legacy
 // (no card.sections) card. If the cardWorkspace/CardView change alters the DOM of a
@@ -498,5 +723,52 @@ describe('CardView sectioned render', () => {
     // the explain section block renders unscoped (and is NOT also scoped under a decision)
     expect(container.querySelector('#block-ctx')).toBeTruthy()
     expect(container.querySelector('#block-d1-ctx')).toBeNull()
+  })
+})
+
+describe('CardView dismiss — retiring a stranded orphaned card', () => {
+  const orphaned: Card = {
+    ...pendingClarify,
+    id: 'orphan-1',
+    status: 'orphaned',
+    orphanedReason: 'boot',
+    orphanedAt: new Date().toISOString(),
+  }
+
+  it('offers no dismiss control on a live pending card', () => {
+    render(<CardView card={pendingClarify} />)
+    expect(screen.queryByRole('button', { name: 'Dismiss card…' })).toBeNull()
+  })
+
+  it('dismisses an orphaned card only after the inline confirm', async () => {
+    vi.mocked(dismissCard).mockResolvedValue({ ...orphaned, status: 'dismissed' })
+    render(<CardView card={orphaned} />)
+
+    // First click reveals the confirm — it does NOT call the API yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    expect(dismissCard).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(dismissCard).toHaveBeenCalledWith('orphan-1'))
+  })
+
+  it('applies the dismissed card locally (onDismissed) so the board drops it before the SSE frame', async () => {
+    const dismissed = { ...orphaned, status: 'dismissed' as const }
+    vi.mocked(dismissCard).mockResolvedValue(dismissed)
+    const onDismissed = vi.fn()
+    render(<CardView card={orphaned} onDismissed={onDismissed} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    // Optimistic local apply happens with the returned dismissed card, not the SSE echo.
+    await waitFor(() => expect(onDismissed).toHaveBeenCalledWith(dismissed))
+  })
+
+  it('cancel backs out of the confirm without calling the API', () => {
+    render(<CardView card={orphaned} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss card…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Dismiss card…' })).toBeTruthy()   // back to the resting state
+    expect(dismissCard).not.toHaveBeenCalled()
   })
 })

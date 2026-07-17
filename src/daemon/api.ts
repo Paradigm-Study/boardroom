@@ -2,10 +2,12 @@ import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
+import { AttachmentRef, CARD_ADDON_ID, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
 import type { Entry } from '../shared/entry.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
+import type { AuthStore, CredentialKind } from './authStore.js'
+import type { AuthConnector } from './authConnect.js'
 import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import { needsHuman, REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
@@ -20,6 +22,10 @@ interface ApiOptions {
   // "reconnecting" cards against the SAME window the queue reattaches against.
   // Optional → tests and legacy callers fall back to the 24h default.
   reattachWindowMs?: number
+  // The "Connect your Claude account" surfaces. Both optional so legacy/test
+  // callers omit them — the /api/auth/* routes only register when present.
+  authStore?: AuthStore
+  authConnector?: AuthConnector
   meshForwarder?: MeshForwarder
 }
 
@@ -137,7 +143,9 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       // daemon's ACTUAL configured reattach window, not always the default.
       const windowMs = options.reattachWindowMs ?? REATTACH_WINDOW_MS
       const vms = store.listCaptured().map(s => {
-        const own = cards.filter(c => c.claudeSessionId === s.sessionId)
+        // Exclude dismissed cards: a retired card must not colour the session's status
+        // tag (deriveSessionStatus's activity clock) or its cardCount.
+        const own = cards.filter(c => c.claudeSessionId === s.sessionId && c.status !== 'dismissed')
         return {
           ...s,
           sessionStatus: deriveSessionStatus(s, own, nowMs, windowMs),
@@ -158,7 +166,7 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   router.get('/api/sessions/:id/cards', (req, res) => {
     try {
       const own = store.list()
-        .filter(c => c.claudeSessionId === req.params.id)
+        .filter(c => c.claudeSessionId === req.params.id && c.status !== 'dismissed')
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       res.json(own)
     } catch (err) { sendError(res, err) }
@@ -266,8 +274,11 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         const card = store.get(req.params.id)
         if (!card) throw new NotFoundError(`no card "${req.params.id}"`)
         if (card.status === 'decided') throw new ConflictError('card is already decided')
+        if (card.status === 'dismissed') throw new ConflictError('card was dismissed')
         const answerId = String(req.header('x-answer-id') ?? '')
-        if (!card.decisions.some(d => d.id === answerId)) {
+        // CARD_ADDON_ID is the reserved card-level add-on channel — a valid
+        // upload target on every card, though never a decision id by design.
+        if (answerId !== CARD_ADDON_ID && !card.decisions.some(d => d.id === answerId)) {
           throw new ValidationError(`unknown answer id "${answerId}"`)
         }
         if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -362,6 +373,68 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   // tab keeps working (and never hits Express's HTML 404) — decide() already
   // handles orphaned cards and returns { card, summary }.
   router.post('/api/cards/:id/offline-answer', decideHandler)
+
+  // Boardroom-scoped soft delete: retire a card the human no longer wants on the
+  // board (a stranded duplicate, or any orphaned gate). Terminal 'dismissed' status
+  // drops it from every surface; nothing is pushed to the agent. 404 unknown, 409 on
+  // an already-decided card (its decision is history) — same error mapping as decide.
+  router.post('/api/cards/:id/dismiss', (req: Request<{ id: string }>, res: Response) => {
+    try {
+      res.json({ card: queue.dismiss(req.params.id) })
+    } catch (err) { sendError(res, err) }
+  })
+
+  // "Connect your Claude account": lets the user hand boardroom a durable resume
+  // credential so the launchd-spawned waker can authenticate. Registered only when
+  // the daemon wired an authStore (legacy/test callers omit it → routes 404). The
+  // status never returns the secret value — only connected/kind/age + login state.
+  const { authStore, authConnector } = options
+  if (authStore) {
+    const authStatus = (): Record<string, unknown> => ({
+      ...authStore.status(),
+      login: authConnector?.getStatus() ?? { state: 'idle' },
+    })
+
+    router.get('/api/auth/status', (_req, res) => { res.json(authStatus()) })
+
+    // Paste path: the user supplies a token they generated (`claude setup-token`).
+    router.post('/api/auth/token', (req, res) => {
+      try {
+        const type = (req.body as { type?: string }).type
+        const value = (req.body as { value?: string }).value
+        if (type !== 'oauth' && type !== 'apiKey') throw new ValidationError('type must be "oauth" or "apiKey"')
+        if (typeof value !== 'string' || !value.trim()) throw new ValidationError('a non-empty token value is required')
+        authStore.set({ type: type as CredentialKind, value: value.trim() })
+        res.json(authStatus())
+      } catch (err) { sendError(res, err) }
+    })
+
+    router.post('/api/auth/disconnect', (_req, res) => {
+      authStore.clear()
+      res.json(authStatus())
+    })
+
+    // Browser path: boardroom drives `claude setup-token` and captures the token.
+    if (authConnector) {
+      router.post('/api/auth/connect', (_req, res) => {
+        authConnector.start()
+        res.json(authStatus())
+      })
+      router.post('/api/auth/connect/cancel', (_req, res) => {
+        authConnector.cancel()
+        res.json(authStatus())
+      })
+      // Relay the OAuth code the user pasted from the browser into the login prompt.
+      router.post('/api/auth/connect/input', (req, res) => {
+        try {
+          const code = (req.body as { code?: string }).code
+          if (typeof code !== 'string' || !code.trim()) throw new ValidationError('a non-empty code is required')
+          authConnector.sendInput(code.trim())
+          res.json(authStatus())
+        } catch (err) { sendError(res, err) }
+      })
+    }
+  }
 
   router.get('/events', (req, res) => {
     res.writeHead(200, {
