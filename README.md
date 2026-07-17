@@ -21,7 +21,7 @@ Three pieces make boardroom ambient for every Claude Code session:
 
 ```bash
 # 1. Register the MCP server at user scope (all projects)
-claude mcp add --transport http --scope user boardroom http://127.0.0.1:4140/mcp
+claude mcp add --transport http --scope user boardroom http://127.0.0.1:4040/mcp
 
 # 2. Daemon as a login service (auto-start, auto-restart)
 cp docs/com.boardroom.daemon.plist ~/Library/LaunchAgents/
@@ -43,7 +43,7 @@ Uninstall the service: `launchctl bootout gui/$(id -u)/com.boardroom.daemon`.
 Daemon log: `~/Library/Logs/boardroom.log`.
 
 **Other clients (Codex, etc.):** the daemon side is identical — any
-MCP-capable agent connects to `http://127.0.0.1:4140/mcp`. Each client has
+MCP-capable agent connects to `http://127.0.0.1:4040/mcp`. Each client has
 its own global config surface for MCP servers, instructions, and tool
 timeouts; wire those three things once per client.
 
@@ -93,7 +93,7 @@ npm run dev:web    # vite dev server with proxy to the daemon
 npm run typecheck
 ```
 
-Config: `~/.config/boardroom/config.json` — `port` (4140),
+Config: `~/.config/boardroom/config.json` — `port` (4040),
 `remindEveryMinutes` (10), `notifications` (true). The daemon only ever
 binds 127.0.0.1; that is hardwired (it is the security predicate for
 running without auth).
@@ -229,7 +229,7 @@ daemon's notifier.
 
 Electron (not Tauri) so there's no extra toolchain to install — it's isolated
 in `menubar/` and never touches the daemon package. Set `BOARDROOM_PORT` if
-your daemon isn't on 4140.
+your daemon isn't on 4040.
 
 ## Notifications
 

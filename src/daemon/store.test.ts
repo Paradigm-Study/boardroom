@@ -224,7 +224,7 @@ describe('Store.findReattachable', () => {
 describe('loadConfig', () => {
   it('uses defaults when no config file exists', () => {
     const cfg = loadConfig(join(dir, 'cfgdir'))
-    expect(cfg.port).toBe(4140)
+    expect(cfg.port).toBe(4040)
     expect(cfg.remindEveryMinutes).toBe(10)
     expect(cfg.notifications).toBe(true)
     expect(cfg.dbPath).toBe(join(dir, 'cfgdir', 'boardroom.sqlite'))

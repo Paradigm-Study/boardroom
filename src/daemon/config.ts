@@ -96,12 +96,13 @@ export function loadConfig(configDir?: string): Config {
   const p = join(dir, 'config.json')
   // BOARDROOM_PORT is the port convention seed.ts and every hook already honor;
   // the daemon reads it too so a dev daemon can run on its own port (paired with
-  // BOARDROOM_CONFIG_DIR for its own DB) beside the production one on 4140. A
-  // non-numeric value is ignored rather than crashing the boot on a typo.
-  // 4140 (not 4040): 4040 is deliberately ceded to Paradigm.app's bundled
-  // boardroom, which is validation-pinned there (its config layer drops any other
-  // port) and respawn-grabs it forever while the app runs — sharing that port
-  // caused the 2026-07-15 nine-hour 401 outage. Nothing production points at 4040.
+  // BOARDROOM_CONFIG_DIR for its own DB) beside the production one. A non-numeric
+  // value is ignored rather than crashing the boot on a typo.
+  // Default 4040 (2026-07-16 decision, reverting the brief 4140 move): Paradigm.app's
+  // bundled boardroom is built FROM this repo, so a diverging repo default just moves
+  // the collision instead of fixing it — the repo and the app share 4040, and a
+  // standalone daemon that must coexist with the running app overrides via
+  // BOARDROOM_PORT or config.json rather than a forked default.
   const envPort = Number(process.env.BOARDROOM_PORT)
   if (existsSync(p)) {
     const lastGood = `${p}.last-good`
@@ -167,7 +168,7 @@ export function loadConfig(configDir?: string): Config {
     }
   }
   return {
-    port: 4140,
+    port: 4040,
     remindEveryMinutes: 10,
     notifications: true,
     openOnPending: false,

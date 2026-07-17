@@ -8,9 +8,9 @@ state="${TMPDIR:-/tmp}/boardroom-hooks"
 mkdir -p "$state"
 sentinel="$state/ask-$sid"
 [ -f "$sentinel" ] && exit 0
-# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4140);
+# Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040);
 # hardcoding it would silently fail-open if the daemon was relocated.
-port="${BOARDROOM_PORT:-4140}"
+port="${BOARDROOM_PORT:-4040}"
 curl -s -o /dev/null --max-time 0.4 "http://127.0.0.1:${port}/api/cards" || exit 0
 touch "$sentinel"
 cat <<'EOF'

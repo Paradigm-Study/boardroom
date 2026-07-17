@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 
-const PORT = process.env.BOARDROOM_PORT ?? '4140'
+const PORT = process.env.BOARDROOM_PORT ?? '4040'
 const URL_BASE = `http://127.0.0.1:${PORT}/mcp`
 
 async function call(name: string, args: Record<string, unknown>): Promise<void> {
