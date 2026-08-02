@@ -21,8 +21,15 @@ sentinel="$state/plan-$sid"
 # config.json default). Hardcoding 4040 would make the curl fail and this gate
 # silently fail-open if the daemon was relocated.
 port="${BOARDROOM_PORT:-4040}"
-cards=$(curl -s --max-time 2 "http://127.0.0.1:${port}/api/cards") || exit 0
+# /api is gated by the loopback token (authToken.ts) — read the same 0600 file the
+# menubar uses. Missing/stale token → 401 error object → the array guard below
+# fails open, so a broken token can never turn into a wrong deny.
+auth=()
+tokfile="${BOARDROOM_CONFIG_DIR:-$HOME/.config/boardroom}/token"
+[ -r "$tokfile" ] && auth=(-H "Authorization: Bearer $(cat "$tokfile")")
+cards=$(curl -s --max-time 2 "${auth[@]}" "http://127.0.0.1:${port}/api/cards") || exit 0
 [ -z "$cards" ] && exit 0
+printf '%s' "$cards" | jq -e 'type=="array"' >/dev/null 2>&1 || exit 0
 # Null-safe match: was a plan presented for this project? Bind $sp so the
 # `$p | contains(...)` arm doesn't rebind `.` to the string $p (which would make
 # `.session.project` index a string and throw, aborting the comprehension).

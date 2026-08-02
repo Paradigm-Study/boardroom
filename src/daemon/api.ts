@@ -9,6 +9,7 @@ import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 import { buildTrayVM } from './trayView.js'
+import { hooksStatus, installHooks, uninstallHooks } from './hooksInstall.js'
 
 interface ApiOptions {
   attachmentDir: string
@@ -145,6 +146,23 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         throw new ValidationError(`deviceLabel must be at most ${MAX_DEVICE_LABEL} characters`)
       }
       res.json(setDeviceLabel(options.configDir, trimmed))
+    } catch (err) { sendError(res, err) }
+  })
+
+  // Enforcement-hooks toggle (README "Enforcement hooks"): wires/unwires the
+  // boardroom PreToolUse/Stop/SessionStart hooks into the user's global
+  // ~/.claude/settings.json so this machine's Claude Code sessions can't
+  // silently skip the gate. Status is read live off the file, never cached.
+  router.get('/api/hooks', (_req, res) => {
+    try { res.json(hooksStatus()) } catch (err) { sendError(res, err) }
+  })
+
+  router.post('/api/hooks', (req, res) => {
+    try {
+      const { action } = (req.body ?? {}) as { action?: unknown }
+      if (action === 'install') res.json(installHooks())
+      else if (action === 'uninstall') res.json(uninstallHooks())
+      else throw new ValidationError('body must be { action: "install" | "uninstall" }')
     } catch (err) { sendError(res, err) }
   })
 

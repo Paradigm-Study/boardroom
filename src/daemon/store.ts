@@ -10,6 +10,11 @@ export class Store {
   constructor(path: string) {
     this.db = new Database(path)
     this.db.pragma('journal_mode = WAL')
+    // Wait up to 5s for a competing writer instead of throwing SQLITE_BUSY on the
+    // first contended write. WAL already lets readers run during a write; this
+    // covers the brief write-write overlaps that appear once the daemon spawns and
+    // supervises its own agent sessions (more concurrent writers than today).
+    this.db.pragma('busy_timeout = 5000')
     // Lock the DB (and WAL/SHM siblings, if present) so other local users can't
     // read captured paths / card contents. :memory: has no file. Production also
     // sets a 0077 umask (index.ts) so lazily-created WAL/SHM are born locked.

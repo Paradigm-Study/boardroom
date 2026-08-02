@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Card } from '../../shared/card.js'
 import { Queue } from '../../daemon/queue.js'
 import { Store } from '../../daemon/store.js'
-import { Waker } from './waker.js'
+import { Waker, resolveClaudeBin } from './waker.js'
 
 function decided(over: Partial<Card> = {}): Card {
   return {
@@ -138,6 +138,73 @@ describe('Waker', () => {
     expect(store.findReattachable('fp-fail', Date.now())?.id).toBe('c1')
   })
 
+  it('surfaces a spawn failure (e.g. ENOENT) via onResumeFailure and keeps the card claimable', () => {
+    const failures: string[] = []
+    const failing = new Waker(store, {
+      spawn: (_bin, _args, _cwd, _onSpawned, onError) => onError?.(new Error('spawn claude-test ENOENT')),
+      claudeBin: 'claude-test',
+      onResumeFailure: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-enoent' }))
+    failing.onCard(decided({ fingerprint: 'fp-enoent' }))
+    expect(failures).toEqual(['spawn claude-test ENOENT'])
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable('fp-enoent', Date.now())?.id).toBe('c1')
+  })
+
+  it('surfaces a launched-then-died resume (non-zero exit): human notified, delivered stays set by design', () => {
+    const failures: string[] = []
+    const diedAtRuntime = new Waker(store, {
+      // Simulates the real event order: 'spawn' fires (marks delivered), then the
+      // process dies at runtime and the exit handler reports it via onError.
+      spawn: (_bin, _args, _cwd, onSpawned, onError) => {
+        onSpawned?.()
+        onError?.(new Error('claude exited 1 — the verdict may not have reached the session; copy it from the dashboard'))
+      },
+      claudeBin: 'claude-test',
+      onResumeFailure: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-died' }))
+    diedAtRuntime.onCard(decided({ fingerprint: 'fp-died' }))
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('exited 1')
+    // Delivered stays set — the deliberate never-hand-stale-verdicts trade-off;
+    // the notification is what tells the human to use the dashboard copy-paste.
+    expect(store.get('c1')?.deliveredAt).toBeTruthy()
+  })
+
+  it('re-resolves the binary on demand: claude installed after daemon boot wakes the next card', () => {
+    let installed: string | undefined
+    const lateBin = new Waker(store, {
+      spawn: (bin, args, cwd) => calls.push({ bin, args, cwd }),
+      resolveBin: () => installed,
+      onResumeFailure: () => {},
+    })
+    lateBin.onCard(decided({ id: 'c-before' }))
+    expect(calls).toHaveLength(0) // nothing resolvable yet
+    installed = '/late/claude'    // user installs claude; no daemon restart
+    lateBin.onCard(decided({ id: 'c-after' }))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].bin).toBe('/late/claude')
+  })
+
+  it('with no claude binary resolvable: never spawns, tells the human once per card, card stays claimable', () => {
+    const failures: string[] = []
+    const binless = new Waker(store, {
+      spawn: (bin, args, cwd) => calls.push({ bin, args, cwd }),
+      resolveBin: () => undefined,
+      onResumeFailure: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-nobin' }))
+    binless.onCard(decided({ fingerprint: 'fp-nobin' }))
+    binless.onCard(decided({ fingerprint: 'fp-nobin' })) // one-shot: no second notice
+    expect(calls).toHaveLength(0)
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('BOARDROOM_CLAUDE_BIN')
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable('fp-nobin', Date.now())?.id).toBe('c1')
+  })
+
   it('end-to-end via queue events: park then decide wakes the session exactly once', () => {
     const queue = new Queue(store)
     queue.on('card', c => waker.onCard(c))
@@ -154,5 +221,34 @@ describe('Waker', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toContain('sid-1')
     expect(calls[0].cwd).toBe(dir)
+  })
+})
+
+// Pure resolution: env + probe injected, so nothing here touches the real fs.
+describe('resolveClaudeBin', () => {
+  it('an explicit BOARDROOM_CLAUDE_BIN override wins and is trusted as-is (no probe)', () => {
+    const bin = resolveClaudeBin({ BOARDROOM_CLAUDE_BIN: '/custom/claude', PATH: '/usr/bin' }, () => false)
+    expect(bin).toBe('/custom/claude')
+  })
+
+  it('scans PATH directories in order for an executable claude', () => {
+    const probe = (p: string): boolean => p === join('/two', 'claude')
+    const bin = resolveClaudeBin({ PATH: ['/one', '/two'].join(':') }, probe)
+    expect(bin).toBe(join('/two', 'claude'))
+  })
+
+  it('falls back to known install locations when PATH has no claude', () => {
+    const probe = (p: string): boolean => p === '/opt/homebrew/bin/claude'
+    const bin = resolveClaudeBin({ PATH: '/one' }, probe)
+    expect(bin).toBe('/opt/homebrew/bin/claude')
+  })
+
+  it('returns undefined when nothing is executable anywhere (empty PATH, all probes fail)', () => {
+    expect(resolveClaudeBin({ PATH: '' }, () => false)).toBeUndefined()
+    expect(resolveClaudeBin({}, () => false)).toBeUndefined()
+  })
+
+  it('ignores a whitespace-only override', () => {
+    expect(resolveClaudeBin({ BOARDROOM_CLAUDE_BIN: '   ', PATH: '' }, () => false)).toBeUndefined()
   })
 })

@@ -6,6 +6,28 @@ export interface DeviceIdentity {
   deviceLabel: string
 }
 
+export interface HookStatusEntry {
+  id: string
+  event: string
+  matcher?: string
+  description: string
+  wired: boolean
+}
+
+export interface EnvStatusEntry {
+  key: string
+  description: string
+  recommended: string
+  current?: string
+  configured: boolean
+}
+
+export interface HooksStatus {
+  installed: boolean
+  entries: HookStatusEntry[]
+  env: EnvStatusEntry[]
+}
+
 async function check<T>(res: globalThis.Response): Promise<T> {
   const text = await res.text()
   let body: unknown
@@ -33,6 +55,21 @@ export async function fetchSessions(): Promise<CapturedSession[]> {
 // This machine's identity — the editable device nickname is shown in the Folders view.
 export async function fetchDevice(): Promise<DeviceIdentity> {
   return check(await fetch('/api/device'))
+}
+
+// Enforcement-hooks toggle (README "Enforcement hooks"): current wiring state
+// of the boardroom hooks in the user's global ~/.claude/settings.json.
+export async function fetchHooksStatus(): Promise<HooksStatus> {
+  return check(await fetch('/api/hooks'))
+}
+
+export async function setHooksInstalled(install: boolean): Promise<HooksStatus> {
+  const res = await fetch('/api/hooks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: install ? 'install' : 'uninstall' }),
+  })
+  return check(res)
 }
 
 export async function decideCard(

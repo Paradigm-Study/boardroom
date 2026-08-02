@@ -855,6 +855,44 @@ a { color: inherit; }
 .folders-empty p { font-size: 13.5px; margin: 0; }
 
 .folders-cols { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; }
+
+/* Settings — enforcement-hooks toggle. */
+.settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 24px; }
+.settings-card {
+  max-width: 560px; margin: 0 auto; padding: 18px 20px; border: 1px solid var(--line);
+  border-radius: var(--r-lg); background: var(--bg-2);
+}
+.settings-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.settings-card-desc { margin: 10px 0 14px; font-size: 12.5px; line-height: 1.55; color: var(--ink-2); }
+.settings-card-desc code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--bg-3);
+  padding: 1px 5px; border-radius: 4px;
+}
+
+.hook-switch {
+  position: relative; flex-shrink: 0; width: 38px; height: 22px; padding: 2px;
+  border-radius: 999px; border: 1px solid var(--line-2); background: var(--bg-3);
+  cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;
+}
+.hook-switch:disabled { cursor: default; opacity: 0.6; }
+.hook-switch.on { background: var(--accent); border-color: var(--accent); }
+.hook-switch-knob {
+  display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--bg);
+  transition: transform 0.15s ease; transform: translateX(0);
+}
+.hook-switch.on .hook-switch-knob { transform: translateX(16px); }
+
+.hook-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.hook-list li {
+  display: grid; grid-template-columns: 14px auto 1fr; align-items: baseline; column-gap: 8px;
+  font-size: 12px; color: var(--ink-3);
+}
+.hook-list li svg { align-self: center; }
+.hook-list li.wired svg { color: var(--ok); }
+.hook-list li:not(.wired) svg { color: var(--pending); }
+.hook-list-name { font-family: var(--mono); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+.hook-list-desc { color: var(--ink-3); }
 .fcol {
   width: 232px; flex-shrink: 0; display: flex; flex-direction: column;
   min-height: 0; border-right: 1px solid var(--line);

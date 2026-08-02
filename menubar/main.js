@@ -4,6 +4,8 @@
 const { app, Menu, nativeImage, Notification, shell } = require('electron')
 const { menubar } = require('menubar')
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 const {
   STAGE_LABEL,
   orderedStages,
@@ -16,6 +18,21 @@ const {
 const PORT = process.env.BOARDROOM_PORT || '4040'
 const BASE = `http://127.0.0.1:${PORT}`
 const icon = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'))
+
+// The daemon now gates /api and /events with a loopback token. The embedded
+// dashboard window authenticates via the same-origin cookie the daemon sets, but
+// this main-process /events reader is a bare fetch with no cookie jar, so it reads
+// the token from the daemon's 0600 file (same machine). Missing/older daemon → no
+// token → the guard is off anyway, so an absent header is correct.
+function readToken() {
+  const dir = process.env.BOARDROOM_CONFIG_DIR || path.join(os.homedir(), '.config', 'boardroom')
+  try {
+    return fs.readFileSync(path.join(dir, 'token'), 'utf8').trim() || null
+  } catch {
+    return null
+  }
+}
+const TOKEN = readToken()
 
 const mb = menubar({
   index: `${BASE}/`,
@@ -103,7 +120,10 @@ async function streamOnce() {
   let watchdog = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS)
   try {
     const res = await fetch(`${BASE}/events`, {
-      headers: { Accept: 'text/event-stream' },
+      headers: {
+        Accept: 'text/event-stream',
+        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+      },
       signal: controller.signal,
     })
     if (!res.ok || !res.body) throw new Error(`/events HTTP ${res.status}`)
@@ -167,6 +187,14 @@ mb.on('after-hide', () => {
 // viewer's "Open in new tab"), keep the window planted on the dashboard and hand
 // the URL to the real browser — otherwise the frameless window strands itself on
 // a page with no way back. Files open in-app via the dashboard's own viewer.
+function isDaemonOrigin(url) {
+  try {
+    return new URL(url).origin === new URL(BASE).origin
+  } catch {
+    return false
+  }
+}
+
 function guardNavigation(contents) {
   if (!contents) return
   contents.setWindowOpenHandler(({ url }) => {
@@ -174,7 +202,10 @@ function guardNavigation(contents) {
     return { action: 'deny' }
   })
   contents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(BASE)) {
+    // Compare by ORIGIN, not string prefix: startsWith(BASE) also matches
+    // http://127.0.0.1:40404 (a different local service on a port that begins with
+    // "4040"), which would let it drive the privileged window. Origin equality is exact.
+    if (!isDaemonOrigin(url)) {
       event.preventDefault()
       void shell.openExternal(url)
     }

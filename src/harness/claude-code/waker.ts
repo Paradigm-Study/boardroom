@@ -1,19 +1,55 @@
 import { spawn } from 'node:child_process'
-import { statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { delimiter, isAbsolute, join } from 'node:path'
 import type { Card } from '../../shared/card.js'
 import { buildSummary } from '../../daemon/summary.js'
+import { notifyResumeFailure } from '../../daemon/notify.js'
 import type { Store } from '../../daemon/store.js'
 
 // onSpawned fires once the child process actually started (Node's 'spawn' event) —
 // the waker uses it to mark the card delivered. A failed launch (ENOENT etc.) must
 // NOT mark: the decision then stays claimable via reattach instead of vanishing.
-export type SpawnFn = (bin: string, args: string[], cwd: string, onSpawned?: () => void) => void
+// onError surfaces that failed launch to the waker so it can tell the human,
+// not just the daemon log.
+export type SpawnFn = (bin: string, args: string[], cwd: string, onSpawned?: () => void, onError?: (err: Error) => void) => void
 
 interface WakerOpts {
   spawn?: SpawnFn
   claudeBin?: string
+  resolveBin?: () => string | undefined
+  onResumeFailure?: (card: Card, detail: string) => void
   permissionMode?: string
+}
+
+// Find the claude CLI without hard-coding one install location (the previous
+// '/opt/homebrew/bin/claude' default silently broke every auto-wake on machines
+// where claude lives elsewhere — or nowhere). Order: explicit BOARDROOM_CLAUDE_BIN
+// override (trusted as-is: user intent, and a typo then fails loudly at spawn),
+// then PATH, then known install locations. Pure with injected env/probe for tests.
+export function resolveClaudeBin(
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutable: (p: string) => boolean = isExecutableFile,
+): string | undefined {
+  const override = env.BOARDROOM_CLAUDE_BIN?.trim()
+  if (override) return override
+  const candidates = [
+    ...(env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir, 'claude')),
+    join(homedir(), '.claude', 'local', 'claude'),
+    join(homedir(), '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ]
+  return candidates.find(isExecutable)
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    accessSync(p, constants.X_OK)
+    return statSync(p).isFile()
+  } catch {
+    return false
+  }
 }
 
 // Resumes the agent's Claude Code session when a card it left behind (parked, or
@@ -27,12 +63,19 @@ interface WakerOpts {
 export class Waker {
   private woken = new Set<string>()
   private spawnFn: SpawnFn
-  private claudeBin: string
+  private claudeBin: string | undefined
+  private resolveBinFn: () => string | undefined
+  private onResumeFailure: (card: Card, detail: string) => void
   private permissionMode: string
 
   constructor(private store: Store, opts: WakerOpts = {}) {
     this.spawnFn = opts.spawn ?? defaultSpawn
-    this.claudeBin = opts.claudeBin ?? process.env.BOARDROOM_CLAUDE_BIN ?? '/opt/homebrew/bin/claude'
+    // resolveClaudeBin already honors BOARDROOM_CLAUDE_BIN; opts.claudeBin stays
+    // first so tests (and embedders) can pin a binary without touching env.
+    this.resolveBinFn = opts.claudeBin ? () => opts.claudeBin : (opts.resolveBin ?? resolveClaudeBin)
+    this.claudeBin = this.resolveBinFn()
+    this.onResumeFailure = opts.onResumeFailure
+      ?? ((card, detail) => notifyResumeFailure(card.session.project, card.headline, detail))
     this.permissionMode = opts.permissionMode ?? process.env.BOARDROOM_RESUME_PERMISSION ?? 'acceptEdits'
   }
 
@@ -62,6 +105,19 @@ export class Waker {
       return
     }
     this.woken.add(card.id)
+    // Re-probe on demand when boot-time resolution found nothing: a claude
+    // installed after the (long-lived, launchd) daemon started should wake the
+    // very next card, not wait for a daemon restart.
+    if (!this.claudeBin) this.claudeBin = this.resolveBinFn()
+    // No claude binary anywhere → auto-wake is impossible on this machine. Tell the
+    // human (once per card — woken already guards) instead of failing invisibly;
+    // the verdict stays claimable via reattach and the dashboard copy-paste.
+    if (!this.claudeBin) {
+      const detail = 'no claude binary found — set BOARDROOM_CLAUDE_BIN'
+      console.warn(`[waker] skip card ${card.id}: ${detail}`)
+      this.onResumeFailure(card, detail)
+      return
+    }
     const args = ['-p', '--resume', session.sessionId, resumeMessage(card), '--permission-mode', this.permissionMode]
     // Mark the card delivered once the resume actually launched: the decision now
     // travels in that session's prompt (which is told NOT to re-call the tool), so
@@ -69,7 +125,13 @@ export class Waker {
     // with the same fingerprint — handing a stale verdict to an unrelated session,
     // the never-auto-accept violation. On a failed launch nothing is marked and the
     // reattach path stays open. The dashboard copy-paste summary works either way.
-    this.spawnFn(this.claudeBin, args, session.cwd, () => this.markDelivered(card.id))
+    this.spawnFn(
+      this.claudeBin,
+      args,
+      session.cwd,
+      () => this.markDelivered(card.id),
+      err => this.onResumeFailure(card, err.message),
+    )
   }
 
   private markDelivered(cardId: string): void {
@@ -101,16 +163,26 @@ function isExistingDir(p: string): boolean {
   }
 }
 
-function defaultSpawn(bin: string, args: string[], cwd: string, onSpawned?: () => void): void {
+function defaultSpawn(bin: string, args: string[], cwd: string, onSpawned?: () => void, onError?: (err: Error) => void): void {
   // Detached & stdio-ignored: the resumed turn outlives this request and must
   // never block or crash the daemon (e.g. if the claude binary isn't found).
   const child = spawn(bin, args, { cwd, stdio: 'ignore', detached: true })
   child.on('spawn', () => onSpawned?.())
-  child.on('error', err => console.warn(`[waker] could not spawn ${bin}: ${err.message}`))
+  child.on('error', err => {
+    console.warn(`[waker] could not spawn ${bin}: ${err.message}`)
+    onError?.(err)
+  })
   // Auto-wake is a convenience over the dashboard's copy-paste fallback; a failed
-  // resume is otherwise invisible (stdio ignored, one-shot), so at least log it.
+  // resume is otherwise invisible (stdio ignored, one-shot), so log AND surface it.
+  // This is the worst failure mode: 'spawn' already marked the card delivered
+  // (closing the reattach claim — deliberate, see onCard), so a resume that
+  // launches but dies at runtime (stale session id, expired auth) leaves the
+  // dashboard copy-paste as the ONLY remaining path. The human must hear about it.
   child.on('exit', code => {
-    if (code) console.warn(`[waker] ${bin} exited ${code} — the resumed session may not have started`)
+    if (code) {
+      console.warn(`[waker] ${bin} exited ${code} — the resumed session may not have started`)
+      onError?.(new Error(`claude exited ${code} — the verdict may not have reached the session; copy it from the dashboard`))
+    }
   })
   child.unref()
 }

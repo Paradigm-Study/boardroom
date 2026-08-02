@@ -31,6 +31,18 @@ function notify(opts: notifier.Notification & { open?: string; timeout?: number 
   })
 }
 
+// A decided verdict failed its auto-resume push (`claude --resume`): the decision
+// is safe and claimable, but nobody is coming to collect it — say so where the
+// human can see it instead of a daemon-log line nobody reads. Best-effort like
+// every notification here; the dashboard copy-paste summary remains the fallback.
+export function notifyResumeFailure(project: string, headline: string, detail: string): void {
+  notify({
+    title: `boardroom · ${project} · auto-resume failed`,
+    message: `"${headline}" was decided but the session could not be resumed (${detail}). Copy the verdict from the dashboard, or have the agent re-issue the call.`,
+    timeout: 10,
+  })
+}
+
 export function startNotifications(queue: Queue, config: Config): void {
   if (!config.notifications) return
 
