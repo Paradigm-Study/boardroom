@@ -2,14 +2,19 @@ import express, { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { AttachmentRef, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
+import { AttachmentRef, CARD_ADDON_ID, DecisionAnswers, type Card, type CardStatus, type DecisionAnswer } from '../shared/card.js'
+import type { Entry } from '../shared/entry.js'
 import { ConflictError, NotFoundError, Queue, ValidationError } from './queue.js'
 import { loadMachineIdentity, setDeviceLabel } from './machine.js'
+import type { AuthStore, CredentialKind } from './authStore.js'
+import type { AuthConnector } from './authConnect.js'
 import type { Store } from './store.js'
 import { widgetCatalogList } from '../shared/widgetCatalog.js'
-import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
+import { needsHuman, REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
+import { deriveSessionStatus } from '../shared/sessionStatus.js'
 import { buildTrayVM } from './trayView.js'
 import { hooksStatus, installHooks, uninstallHooks } from './hooksInstall.js'
+import type { MeshForwarder, MeshPublishEvent } from './meshForward.js'
 
 interface ApiOptions {
   attachmentDir: string
@@ -18,6 +23,11 @@ interface ApiOptions {
   // "reconnecting" cards against the SAME window the queue reattaches against.
   // Optional → tests and legacy callers fall back to the 24h default.
   reattachWindowMs?: number
+  // The "Connect your Claude account" surfaces. Both optional so legacy/test
+  // callers omit them — the /api/auth/* routes only register when present.
+  authStore?: AuthStore
+  authConnector?: AuthConnector
+  meshForwarder?: MeshForwarder
 }
 
 const DEFAULT_ATTACHMENT_LIMIT = '25mb'
@@ -121,8 +131,63 @@ function answersFrom(req: Request): Record<string, DecisionAnswer> {
 export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions): Router {
   const router = Router()
 
+  // Session inbox view-model: each captured session decorated with its aggregate
+  // status tag (deriveSessionStatus) and card counts, so the dashboard can render
+  // a session list without independently re-deriving status per row. Additive over
+  // CapturedSession — existing consumers reading only the base fields are unaffected.
   router.get('/api/sessions', (_req, res) => {
-    try { res.json(store.listCaptured()) } catch (err) { sendError(res, err) }
+    try {
+      const cards = store.list()
+      const nowMs = Date.now()
+      // Same window the tray VM uses below (options.reattachWindowMs ?? the 24h
+      // default) — a "reconnecting" boot-orphan card must count against the
+      // daemon's ACTUAL configured reattach window, not always the default.
+      const windowMs = options.reattachWindowMs ?? REATTACH_WINDOW_MS
+      const vms = store.listCaptured().map(s => {
+        // Exclude dismissed cards: a retired card must not colour the session's status
+        // tag (deriveSessionStatus's activity clock) or its cardCount.
+        const own = cards.filter(c => c.claudeSessionId === s.sessionId && c.status !== 'dismissed')
+        return {
+          ...s,
+          sessionStatus: deriveSessionStatus(s, own, nowMs, windowMs),
+          // needsHuman, not status === 'pending': deriveSessionStatus counts a
+          // reconnecting orphan toward needs-decision, so this count must too or
+          // the row contradicts its own status tag.
+          pendingCount: own.filter(c => needsHuman(c, nowMs, windowMs)).length,
+          cardCount: own.length,
+        }
+      })
+      res.json(vms)
+    } catch (err) { sendError(res, err) }
+  })
+
+  // That session's cards in stream order (createdAt ascending) — the per-session
+  // card feed backing a session's detail view. Distinct path from /api/sessions
+  // above (never shadows/is-shadowed by it); kept adjacent for readability.
+  router.get('/api/sessions/:id/cards', (req, res) => {
+    try {
+      const own = store.list()
+        .filter(c => c.claudeSessionId === req.params.id && c.status !== 'dismissed')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      res.json(own)
+    } catch (err) { sendError(res, err) }
+  })
+
+  // Report/tag stream, FIFO (createdAt ascending — store.listEntries already
+  // orders this way). Backs the dashboard's report feed; a stream with no
+  // entries yet returns [], not 404.
+  router.get('/api/entries', (_req, res) => {
+    try {
+      res.json(store.listEntries())
+    } catch (err) { sendError(res, err) }
+  })
+
+  // That session's entries in stream order — the per-session report feed.
+  // Distinct path from /api/entries above; mirrors /api/sessions/:id/cards.
+  router.get('/api/sessions/:id/entries', (req, res) => {
+    try {
+      res.json(store.listEntriesBySession(req.params.id))
+    } catch (err) { sendError(res, err) }
   })
 
   // The widget dialbook: a read-only catalog of every block type the agent can author
@@ -133,6 +198,25 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
 
   router.get('/api/device', (_req, res) => {
     try { res.json(loadMachineIdentity(options.configDir)) } catch (err) { sendError(res, err) }
+  })
+
+  // Local, content-minimized publish receipts. These expose queue health and
+  // delivery identity without exposing the bearer token or any non-mesh card
+  // content. Absent mesh config is an ordinary disabled state, not an error.
+  router.get('/api/mesh/status', (_req, res) => {
+    res.json(options.meshForwarder?.status() ?? {
+      configured: false,
+      teamId: 'legacy-local',
+      queued: 0,
+      delivered: 0,
+      terminal: 0,
+    })
+  })
+
+  router.get('/api/mesh/publishes', (req, res) => {
+    const raw = Number(req.query.limit ?? 100)
+    const limit = Number.isFinite(raw) ? Math.max(1, Math.min(500, raw)) : 100
+    res.json(options.meshForwarder?.listPublishes(limit) ?? [])
   })
 
   router.put('/api/device', (req, res) => {
@@ -208,8 +292,11 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
         const card = store.get(req.params.id)
         if (!card) throw new NotFoundError(`no card "${req.params.id}"`)
         if (card.status === 'decided') throw new ConflictError('card is already decided')
+        if (card.status === 'dismissed') throw new ConflictError('card was dismissed')
         const answerId = String(req.header('x-answer-id') ?? '')
-        if (!card.decisions.some(d => d.id === answerId)) {
+        // CARD_ADDON_ID is the reserved card-level add-on channel — a valid
+        // upload target on every card, though never a decision id by design.
+        if (answerId !== CARD_ADDON_ID && !card.decisions.some(d => d.id === answerId)) {
           throw new ValidationError(`unknown answer id "${answerId}"`)
         }
         if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -305,6 +392,68 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
   // handles orphaned cards and returns { card, summary }.
   router.post('/api/cards/:id/offline-answer', decideHandler)
 
+  // Boardroom-scoped soft delete: retire a card the human no longer wants on the
+  // board (a stranded duplicate, or any orphaned gate). Terminal 'dismissed' status
+  // drops it from every surface; nothing is pushed to the agent. 404 unknown, 409 on
+  // an already-decided card (its decision is history) — same error mapping as decide.
+  router.post('/api/cards/:id/dismiss', (req: Request<{ id: string }>, res: Response) => {
+    try {
+      res.json({ card: queue.dismiss(req.params.id) })
+    } catch (err) { sendError(res, err) }
+  })
+
+  // "Connect your Claude account": lets the user hand boardroom a durable resume
+  // credential so the launchd-spawned waker can authenticate. Registered only when
+  // the daemon wired an authStore (legacy/test callers omit it → routes 404). The
+  // status never returns the secret value — only connected/kind/age + login state.
+  const { authStore, authConnector } = options
+  if (authStore) {
+    const authStatus = (): Record<string, unknown> => ({
+      ...authStore.status(),
+      login: authConnector?.getStatus() ?? { state: 'idle' },
+    })
+
+    router.get('/api/auth/status', (_req, res) => { res.json(authStatus()) })
+
+    // Paste path: the user supplies a token they generated (`claude setup-token`).
+    router.post('/api/auth/token', (req, res) => {
+      try {
+        const type = (req.body as { type?: string }).type
+        const value = (req.body as { value?: string }).value
+        if (type !== 'oauth' && type !== 'apiKey') throw new ValidationError('type must be "oauth" or "apiKey"')
+        if (typeof value !== 'string' || !value.trim()) throw new ValidationError('a non-empty token value is required')
+        authStore.set({ type: type as CredentialKind, value: value.trim() })
+        res.json(authStatus())
+      } catch (err) { sendError(res, err) }
+    })
+
+    router.post('/api/auth/disconnect', (_req, res) => {
+      authStore.clear()
+      res.json(authStatus())
+    })
+
+    // Browser path: boardroom drives `claude setup-token` and captures the token.
+    if (authConnector) {
+      router.post('/api/auth/connect', (_req, res) => {
+        authConnector.start()
+        res.json(authStatus())
+      })
+      router.post('/api/auth/connect/cancel', (_req, res) => {
+        authConnector.cancel()
+        res.json(authStatus())
+      })
+      // Relay the OAuth code the user pasted from the browser into the login prompt.
+      router.post('/api/auth/connect/input', (req, res) => {
+        try {
+          const code = (req.body as { code?: string }).code
+          if (typeof code !== 'string' || !code.trim()) throw new ValidationError('a non-empty code is required')
+          authConnector.sendInput(code.trim())
+          res.json(authStatus())
+        } catch (err) { sendError(res, err) }
+      })
+    }
+  }
+
   router.get('/events', (req, res) => {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -334,6 +483,18 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
       sendTray()
     }
     queue.on('card', onCard)
+    // The dashboard's report feed subscribes to this same stream. Entries are a
+    // separate concern from cards/tray: the tray never counts entries (spec
+    // criterion tray-separation), so this listener MUST NOT call sendTray() —
+    // it only forwards the raw entry frame.
+    const onEntry = (entry: Entry): void => {
+      res.write(`event: entry\ndata: ${JSON.stringify(entry)}\n\n`)
+    }
+    queue.on('entry', onEntry)
+    const onMesh = (event: MeshPublishEvent): void => {
+      res.write(`event: mesh\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    options.meshForwarder?.on('status', onMesh)
     sendTray()
     const heartbeat = setInterval(() => {
       res.write(':hb\n\n')
@@ -342,6 +503,8 @@ export function buildApiRouter(queue: Queue, store: Store, options: ApiOptions):
     req.on('close', () => {
       clearInterval(heartbeat)
       queue.off('card', onCard)
+      queue.off('entry', onEntry)
+      options.meshForwarder?.off('status', onMesh)
     })
   })
 

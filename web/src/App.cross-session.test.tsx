@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, subscribeCards } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
 import { App } from './App.js'
 
 // CHARACTERIZATION TESTS for the dashboard's gate selection across sessions.
@@ -15,7 +15,7 @@ import { App } from './App.js'
 // most-recent PENDING card across ALL sessions, with no notion of a "current" session
 // to scope to — but it renders each card's OWN content faithfully (no mixing here).
 
-vi.mock('./api.js', () => ({ fetchCards: vi.fn(), subscribeCards: vi.fn() }))
+vi.mock('./api.js', () => ({ fetchCards: vi.fn(), fetchEntries: vi.fn(), fetchSessions: vi.fn(), subscribeStream: vi.fn(), getAuthStatus: vi.fn(() => Promise.resolve({ connected: true, login: { state: 'idle' } })) }))
 vi.mock('./notify.js', () => ({
   notifyCard: vi.fn(),
   notifyPermission: () => 'granted',
@@ -37,6 +37,12 @@ beforeEach(() => {
   })
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() })
   window.location.hash = ''
+  // Sessions now poll on every route (feeds the sidebar's status tags) — default to
+  // an empty list so a test that doesn't care about sessions isn't forced to mock it.
+  vi.mocked(fetchSessions).mockResolvedValue([])
+  // Same additive-default reasoning: a test that doesn't care about entries
+  // shouldn't be forced to mock fetchEntries.
+  vi.mocked(fetchEntries).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -51,7 +57,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[BEHAVIOR] on root, auto-opens the most-recent pending card across ALL sessions — not a current session\'s', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
 
@@ -64,7 +70,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[CORRECT] the opened card shows ITS OWN content — the dashboard does not mix sessions', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
@@ -76,7 +82,7 @@ describe('dashboard gate selection across sessions', () => {
 
   it('[CORRECT] deep-linking to a specific session\'s card shows exactly that card', async () => {
     vi.mocked(fetchCards).mockResolvedValue([older, newer])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/A'
 
     render(<App />)
@@ -97,6 +103,42 @@ function bootOrphan(id: string, headline: string, session: Card['session'], crea
   }
 }
 
+// Sidebar grouping: with the session spine, TWO Claude Code sessions that happen to
+// share project/title/agent are DISTINCT sessions (claudeSessionId is the real key).
+// The legacy pseudo-key (project+title+agent) is a fallback used ONLY for cards that
+// predate the spine (no claudeSessionId) — those still merge as before.
+describe('dashboard sidebar grouping by real session id', () => {
+  it('[FLIPPED] two sessions with identical project/title/agent but distinct claudeSessionIds render as TWO sidebar groups', async () => {
+    const a = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T10:00:00.000Z')
+    const b = gate('B', 'Session B decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T11:00:00.000Z')
+    const boundA = { ...a, claudeSessionId: 'cc-A' }
+    const boundB = { ...b, claudeSessionId: 'cc-B' }
+    vi.mocked(fetchCards).mockResolvedValue([boundA, boundB])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
+
+    // Same project/title/agent, but bound to two different real sessions — the
+    // sidebar must show two distinct session groups, not collapse them into one.
+    expect(screen.getAllByRole('group', { name: 'Same Title' })).toHaveLength(2)
+  })
+
+  it('[LEGACY] two unbound (no claudeSessionId) card sets with identical pseudo-keys still merge into ONE group', async () => {
+    const a = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T10:00:00.000Z')
+    const b = gate('B', 'Session B decision', { agent: 'claude-code', project: 'repo-one', title: 'Same Title' }, '2026-06-30T11:00:00.000Z')
+    vi.mocked(fetchCards).mockResolvedValue([a, b])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session B decision' })
+
+    // Pre-spine behavior preserved: with no claudeSessionId on either card, the
+    // pseudo-key (project+title+agent) merges them into a single sidebar group.
+    expect(screen.getAllByRole('group', { name: 'Same Title' })).toHaveLength(1)
+  })
+})
+
 describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => {
   it('auto-open prefers the newest actionable gate, including a boot-orphaned "reconnecting" one', async () => {
     // A (this session) was orphaned by the restart and is NEWER; B (another session)
@@ -104,7 +146,7 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
     const reconnecting = bootOrphan('A', 'Session A (reconnecting)', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T12:00:00.000Z')
     const otherPending = gate('B', 'Session B decision', { agent: 'codex', project: 'repo-two', title: 'Session B' }, '2026-06-30T10:00:00.000Z')
     vi.mocked(fetchCards).mockResolvedValue([reconnecting, otherPending])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: 'Session A (reconnecting)' })).toBeTruthy()
@@ -117,11 +159,78 @@ describe('dashboard auto-open vs reconnecting gates (restart surfacing)', () => 
     // so auto-open lands on it instead of "The table is clear".
     const reconnecting = bootOrphan('A', 'Session A (reconnecting)', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T12:00:00.000Z')
     vi.mocked(fetchCards).mockResolvedValue([reconnecting])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
 
     render(<App />)
     expect(await screen.findByRole('heading', { level: 1, name: 'Session A (reconnecting)' })).toBeTruthy()
     await waitFor(() => expect(window.location.hash).toBe('#/card/A'))
     expect(screen.queryByText('The table is clear')).toBeNull()
+  })
+})
+
+// App fetches entries once and must pass them into TaskSidebar at BOTH call sites
+// (the default/root layout and the #/session/<id> layout). Tag chips no longer
+// render in the sidebar (redundant with the gate rows/strip), so the wiring is
+// guarded via the other thing sidebar entries drive: the unread-report dot.
+describe('dashboard passes entries into the sidebar at both routes', () => {
+  const bound = gate('A', 'Session A decision', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z')
+  const boundCard = { ...bound, claudeSessionId: 'cc-A' }
+  // Recent createdAt keeps the report inside readState's age-implies-read TTL, so
+  // it counts as unread under these tests' real timers.
+  const report = {
+    id: 'report-wire-1', type: 'report' as const, claudeSessionId: 'cc-A',
+    session: { agent: 'claude-code', project: 'repo-one' },
+    headline: 'wiring probe findings', blocks: [{ id: 'b1', type: 'markdown' as const, text: 'body' }],
+    createdAt: new Date().toISOString(),
+  }
+
+  it('shows the unread-report dot in the sidebar on the root route', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([boundCard])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: 'Session A decision' })
+
+    // ≥1, not exactly 1: the sidebar may legitimately mark unread in more than one
+    // place (session head dot, per-report row dot) — this test only guards that the
+    // entries prop reaches the sidebar at all on this route.
+    expect((await screen.findAllByLabelText('Unread report')).length).toBeGreaterThan(0)
+  })
+
+  it('shows the unread-report dot in the sidebar on the #/session/<id> route', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([boundCard])
+    vi.mocked(fetchEntries).mockResolvedValue([report])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/session/cc-A'
+
+    render(<App />)
+
+    // The stream view renders the report too — assert the SIDEBAR's dot
+    // specifically via its sidebar-only class, so this targets the sidebar wiring.
+    await waitFor(() => expect(document.querySelector('.sidebar .side-unread-dot')).toBeTruthy())
+  })
+})
+
+// The sidebar's StreamDrawer used to promise "the FULL session, not the section's
+// subset"; the drawer is gone and the #/session route is now the only stream
+// surface — so THAT promise is pinned here instead: the route renders every one of
+// the session's cards, pending and decided alike.
+describe('#/session route renders the full session stream', () => {
+  it('shows both a pending and a decided gate of the same session', async () => {
+    const pendingGate = { ...gate('P', 'Pending gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T11:00:00.000Z'), claudeSessionId: 'cc-A' }
+    const decidedGate = {
+      ...gate('D', 'Decided gate', { agent: 'claude-code', project: 'repo-one', title: 'Session A' }, '2026-06-30T10:00:00.000Z'),
+      claudeSessionId: 'cc-A', status: 'decided' as const,
+    }
+    vi.mocked(fetchCards).mockResolvedValue([pendingGate, decidedGate])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/session/cc-A'
+
+    render(<App />)
+
+    const stream = await screen.findByLabelText('Session stream')
+    expect(within(stream).getByText('Pending gate')).toBeTruthy()
+    expect(within(stream).getByText('Decided gate')).toBeTruthy()
   })
 })

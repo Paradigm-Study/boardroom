@@ -31,14 +31,15 @@ function notify(opts: notifier.Notification & { open?: string; timeout?: number 
   })
 }
 
-// A decided verdict failed its auto-resume push (`claude --resume`): the decision
-// is safe and claimable, but nobody is coming to collect it — say so where the
-// human can see it instead of a daemon-log line nobody reads. Best-effort like
-// every notification here; the dashboard copy-paste summary remains the fallback.
-export function notifyResumeFailure(project: string, headline: string, detail: string): void {
+// A failed auto-wake is the one notification that must not be missed: the human
+// decided, but the agent never received it — the card deep-link is the handover.
+// Supersedes the older notifyResumeFailure(project, headline, detail): same job,
+// but the deep-link turns "something went wrong" into a one-click handover.
+export function notifyWakeFailed(card: Card, port: number): void {
   notify({
-    title: `boardroom · ${project} · auto-resume failed`,
-    message: `"${headline}" was decided but the session could not be resumed (${detail}). Copy the verdict from the dashboard, or have the agent re-issue the call.`,
+    title: `boardroom · wake failed · ${card.session.project}`,
+    message: `Auto-resume failed — "${card.headline}" decision NOT delivered. Open the card to hand it over.`,
+    open: cardUrl(port, card.id),
     timeout: 10,
   })
 }

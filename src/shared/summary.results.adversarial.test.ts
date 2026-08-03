@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Card, DecisionAnswer } from '../shared/card.js'
+import type { Card, DecisionAnswer } from './card.js'
 import { buildSummary } from './summary.js'
 
 const claim = (id: string, prompt: string): Card['decisions'][number] => ({

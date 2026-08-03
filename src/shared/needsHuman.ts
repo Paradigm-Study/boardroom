@@ -13,6 +13,16 @@ export const REATTACH_WINDOW_MS = 24 * 60 * 60_000
 // deploy/restart never silently drops a decision — deciding one still reaches the
 // agent via the existing reattach + waker (claude --resume). Disconnect/park orphans
 // are deliberately excluded (they stay in history).
+// The instant the reattach window is measured from: prefer orphanedAt (when the
+// restart orphaned the card), rescue via createdAt. Returns NaN when neither
+// parses — callers fail OPEN on that (a corrupt clock is never treated as expired).
+// Single source of truth so isReconnecting (the predicate) and the dashboard's
+// reattach countdown bar can never disagree about the window's anchor.
+export function orphanClockMs(card: Card): number {
+  const orphanedAtMs = Date.parse(card.orphanedAt ?? '')
+  return Number.isFinite(orphanedAtMs) ? orphanedAtMs : Date.parse(card.createdAt)
+}
+
 export function isReconnecting(
   card: Card,
   nowMs: number = Date.now(),
@@ -22,9 +32,7 @@ export function isReconnecting(
   // A corrupt/unparseable timestamp must fail OPEN (still reconnecting): NaN would
   // otherwise make the comparison false and silently drop a boot-orphaned gate from
   // every needs-you surface — the exact failure this predicate exists to prevent.
-  // Prefer orphanedAt, rescue via createdAt, and only then give up on the clock.
-  const orphanedAtMs = Date.parse(card.orphanedAt ?? '')
-  const t = Number.isFinite(orphanedAtMs) ? orphanedAtMs : Date.parse(card.createdAt)
+  const t = orphanClockMs(card)
   return !Number.isFinite(t) || nowMs - t < windowMs
 }
 

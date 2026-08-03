@@ -55,7 +55,7 @@ afterEach(() => {
 // Submit a fresh results card through the queue (live waiter attached) and
 // return its id. Mirrors the daemon's real path: compileResults -> submit.
 function submitResults(): string {
-  const card = compileResults(resultsInput(), 'claude-code')
+  const card = compileResults(resultsInput(), { agent: 'claude-code' })
   return queue.submit(card, noop).cardId
 }
 

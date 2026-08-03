@@ -138,7 +138,7 @@ describe('Store persists a plan send-back (empty chosen)', () => {
 
   it('decides and reads back a revised plan with chosen: [] without throwing', () => {
     const queue = new Queue(store)
-    const card = compilePlan(planInput, 'claude-code')
+    const card = compilePlan(planInput, { agent: 'claude-code' })
     const noop = { resolve: () => {}, reject: () => {} }
     queue.submit(card, noop)
 
@@ -167,37 +167,37 @@ describe('Store.findReattachable', () => {
 
   it('returns an orphaned card within the window', () => {
     store.insert(fpCard('c1', 'orphaned'))
-    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)?.id).toBe('c1')
   })
 
   it('returns a decided-but-undelivered card, windowed on DECISION time (an old card decided recently stays claimable)', () => {
     store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z', decidedAt: new Date(now - 60_000).toISOString() }))
-    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)?.id).toBe('c1')
   })
 
   it('does NOT return a decided-but-undelivered card whose decision is older than the window (no forever-claimable verdicts)', () => {
     // Fingerprints are formulaic; a weeks-old undelivered verdict must never
     // resolve a future identical-looking gate from another session.
     store.insert(fpCard('c1', 'decided', { createdAt: '2020-01-01T00:00:00.000Z', decidedAt: '2020-01-02T00:00:00.000Z' }))
-    expect(store.findReattachable('fp', now)).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)).toBeUndefined()
   })
 
   it('windows a legacy decided card without decidedAt on createdAt', () => {
     store.insert(fpCard('c1', 'decided', { createdAt: new Date(now - 60_000).toISOString() }))
-    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)?.id).toBe('c1')
   })
 
   it('ignores pending cards, delivered cards, and stale orphans', () => {
     store.insert(fpCard('pending', 'pending'))
     store.insert(fpCard('delivered', 'decided', { deliveredAt: new Date(now).toISOString() }))
     store.insert(fpCard('stale', 'orphaned', { createdAt: '2020-01-01T00:00:00.000Z' }))
-    expect(store.findReattachable('fp', now)).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)).toBeUndefined()
   })
 
   it('returns undefined for an unknown or missing fingerprint', () => {
     store.insert(fpCard('c1', 'orphaned'))
-    expect(store.findReattachable('other', now)).toBeUndefined()
-    expect(store.findReattachable(undefined, now)).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'other' }, now)).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: undefined }, now)).toBeUndefined()
   })
 
   it('windows the reattach on ORPHAN time, not createdAt: orphanAllPending stamps a fresh clock', () => {
@@ -206,18 +206,18 @@ describe('Store.findReattachable', () => {
     // anchored to its ancient createdAt.
     store.insert(fpCard('c1', 'pending', { createdAt: '2020-01-01T00:00:00.000Z' }))
     store.orphanAllPending()
-    expect(store.findReattachable('fp', now)?.id).toBe('c1')
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)?.id).toBe('c1')
   })
 
   it('falls back to createdAt for legacy orphans that have no orphanedAt', () => {
     store.insert(fpCard('recent', 'orphaned', { createdAt: new Date(now - 60_000).toISOString() }))
-    expect(store.findReattachable('fp', now)?.id).toBe('recent') // recent createdAt, no orphanedAt → still in window
+    expect(store.findReattachable({ fingerprint: 'fp' }, now)?.id).toBe('recent') // recent createdAt, no orphanedAt → still in window
   })
 
   it('honors a custom reattach window (config-tunable)', () => {
     store.insert(fpCard('c1', 'orphaned', { createdAt: new Date(now - 100).toISOString() }))
-    expect(store.findReattachable('fp', now, 1)).toBeUndefined()                 // 1ms window excludes
-    expect(store.findReattachable('fp', now, 24 * 60 * 60_000)?.id).toBe('c1')   // 24h window includes
+    expect(store.findReattachable({ fingerprint: 'fp' }, now, 1)).toBeUndefined()                 // 1ms window excludes
+    expect(store.findReattachable({ fingerprint: 'fp' }, now, 24 * 60 * 60_000)?.id).toBe('c1')   // 24h window includes
   })
 })
 
@@ -272,35 +272,11 @@ describe('Store session registry — cwd-keyed (worktree-safe)', () => {
     )
   })
 
-  it('getSessionById resolves the exact session by its Claude session id', () => {
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
-    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-B')
-    expect(store.getSessionById('cc-B')).toEqual(
-      expect.objectContaining({ sessionId: 'sid-B', cwd: '/abs/wt-b/demo' }),
-    )
-  })
-
-  it('getSessionById is fail-closed when a Claude session id maps to more than one row', () => {
-    // Two distinct worktrees somehow carrying the same claude id → resuming either
-    // could be the wrong tree, so resolve to undefined (mirrors getSessionByProject).
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-X')
-    store.recordSession('demo', 'sid-B', '/abs/wt-b/demo', 'cc-X')
-    expect(store.getSessionById('cc-X')).toBeUndefined()
-  })
-
   it('re-registering the same cwd updates in place (no duplicate row)', () => {
     store.recordSession('demo', 'sid-A', '/abs/wt-a/demo')
     store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo')
     expect(store.getSessionByCwd('/abs/wt-a/demo')?.sessionId).toBe('sid-A2')
     expect(store.getSessionByProject('demo')?.sessionId).toBe('sid-A2') // still unique
-  })
-
-  it('preserves a stored Claude session id when a later re-register of the same cwd omits it', () => {
-    store.recordSession('demo', 'sid-A', '/abs/wt-a/demo', 'cc-A')
-    store.recordSession('demo', 'sid-A2', '/abs/wt-a/demo') // re-register, no claude id
-    expect(store.getSessionById('cc-A')).toEqual(
-      expect.objectContaining({ sessionId: 'sid-A2', cwd: '/abs/wt-a/demo' }),
-    )
   })
 
   it('backfill never clobbers an existing sessions_v2 row and is idempotent across reboots', () => {

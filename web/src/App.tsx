@@ -1,14 +1,17 @@
 import { Armchair, Bell } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Card } from '../../src/shared/card.js'
-import type { CapturedSession } from '../../src/shared/session.js'
-import { fetchCards, fetchSessions, subscribeCards } from './api.js'
+import type { Entry } from '../../src/shared/entry.js'
+import type { AuthStatusVM, SessionVM } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, getAuthStatus, subscribeStream } from './api.js'
 import { CardView } from './CardView.js'
 import { FileViewer } from './FileViewer.js'
 import { FolderColumns } from './FolderColumns.js'
 import { parseHash } from './fileView.js'
 import { needsHuman } from './helpers.js'
 import { notifyCard, notifyPermission, requestNotify } from './notify.js'
+import { ReportView } from './ReportView.js'
+import { SessionStream } from './SessionStream.js'
 import { SettingsView } from './SettingsView.js'
 import { TaskSidebar } from './TaskSidebar.js'
 
@@ -23,7 +26,7 @@ function useHashRoute(): string {
 }
 
 function sessionScrollKey(card: Card): string {
-  return `${card.session.project}\u0000${card.session.title?.trim() || 'Untitled session'}\u0000${card.session.agent}`
+  return card.claudeSessionId ?? `${card.session.project}\u0000${card.session.title?.trim() || 'Untitled session'}\u0000${card.session.agent}`
 }
 
 interface SessionScrollEntry {
@@ -83,13 +86,21 @@ function saveSessionScroll(entries: Map<string, SessionScrollEntry>, key: string
 
 export function App() {
   const [cards, setCards] = useState<Map<string, Card>>(new Map())
-  const [sessions, setSessions] = useState<CapturedSession[] | null>(null)
+  // Populated by the initial fetch + SSE below; rendered by SessionStream (merged
+  // with cards) on the #/session/<id> route.
+  const [entries, setEntries] = useState<Map<string, Entry>>(new Map())
+  const [sessions, setSessions] = useState<SessionVM[] | null>(null)
+  // "Connect your Claude account" status. null until the first poll settles, or when
+  // the daemon lacks the auth feature (the /api/auth routes 404 → we keep it null and
+  // render nothing). See the poll effect below.
+  const [authStatus, setAuthStatus] = useState<AuthStatusVM | null>(null)
   const [perm, setPerm] = useState<NotificationPermission>(notifyPermission())
   const [loadError, setLoadError] = useState<string | null>(null)
   // False until the initial fetch settles: a deep link must show "loading", never a
   // premature "Card not found." while the card list is still in flight.
   const [initialLoadDone, setInitialLoadDone] = useState(false)
   const seenPending = useRef<Set<string> | null>(null) // null until first load → no launch burst
+  const wasOffline = useRef(false) // arms the reconnect refetch in subscribeStream's status callback
   const sessionScroll = useRef<Map<string, SessionScrollEntry>>(readSessionScroll())
   const activeSessionKey = useRef<string | null>(null)
   const routeSavedSessionKey = useRef<string | null>(null)
@@ -121,7 +132,20 @@ export function App() {
       seenPending.current ??= new Set()
       setInitialLoadDone(true)
     })
-    return subscribeCards(
+    fetchEntries().then(list => {
+      // Same merge-don't-replace reasoning as the cards fetch above: an entry may
+      // already have arrived over SSE before this GET resolves.
+      setEntries(prev => {
+        const merged = new Map(prev)
+        for (const e of list) if (!merged.has(e.id)) merged.set(e.id, e)
+        return merged
+      })
+    }).catch((err: unknown) => {
+      // Entries are supplementary; the cards fetch above already surfaces load
+      // errors to the human, so this is a log-only signal for diagnosis.
+      console.warn('[boardroom] failed to fetch entries', err)
+    })
+    return subscribeStream(
       card => {
         setCards(prev => new Map(prev).set(card.id, card))
         setLoadError(null) // a live event means the stream is connected
@@ -134,12 +158,65 @@ export function App() {
           seen.delete(card.id)
         }
       },
+      // Entries are one-way conveyed items (reports/tags), never gates — no
+      // notifyCard, no seenPending. Tray separation (spec criterion): a report
+      // must never toast like a pending card does.
+      entry => {
+        setEntries(prev => new Map(prev).set(entry.id, entry))
+      },
       // Stream connectivity drives the same banner; it clears on reconnect ('open').
-      online => setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…'),
+      online => {
+        setLoadError(online ? null : 'Lost the live connection to the daemon — reconnecting…')
+        if (!online) {
+          wasOffline.current = true
+          return
+        }
+        if (!wasOffline.current) return // first connect — the initial load below covers it
+        wasOffline.current = false
+        // Refetch after a drop: frames emitted while disconnected are gone for good
+        // (the SSE stream has no replay), so the daemon's snapshot is now the
+        // authority — REPLACE fetched ids, unlike the initial-load merge where an
+        // SSE-delivered copy is at least as fresh as the GET. Ids missing from the
+        // fetch stay: cards and entries are never deleted server-side.
+        void fetchCards().then(list => {
+          const seen = seenPending.current
+          if (seen) {
+            // Same notify discipline as the live card handler: a card that went
+            // pending during the gap is a real new obligation — toast it once.
+            for (const c of list) {
+              if (c.status === 'pending' && !seen.has(c.id)) {
+                seen.add(c.id)
+                notifyCard(c)
+              } else if (c.status !== 'pending') {
+                seen.delete(c.id)
+              }
+            }
+          }
+          setCards(prev => {
+            const merged = new Map(prev)
+            for (const c of list) merged.set(c.id, c)
+            return merged
+          })
+        }).catch((err: unknown) => {
+          console.warn('[boardroom] reconnect card refetch failed', err)
+        })
+        void fetchEntries().then(list => {
+          setEntries(prev => {
+            const merged = new Map(prev)
+            for (const e of list) merged.set(e.id, e)
+            return merged
+          })
+        }).catch((err: unknown) => {
+          console.warn('[boardroom] reconnect entry refetch failed', err)
+        })
+      },
     )
   }, [])
 
-  const all = [...cards.values()]
+  // A dismissed card is retired from the board — drop it from every surface (sidebar,
+  // card view, counts, session stream). Its id stays in the map (the SSE 'card' event
+  // that dismissed it keeps the entry current), but it never renders.
+  const all = [...cards.values()].filter(c => c.status !== 'dismissed')
   // needsHuman, not status === 'pending': a restart-orphaned ("reconnecting") gate is
   // still awaiting the human — it must count in the title badge and participate in
   // auto-open, agreeing with the tray and the sidebar's Needs-you bucket.
@@ -181,7 +258,10 @@ export function App() {
   // keep rendering that card (tracked below) instead of treating it as a route.
   const lastCardRouteId = useRef<string | null>(null)
   const routedId = route.kind === 'card' ? route.id : route.kind === 'anchor' ? lastCardRouteId.current : null
-  const routed = routedId != null ? cards.get(routedId) : undefined
+  // A dismissed card routed to directly (or dismissed while open) reads as "not found"
+  // rather than rendering a retired gate.
+  const routedRaw = routedId != null ? cards.get(routedId) : undefined
+  const routed = routedRaw?.status === 'dismissed' ? undefined : routedRaw
   const onRoot = route.kind === 'root'
   const newestPendingId = pending[0]?.id
 
@@ -196,15 +276,31 @@ export function App() {
     if (route.kind !== 'file' && route.kind !== 'folders' && route.kind !== 'settings') returnHash.current = hash
   }, [hash, route.kind])
 
-  // Sessions feed the Folders overlay only. Fetch when it opens and poll while it's
-  // up (the capturer reconciles every 5s); stop on close so the dashboard is idle.
+  // Sessions now feed the sidebar's status tags on every route, not just the Folders
+  // overlay — so this always polls. The Folders overlay and the session stream view
+  // both want fresher data (the capturer reconciles every 5s) while they're open;
+  // everywhere else a slower cadence is plenty since it's only feeding status chips.
   useEffect(() => {
-    if (route.kind !== 'folders') return
-    const load = (): void => { void fetchSessions().then(setSessions).catch(() => { /* overlay shows last-known */ }) }
+    const load = (): void => { void fetchSessions().then(setSessions).catch(() => { /* sidebar/overlay show last-known */ }) }
     load()
-    const timer = setInterval(load, 4000)
+    const fast = route.kind === 'folders' || route.kind === 'session'
+    const timer = setInterval(load, fast ? 4000 : 15000)
     return () => clearInterval(timer)
   }, [route.kind])
+
+  // Poll the "Connect your Claude account" status. Fast while a browser login is
+  // in flight (to pick up the login URL, then the connected/failed transition),
+  // slow otherwise. A thrown error means the daemon has no auth feature — leave it
+  // null so nothing renders. reloadAuth() forces an immediate refresh after an action.
+  const reloadAuth = useCallback((): void => {
+    void getAuthStatus().then(setAuthStatus).catch(() => setAuthStatus(null))
+  }, [])
+  const authConnecting = authStatus?.login.state === 'running'
+  useEffect(() => {
+    reloadAuth()
+    const timer = setInterval(reloadAuth, authConnecting ? 1500 : 20000)
+    return () => clearInterval(timer)
+  }, [reloadAuth, authConnecting])
 
   useEffect(() => {
     if (onRoot && newestPendingId) {
@@ -232,6 +328,18 @@ export function App() {
     return () => window.cancelAnimationFrame(frame)
   }, [shownSessionKey])
 
+  // The stream view (#/session/<id>) renders a different document than the card
+  // view the user came from; without a reset the browser keeps the old offset and
+  // lands mid-stream. Card views restore their own per-session offset above.
+  const streamRouteId = route.kind === 'session' ? route.id : null
+  useLayoutEffect(() => {
+    if (streamRouteId == null) return
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [streamRouteId])
+
   if (route.kind === 'file') {
     return (
       <FileViewer
@@ -256,9 +364,44 @@ export function App() {
     return <SettingsView onClose={() => { window.location.hash = returnHash.current }} />
   }
 
+  if (route.kind === 'session') {
+    const vm = sessions?.find(s => s.sessionId === route.id) ?? null
+    const own = all
+      .filter(c => c.claudeSessionId === route.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const ownEntries = [...entries.values()]
+      .filter(e => e.claudeSessionId === route.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    return (
+      <div className="frame">
+        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
+        <main className="content"><div className="content-inner">
+          <SessionStream session={vm} cards={own} entries={ownEntries} />
+        </div></main>
+      </div>
+    )
+  }
+
+  if (route.kind === 'report') {
+    const found = entries.get(route.id)
+    const report = found?.type === 'report' ? found : undefined
+    return (
+      <div className="frame">
+        <TaskSidebar cards={all} selectedId={null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
+        <main className="content">
+          <div className="content-inner">
+            {report
+              ? <ReportView entry={report} />
+              : <p style={{ color: 'var(--ink-3)' }}>{initialLoadDone ? 'Report not found.' : 'Loading…'}</p>}
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="frame">
-      <TaskSidebar cards={all} selectedId={shown?.id ?? null} />
+      <TaskSidebar cards={all} selectedId={shown?.id ?? null} sessions={sessions ?? undefined} entries={[...entries.values()]} />
       <main className="content">
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
         {perm === 'default' && (
@@ -268,7 +411,7 @@ export function App() {
         )}
         <div className="content-inner">
           {shown
-            ? <CardView key={shown.id} card={shown} cards={all} />
+            ? <CardView key={shown.id} card={shown} cards={all} authStatus={authStatus} onAuthChanged={reloadAuth} onDismissed={c => setCards(prev => new Map(prev).set(c.id, c))} />
             : route.kind === 'card'
               ? <p style={{ color: 'var(--ink-3)' }}>{initialLoadDone ? 'Card not found.' : 'Loading…'}</p>
               : (

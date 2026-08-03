@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from './inputs.js'
+import { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from './inputs.js'
 
 const decision = {
   id: 'd1',
@@ -70,6 +70,19 @@ describe('ClarifyInput', () => {
     if (!r.success) expect(r.error.issues.some(i => /duplicate decision ids/.test(i.message))).toBe(true)
   })
 
+  // "card_addon" keys the global card-level add-on in the answers map: an
+  // agent-authored decision with that id would be silently overwritten by the
+  // human's add-on text (and vice versa) at decide time.
+  it('rejects a decision using the reserved card_addon id', () => {
+    const r = ClarifyInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [localBlock, globalBlock],
+      decisions: [{ ...decisionWithContext, id: 'card_addon' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /card_addon.*reserved/i.test(i.message))).toBe(true)
+  })
+
   it('rejects duplicate block ids', () => {
     const r = ClarifyInput.safeParse({
       project: 'demo', headline: 'h',
@@ -104,6 +117,16 @@ describe('PresentPlanInput', () => {
   it('accepts a plan with structural block and zero extra decisions', () => {
     const r = PresentPlanInput.safeParse({ project: 'demo', headline: 'h', blocks: [structural], planRef: '/tmp/plan.md' })
     expect(r.success).toBe(true)
+  })
+
+  it('rejects a decision using the reserved card_addon id', () => {
+    const r = PresentPlanInput.safeParse({
+      project: 'demo', headline: 'h',
+      blocks: [structural, localBlock, globalBlock],
+      decisions: [{ ...decisionWithContext, id: 'card_addon' }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /card_addon.*reserved/i.test(i.message))).toBe(true)
   })
 
   it('requires local context for every plan decision and global plan context', () => {
@@ -250,6 +273,56 @@ describe('SpecInput', () => {
 
   it('accepts a valid spec with a goal, criteria, and an optional on-disk specRef', () => {
     expect(SpecInput.safeParse({ ...valid, specRef: '/tmp/spec.md' }).success).toBe(true)
+  })
+})
+
+describe('PresentReportInput', () => {
+  const validBlock = { id: 'b1', type: 'markdown', text: 'summary of findings' }
+
+  it('accepts a minimal valid report (project, headline, one block)', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock] })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects zero blocks', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [] })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a missing headline', () => {
+    const r = PresentReportInput.safeParse({ project: 'demo', blocks: [validBlock] })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects duplicate block ids', () => {
+    const r = PresentReportInput.safeParse({
+      project: 'demo', headline: 'findings',
+      blocks: [validBlock, { ...validBlock }],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.some(i => /duplicate block ids/.test(i.message))).toBe(true)
+  })
+
+  it('has NO decisions field and NO sections field (P1: summary blocks only)', () => {
+    const r = PresentReportInput.safeParse({
+      project: 'demo', headline: 'findings', blocks: [validBlock],
+      decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+      sections: [{ id: 's1', kind: 'decide' }],
+    })
+    expect(r.success).toBe(true)
+    if (r.success) {
+      expect('decisions' in r.data).toBe(false)
+      expect('sections' in r.data).toBe(false)
+    }
+  })
+
+  it('accepts and preserves sessionKey; accepts omission', () => {
+    const withKey = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock], sessionKey: 'cc-1' })
+    expect(withKey.success).toBe(true)
+    if (withKey.success) expect(withKey.data.sessionKey).toBe('cc-1')
+
+    const withoutKey = PresentReportInput.safeParse({ project: 'demo', headline: 'findings', blocks: [validBlock] })
+    expect(withoutKey.success).toBe(true)
   })
 })
 

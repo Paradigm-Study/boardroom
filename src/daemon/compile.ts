@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import type { Block } from '../shared/blocks.js'
 import { PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type Card, type Decision, type DecisionOption, type PlanVerdict, type ResultsVerdict, type SpecVerdict } from '../shared/card.js'
+import type { Entry } from '../shared/entry.js'
 
 // Verdict option lists are constrained to the shared unions so a renamed verdict
 // is a compile error here AND at every consumer that compares against it.
 type VerdictOption<V extends string> = Omit<DecisionOption, 'id'> & { id: V }
-import type { ClarifyInput, PresentPlanInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
+import type { ClarifyInput, PresentPlanInput, PresentReportInput, ReviewResultsInput, SpecInput } from '../shared/inputs.js'
 
 const now = (): string => new Date().toISOString()
+
+export interface CompileMeta {
+  agent: string
+  claudeSessionId?: string
+}
 
 function session(input: { project: string; title?: string }, agent: string): Card['session'] {
   return { agent, project: input.project, ...(input.title ? { title: input.title } : {}) }
@@ -23,11 +29,12 @@ export function fingerprint(project: string, stage: Card['stage'], headline: str
   return [project, stage, headline].join('\0')
 }
 
-export function compileClarify(input: ClarifyInput, agent: string): Card {
+export function compileClarify(input: ClarifyInput, meta: CompileMeta): Card {
   return {
     id: randomUUID(),
     stage: 'clarify',
-    session: session(input, agent),
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
     headline: input.headline,
     blocks: input.blocks,
     decisions: input.decisions,
@@ -49,13 +56,14 @@ export const PLAN_VERDICT: Decision = {
   noteRequiredOn: ['revise', 'reject'] satisfies PlanVerdict[],
 }
 
-export function compilePlan(input: PresentPlanInput, agent: string): Card {
+export function compilePlan(input: PresentPlanInput, meta: CompileMeta): Card {
   const decisions = [...input.decisions]
   if (!decisions.some(d => d.id === PLAN_VERDICT_ID)) decisions.push(PLAN_VERDICT)
   return {
     id: randomUUID(),
     stage: 'plan',
-    session: session(input, agent),
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
     headline: input.headline,
     blocks: input.blocks,
     decisions,
@@ -85,7 +93,7 @@ export const SPEC_VERDICT: Decision = {
 // plus a keep/adjust/drop decision; a global acceptance "contract" block carries
 // the goal + the full list. The agent supplies criteria, not blocks — boardroom
 // builds the card, mirroring how compileResults turns claims into the card.
-export function compileSpec(input: SpecInput, agent: string): Card {
+export function compileSpec(input: SpecInput, meta: CompileMeta): Card {
   const overview: Block = {
     id: 'spec_contract',
     type: 'acceptance',
@@ -114,7 +122,8 @@ export function compileSpec(input: SpecInput, agent: string): Card {
   return {
     id: randomUUID(),
     stage: 'spec',
-    session: session(input, agent),
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
     headline: input.headline,
     // Overview first (global), then any extra agent context, then the per-criterion
     // local blocks the decisions reference.
@@ -144,7 +153,7 @@ export const RESULTS_VERDICT: Decision = {
   blockRefs: [],
 }
 
-export function compileResults(input: ReviewResultsInput, agent: string): Card {
+export function compileResults(input: ReviewResultsInput, meta: CompileMeta): Card {
   const blocks = input.claims.flatMap(c => c.evidence.map(b => ({ ...b, id: `${c.id}/${b.id}` })))
   const decisions: Decision[] = input.claims.map(c => ({
     id: `claim:${c.id}`,
@@ -165,7 +174,8 @@ export function compileResults(input: ReviewResultsInput, agent: string): Card {
   return {
     id: randomUUID(),
     stage: 'results',
-    session: session(input, agent),
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
     headline: input.headline,
     blocks,
     decisions,
@@ -174,5 +184,21 @@ export function compileResults(input: ReviewResultsInput, agent: string): Card {
     status: 'pending',
     createdAt: now(),
     fingerprint: fingerprint(input.project, 'results', input.headline),
+  }
+}
+
+// The report entry: fire-and-forget, NOT reattachable. Each call mints a fresh
+// entry — no fingerprint, no dedup — because a non-blocking call can never lose
+// a human decision, so idempotent retry-collapse (the reason cards fingerprint)
+// does not apply here.
+export function compileReport(input: PresentReportInput, meta: CompileMeta): Entry {
+  return {
+    id: randomUUID(),
+    type: 'report',
+    session: session(input, meta.agent),
+    ...(meta.claudeSessionId ? { claudeSessionId: meta.claudeSessionId } : {}),
+    headline: input.headline,
+    blocks: input.blocks,
+    createdAt: now(),
   }
 }

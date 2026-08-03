@@ -57,7 +57,7 @@ function realResultsCard(claimIds: string[]): Card {
       evidence: [{ id: 'ev', type: 'markdown', text: `proof for ${id}` }],
     })),
   })
-  return compileResults(input, 'claude-code')
+  return compileResults(input, { agent: 'claude-code' })
 }
 
 // The claim decisions the UI renders (everything except the synthetic verdict),

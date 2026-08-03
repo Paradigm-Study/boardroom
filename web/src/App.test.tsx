@@ -2,13 +2,18 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Card } from '../../src/shared/card.js'
-import { fetchCards, subscribeCards } from './api.js'
+import { fetchCards, fetchEntries, fetchSessions, subscribeStream } from './api.js'
 import { App } from './App.js'
 import { fileHash } from './fileView.js'
 
 vi.mock('./api.js', () => ({
   fetchCards: vi.fn(),
-  subscribeCards: vi.fn(),
+  fetchEntries: vi.fn(),
+  fetchSessions: vi.fn(),
+  subscribeStream: vi.fn(),
+  // App polls this on mount; default to connected so no account banner renders in
+  // these tests (they assert card/stream behavior, not the connect affordance).
+  getAuthStatus: vi.fn(() => Promise.resolve({ connected: true, login: { state: 'idle' } })),
 }))
 
 // notify.js reaches for the Notification API / permissions; stub it so App mounts
@@ -89,6 +94,12 @@ beforeEach(() => {
     },
   })
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: vi.fn() })
+  // Sessions now poll on every route (feeds the sidebar's status tags) — default to
+  // an empty list so a test that doesn't care about sessions isn't forced to mock it.
+  vi.mocked(fetchSessions).mockResolvedValue([])
+  // Same additive-default reasoning: a test that doesn't care about entries
+  // shouldn't be forced to mock fetchEntries.
+  vi.mocked(fetchEntries).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -103,7 +114,7 @@ describe('App initial-fetch / SSE race', () => {
     let resolveFetch!: (cards: Card[]) => void
     vi.mocked(fetchCards).mockReturnValue(new Promise<Card[]>(r => { resolveFetch = r }))
     let onCard: (c: Card) => void = () => {}
-    vi.mocked(subscribeCards).mockImplementation(cb => { onCard = cb; return () => {} })
+    vi.mocked(subscribeStream).mockImplementation(cb => { onCard = cb; return () => {} })
 
     render(<App />)
 
@@ -119,6 +130,77 @@ describe('App initial-fetch / SSE race', () => {
   })
 })
 
+describe('App SSE reconnect', () => {
+  it('refetches cards and entries when the stream reconnects after a drop', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([card('k1', 'Original headline')])
+    let onStatus: ((online: boolean) => void) | undefined
+    vi.mocked(subscribeStream).mockImplementation((_onCard, _onEntry, statusCb) => {
+      onStatus = statusCb
+      return () => {}
+    })
+
+    render(<App />)
+    expect((await screen.findAllByText('Original headline')).length).toBeGreaterThan(0)
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(1)
+
+    // Frames emitted while the tab is disconnected are gone for good — the SSE
+    // stream has no replay — so reconnect must refetch, and the refetched copy
+    // must REPLACE the stale one (unlike the initial-load merge).
+    vi.mocked(fetchCards).mockResolvedValue([{ ...card('k1', 'Decided while offline'), status: 'decided' as const }])
+    await act(async () => { onStatus?.(false) })
+    await act(async () => { onStatus?.(true) })
+
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(fetchEntries)).toHaveBeenCalledTimes(2)
+    expect((await screen.findAllByText('Decided while offline')).length).toBeGreaterThan(0)
+  })
+
+  it('does not refetch on the initial open (no prior drop)', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([])
+    let onStatus: ((online: boolean) => void) | undefined
+    vi.mocked(subscribeStream).mockImplementation((_onCard, _onEntry, statusCb) => {
+      onStatus = statusCb
+      return () => {}
+    })
+
+    render(<App />)
+    // EventSource fires 'open' on the very first connect too — that must not
+    // double the initial load.
+    await act(async () => { onStatus?.(true) })
+
+    expect(vi.mocked(fetchCards)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fetchEntries)).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('App hides dismissed cards', () => {
+  it('a dismissed card never renders on the board', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([
+      { ...card('gone', 'Retired duplicate'), status: 'dismissed' as const },
+      card('live', 'Still needs you'),
+    ])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+
+    render(<App />)
+
+    expect((await screen.findAllByText('Still needs you')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Retired duplicate')).toBeNull()
+  })
+
+  it('a card dismissed live over SSE disappears from the board', async () => {
+    vi.mocked(fetchCards).mockResolvedValue([card('c1', 'Reconnecting gate')])
+    let onCard: (c: Card) => void = () => {}
+    vi.mocked(subscribeStream).mockImplementation(cb => { onCard = cb; return () => {} })
+
+    render(<App />)
+    expect((await screen.findAllByText('Reconnecting gate')).length).toBeGreaterThan(0)
+
+    // The daemon dismisses it (e.g. a retired twin) and pushes the terminal status.
+    act(() => onCard({ ...card('c1', 'Reconnecting gate'), status: 'dismissed' as const }))
+    await waitFor(() => expect(screen.queryByText('Reconnecting gate')).toBeNull())
+  })
+})
+
 describe('session navigation scroll memory', () => {
   it('starts first-time sessions at top and restores each session on return', async () => {
     const scroll = mockWindowScroll()
@@ -126,7 +208,7 @@ describe('session navigation scroll memory', () => {
     const sessionB = card('session-b', 'Session B decision', { agent: 'codex', project: 'boardroom', title: 'Session B' })
     const sessionC = card('session-c', 'Session C decision', { agent: 'codex', project: 'boardroom', title: 'Session C' })
     vi.mocked(fetchCards).mockResolvedValue([sessionA, sessionB, sessionC])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/session-a'
 
     render(<App />)
@@ -165,13 +247,34 @@ describe('session navigation scroll memory', () => {
     await waitFor(() => expect(scroll.lastScrollTop()).toBe(640))
   })
 
+  it('lands the #/session/<id> stream view at the top, not the previous view\'s offset', async () => {
+    const scroll = mockWindowScroll()
+    const bound = { ...card('k1', 'Bound decision', { agent: 'codex', project: 'boardroom', title: 'Spine session' }), claudeSessionId: 'cc-A' }
+    vi.mocked(fetchCards).mockResolvedValue([bound])
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
+    window.location.hash = '#/card/k1'
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Bound decision' })).toBeTruthy()
+
+    scroll.scrollTo.mockClear()
+    scroll.setScrollY(640) // deep in the card view when the stream link is clicked
+    act(() => {
+      window.location.hash = '#/session/cc-A'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+
+    expect(await screen.findByLabelText('Session stream')).toBeTruthy()
+    await waitFor(() => expect(scroll.lastScrollTop()).toBe(0))
+  })
+
   it('keeps session scroll memory across a dashboard reload in the same window', async () => {
     const scroll = mockWindowScroll()
     const sessionA = card('session-a', 'Session A decision', { agent: 'codex', project: 'boardroom', title: 'Session A' })
     const sessionB = card('session-b', 'Session B decision', { agent: 'codex', project: 'boardroom', title: 'Session B' })
     const sessionC = card('session-c', 'Session C decision', { agent: 'codex', project: 'boardroom', title: 'Session C' })
     vi.mocked(fetchCards).mockResolvedValue([sessionA, sessionB, sessionC])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/session-a'
 
     const first = render(<App />)
@@ -219,7 +322,7 @@ describe('session navigation scroll memory', () => {
       [scrollKey(preservedSession)]: { top: 640, updatedAt: Date.now() },
     }))
     vi.mocked(fetchCards).mockResolvedValue([card('live', 'Live decision', liveSession)])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/live'
 
     render(<App />)
@@ -248,7 +351,7 @@ describe('in-page block anchors (evidence links)', () => {
     const anchored = card('anchored', 'Anchored decision')
     const newest = { ...card('newest', 'Newest decision'), createdAt: '2026-06-17T12:00:00.000Z' }
     vi.mocked(fetchCards).mockResolvedValue([anchored, newest])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/anchored'
 
     render(<App />)
@@ -270,7 +373,7 @@ describe('deep-link loading state', () => {
   it('shows Loading (not "Card not found.") while the initial fetch is in flight', async () => {
     let resolveFetch!: (cards: Card[]) => void
     vi.mocked(fetchCards).mockReturnValue(new Promise<Card[]>(r => { resolveFetch = r }))
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = '#/card/some-id'
 
     render(<App />)
@@ -285,7 +388,7 @@ describe('deep-link loading state', () => {
 describe('file-viewer route', () => {
   it('renders the in-app viewer for a #/file route with a Back affordance', async () => {
     vi.mocked(fetchCards).mockResolvedValue([])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = fileHash({ url: '/api/x/a1', name: 'shot.png', mime: 'image/png' })
 
     render(<App />)
@@ -296,7 +399,7 @@ describe('file-viewer route', () => {
 
   it('returns to the dashboard when Back is clicked', async () => {
     vi.mocked(fetchCards).mockResolvedValue([])
-    vi.mocked(subscribeCards).mockImplementation(() => () => {})
+    vi.mocked(subscribeStream).mockImplementation(() => () => {})
     window.location.hash = fileHash({ url: '/api/x/a1', name: 'shot.png', mime: 'image/png' })
 
     render(<App />)

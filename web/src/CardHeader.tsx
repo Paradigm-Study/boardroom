@@ -28,7 +28,12 @@ export function CardHeader({ card, workspace, readonly, pickupSummary }: {
       <div className="source-strip" aria-label="Decision source">
         <span>
           <span className="source-label">Session</span>
-          <strong>{sessionTitle}</strong>
+          {card.claudeSessionId
+            // The decision sheet's .sheet-source link doesn't render on results
+            // cards (they show the checklist instead), so this header link is the
+            // card's universal provenance path into the session stream.
+            ? <a href={`#/session/${encodeURIComponent(card.claudeSessionId)}`}><strong>{sessionTitle}</strong></a>
+            : <strong>{sessionTitle}</strong>}
         </span>
         <span>
           <FolderGit2 size={14} aria-hidden />

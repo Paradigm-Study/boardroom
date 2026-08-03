@@ -1,16 +1,29 @@
-import { OTHER_OPTION_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type Criterion, type DecisionAnswer, type PlanVerdict, type ResultsVerdict, type SpecVerdict } from '../shared/card.js'
+import { CARD_ADDON_ID, OTHER_OPTION_ID, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID, type AttachmentRef, type Card, type Criterion, type DecisionAnswer, type PlanVerdict, type ResultsVerdict, type SpecVerdict } from './card.js'
+
+// Agent-authored text (prompts, option labels, criterion fields, file names)
+// is flattened to one line at render time: the summary's section headers —
+// notably "Added instructions — act on these:" — are a trust boundary only the
+// HUMAN's own input may start a line with. Human-authored notes stay verbatim.
+export function flat(s: string): string {
+  // Collapse any whitespace run that contains a LINE SEPARATOR to a single space — not
+  // just LF but CR, VT, FF, and the Unicode U+2028/U+2029/U+0085 separators a naive \n
+  // check misses. This is the trust boundary: an agent must not be able to start a new
+  // visual line inside a prompt/label/criterion/attachment field and thereby forge the
+  // "Added instructions — act on these:" header (or any other section header).
+  return s.replace(/\s*[\n\r\u2028\u2029\u0085\v\f]+\s*/gu, ' ')
+}
 
 function chosenLabels(d: Card['decisions'][number], a: DecisionAnswer): string {
   return a.chosen
     .map(c => c === OTHER_OPTION_ID
       ? `Other: ${a.custom ?? ''}`
-      : d.options.find(o => o.id === c)?.label ?? c)
+      : flat(d.options.find(o => o.id === c)?.label ?? c))
     .join(', ')
 }
 
 function attachmentLabel(a: AttachmentRef): string {
-  const field = a.field ? `${a.field}: ` : ''
-  return `${field}${a.name} (${a.path})`
+  const field = a.field ? `${flat(a.field)}: ` : ''
+  return `${field}${flat(a.name)} (${flat(a.path)})`
 }
 
 function appendAttachments(lines: string[], answer: DecisionAnswer | undefined, indent = ''): void {
@@ -30,6 +43,21 @@ function unmetCriteria(
   const approved = new Set(claims.filter(d => answers[d.id]?.chosen.includes('approve')).map(d => d.id))
   const isMet = (cr: Criterion): boolean => claims.some(d => d.criterionId === cr.id && approved.has(d.id))
   return criteria.filter(cr => !isMet(cr))
+}
+
+// The global card-level add-on (answers[CARD_ADDON_ID]) as a closing section.
+// Every stage appends this LAST — the human's final word to the agent, kept
+// apart from the per-decision record above it. The note rides verbatim
+// (multi-line intact); legacy verdict-note add-ons (results/spec) keep their
+// own inline rendering, so old decided cards are untouched.
+function addonSection(answers: Record<string, DecisionAnswer>): string[] {
+  const addon = answers[CARD_ADDON_ID]
+  const note = addon?.note?.trim()
+  if (!note && !addon?.attachments?.length) return []
+  const lines = ['Added instructions — act on these:']
+  if (note) lines.push(note)
+  appendAttachments(lines, addon)
+  return lines
 }
 
 export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>): string {
@@ -59,28 +87,34 @@ export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>
         : emptyContract ? 'Spec LOCKED — every criterion was dropped; there is no contract to build against (the human scoped this work out).'
           : 'Spec LOCKED — build to this contract; every criterion must end MET before the session can complete.')
 
-    // The verdict's note/attachments are the card-level add-on (e.g. "add a criterion: …").
+    // The verdict's note/attachments: on a send-back this is the revise
+    // instruction ("Send-back note"); on a lock it only exists on legacy
+    // decided cards, where it was the pre-card_addon add-on channel — keep
+    // that wording so old records read as recorded.
     if (verdict?.note?.trim() || verdict?.attachments?.length) {
-      lines.push(`Added instructions:${verdict.note?.trim() ? ` ${verdict.note.trim()}` : ''}`)
+      const label = locked ? 'Added instructions:' : 'Send-back note:'
+      lines.push(`${label}${verdict.note?.trim() ? ` ${verdict.note.trim()}` : ''}`)
       appendAttachments(lines, verdict, '  ')
     }
 
     if (kept.length) {
       lines.push(locked ? 'Locked contract — satisfy every criterion:' : 'Current criteria (for your revision):')
       for (const { cr, adjust } of kept) {
-        lines.push(`- ${cr.behavior} · GOOD: ${cr.good} · BAD: ${cr.bad} · traces to ${cr.tracesTo}`)
+        lines.push(`- ${flat(cr.behavior)} · GOOD: ${flat(cr.good)} · BAD: ${flat(cr.bad)} · traces to ${flat(cr.tracesTo)}`)
         if (adjust?.trim()) lines.push(`  adjust to: ${adjust.trim()}`)
       }
     }
     if (dropped.length) {
       lines.push('Dropped (out of scope):')
-      for (const { cr, note } of dropped) lines.push(`- ${cr.behavior}${note?.trim() ? ` — ${note.trim()}` : ''}`)
+      for (const { cr, note } of dropped) lines.push(`- ${flat(cr.behavior)}${note?.trim() ? ` — ${note.trim()}` : ''}`)
     }
     // Only ask the agent to persist a contract that actually exists.
     if (locked && !emptyContract && card.specRef) {
-      lines.push(`Write this locked contract to ${card.specRef} so it survives later turns; read it back when you verify and at review_results.`)
+      // specRef is agent-authored too — flatten it like every other agent field so a
+      // newline-laced path can't forge the "Added instructions" header (see flat()).
+      lines.push(`Write this locked contract to ${flat(card.specRef)} so it survives later turns; read it back when you verify and at review_results.`)
     }
-    return lines.join('\n')
+    return [...lines, ...addonSection(answers)].join('\n')
   }
 
   if (card.stage === 'results') {
@@ -106,7 +140,7 @@ export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>
       const unmet = unmetCriteria(criteria, claims, answers)
       if (unmet.length) {
         lines.push(`UNMET CRITERIA (${unmet.length}) — not yet satisfied:`)
-        for (const cr of unmet) lines.push(`- ${cr.behavior} — avoid: ${cr.bad}`)
+        for (const cr of unmet) lines.push(`- ${flat(cr.behavior)} — avoid: ${flat(cr.bad)}`)
         if (complete) lines.push(`(Marked COMPLETE with ${unmet.length} still unmet — recorded as accepted.)`)
       } else {
         lines.push(`All ${criteria.length} acceptance criteria met.`)
@@ -132,21 +166,21 @@ export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>
       for (const d of decisions) {
         const a = answers[d.id]
         if (!a) continue // group() only ever receives decisions the human voted on
-        lines.push(`- ${d.prompt}${withNote ? `: ${a.note ?? '(no note)'}` : (a.note?.trim() ? ` — note: ${a.note.trim()}` : '')}`)
+        lines.push(`- ${flat(d.prompt)}${withNote ? `: ${a.note ?? '(no note)'}` : (a.note?.trim() ? ` — note: ${a.note.trim()}` : '')}`)
         appendAttachments(lines, a, '  ')
       }
     }
     group('Rejected (drop) — treat each note as your next instruction:', rejected, true)
     group('Revise (on the right track) — apply each note:', revised, true)
     group('Approved as-is:', approved, false)
-    return lines.join('\n')
+    return [...lines, ...addonSection(answers)].join('\n')
   }
 
   for (const d of card.decisions) {
     if (d.id === PLAN_VERDICT_ID) continue
     const a = answers[d.id]
     if (!a) continue
-    lines.push(`- ${d.prompt}: ${chosenLabels(d, a)}${a.note ? ` — note: ${a.note}` : ''}`)
+    lines.push(`- ${flat(d.prompt)}: ${chosenLabels(d, a)}${a.note ? ` — note: ${a.note}` : ''}`)
     appendAttachments(lines, a, '  ')
   }
   if (card.stage === 'plan') {
@@ -157,5 +191,5 @@ export function buildSummary(card: Card, answers: Record<string, DecisionAnswer>
       lines.unshift(...verdictLines)
     }
   }
-  return lines.join('\n')
+  return [...lines, ...addonSection(answers)].join('\n')
 }

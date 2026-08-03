@@ -103,4 +103,22 @@ describe('parseHash / fileHash', () => {
     expect(parseHash('/folders')).toEqual({ kind: 'folders' })
     expect(parseHash('#/folders/')).toEqual({ kind: 'folders' })
   })
+  it('parses the session stream route, decoding a percent-encoded claudeSessionId', () => {
+    expect(parseHash('#/session/cc-A')).toEqual({ kind: 'session', id: 'cc-A' })
+    expect(parseHash('/session/cc-A')).toEqual({ kind: 'session', id: 'cc-A' })
+    expect(parseHash(`#/session/${encodeURIComponent('cc/weird id')}`)).toEqual({ kind: 'session', id: 'cc/weird id' })
+  })
+  it('survives a malformed percent-encoding in the session id instead of blank-screening', () => {
+    // decodeURIComponent('%E0%A4%A') throws URIError; parseHash runs during App
+    // render, so a throw here is a blank dashboard from one mangled URL.
+    expect(parseHash('#/session/%E0%A4%A')).toEqual({ kind: 'session', id: '%E0%A4%A' })
+  })
+  it('parses the report route, decoding a percent-encoded entry id', () => {
+    expect(parseHash('#/report/e1')).toEqual({ kind: 'report', id: 'e1' })
+    expect(parseHash('/report/e1')).toEqual({ kind: 'report', id: 'e1' })
+    expect(parseHash(`#/report/${encodeURIComponent('e/weird id')}`)).toEqual({ kind: 'report', id: 'e/weird id' })
+  })
+  it('survives a malformed percent-encoding in the report id instead of blank-screening', () => {
+    expect(parseHash('#/report/%E0%A4%A')).toEqual({ kind: 'report', id: '%E0%A4%A' })
+  })
 })

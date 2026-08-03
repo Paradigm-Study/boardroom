@@ -69,7 +69,7 @@ describe('security policy (wired into the daemon)', () => {
       reattachWindowMs: 24 * 60 * 60_000,
       dbPath: join(dir, 'sec.sqlite'),
       configDir: dir,
-      authToken: TOKEN,
+      localToken: TOKEN,
     }
     daemon = createDaemon(config)
   })
@@ -99,6 +99,20 @@ describe('security policy (wired into the daemon)', () => {
 
   it('rejects /api with the wrong token', async () => {
     await request(daemon.app).get('/api/cards').set('Authorization', 'Bearer nope').expect(401)
+  })
+
+  // Carried over from the retired localAuth.test.ts (its localBearerAuth was
+  // superseded by requireToken): the guard must cover the SSE stream, the mesh
+  // status/publish surface and admin writes — not just /api/cards — and must
+  // never reflect the secret back in a rejection.
+  it('guards data, status, publish, admin-write and SSE routes without reflecting the secret', async () => {
+    for (const path of ['/api/cards', '/api/mesh/status', '/api/mesh/publishes', '/events']) {
+      const res = await request(daemon.app).get(path)
+      expect(res.status, path).toBe(401)
+      expect(res.text, path).not.toContain(TOKEN)
+    }
+    await request(daemon.app).put('/api/device').send({ deviceLabel: 'renamed' }).expect(401)
+    await request(daemon.app).get('/api/mesh/status').set('Authorization', `Bearer ${TOKEN}`).expect(200)
   })
 
   it('serves the dashboard with a locked-down token cookie', async () => {

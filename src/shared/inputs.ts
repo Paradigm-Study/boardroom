@@ -1,12 +1,17 @@
 import { z } from 'zod'
 import { Block } from './blocks.js'
-import { Decision, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
+import { CARD_ADDON_ID, Decision, PLAN_VERDICT_ID, RESULTS_VERDICT_ID, SPEC_VERDICT_ID } from './card.js'
 import { Criterion } from './criterion.js'
 import { Section } from './section.js'
 
 const sessionFields = {
   project: z.string().min(1).describe('Project name or working directory — shown in the inbox'),
   title: z.string().optional().describe('Short human-readable session title'),
+  sessionKey: z.string().min(1).optional().describe(
+    'Your boardroom session key, injected into your context at session start ("Boardroom session key: …"). ' +
+    'Pass it on EVERY boardroom call — it binds this card to your session so decisions route back to you and ' +
+    'reattach/recovery works across daemon restarts. Omit only if no key was injected.',
+  ),
 }
 
 // Decision ids key the answers map and block ids key blockRefs + DOM anchors: a
@@ -25,6 +30,17 @@ function checkUniqueIds(
   const decisionIds = (input.decisions ?? []).map(d => d.id)
   if (new Set(decisionIds).size !== decisionIds.length) {
     ctx.addIssue({ code: 'custom', message: 'duplicate decision ids', path: ['decisions'] })
+  }
+  // CARD_ADDON_ID keys the human's global add-on in the answers map — an
+  // agent-authored decision with that id would be overwritten by the add-on
+  // text at decide time (and its answer misread as the add-on).
+  const addonIdx = decisionIds.indexOf(CARD_ADDON_ID)
+  if (addonIdx !== -1) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `decision id "${CARD_ADDON_ID}" is reserved for the card-level add-on`,
+      path: ['decisions', addonIdx, 'id'],
+    })
   }
 }
 
@@ -305,3 +321,13 @@ export const ReviewResultsInput = z.object({
   }
 })
 export type ReviewResultsInput = z.infer<typeof ReviewResultsInput>
+
+// The non-blocking report gate: convey findings/results with NO decision
+// attached. No decisions, no sections in P1 — just glanceable summary blocks;
+// the dashboard offers a full-size drawer for the same blocks.
+export const PresentReportInput = z.object({
+  ...sessionFields,
+  headline: z.string().min(1).describe('One-line summary of what this report conveys'),
+  blocks: z.array(Block).min(1).describe('The report content — glanceable summary blocks; the dashboard offers a full-size drawer'),
+}).superRefine(checkUniqueIds)
+export type PresentReportInput = z.infer<typeof PresentReportInput>

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Card, Criterion } from '../shared/card.js'
 import { SPEC_VERDICT_ID } from '../shared/card.js'
 import { compileResults } from './compile.js'
-import { buildSummary } from './summary.js'
+import { buildSummary } from '../shared/summary.js'
 
 // Adversarial coverage for the spec gate, mirroring the results-gate adversarial
 // suites: the awkward shapes a real agent/human can produce that must degrade
@@ -54,7 +54,7 @@ describe('spec gate — adversarial', () => {
         { id: 'a', criterionId: 'cr1', claim: 'cookie path verified', evidence: [{ id: 'e', type: 'markdown' as const, text: 'x' }] },
         { id: 'b', criterionId: 'cr1', claim: 'older draft attempt', evidence: [{ id: 'e', type: 'markdown' as const, text: 'y' }] },
       ],
-    }, 'claude-code')
+    }, { agent: 'claude-code' })
     const s = buildSummary(card, {
       'claim:a': { chosen: ['approve'] },
       'claim:b': { chosen: ['reject'], note: 'ignore this one' },
@@ -71,7 +71,7 @@ describe('spec gate — adversarial', () => {
       project: 'demo', headline: 'done',
       spec: { criteria },
       claims: [{ id: 'a', criterionId: 'cr1', claim: 'cookie path verified', evidence: [{ id: 'e', type: 'markdown' as const, text: 'x' }] }],
-    }, 'claude-code')
+    }, { agent: 'claude-code' })
     const s = buildSummary(card, {
       'claim:a': { chosen: ['approve'] },
       results_verdict: { chosen: ['continue'] },
@@ -89,7 +89,7 @@ describe('spec gate — adversarial', () => {
       project: 'demo', headline: 'done',
       spec: { criteria },
       claims: [{ id: 'a', criterionId: 'ghost', claim: 'mislabeled', evidence: [{ id: 'e', type: 'markdown' as const, text: 'x' }] }],
-    }, 'claude-code')
+    }, { agent: 'claude-code' })
     const s = buildSummary(card, {
       'claim:a': { chosen: ['approve'] },
       results_verdict: { chosen: ['continue'] },

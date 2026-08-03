@@ -10,7 +10,7 @@ const md = (id: string, text = 'x') => ({ id, type: 'markdown' as const, text })
 // meaningful assertion target too.
 function parseAndCompile(input: unknown) {
   const parsed = ReviewResultsInput.parse(input)
-  return compileResults(parsed, 'claude-code')
+  return compileResults(parsed, { agent: 'claude-code' })
 }
 
 describe('compileResults — adversarial', () => {

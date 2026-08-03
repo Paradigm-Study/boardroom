@@ -9,11 +9,15 @@ import { Store } from './store.js'
 class FakeServer extends EventEmitter {
   closed = 0
   closeAllConnectionsCalls = 0
+  closeIdleConnectionsCalls = 0
   private cb?: (err?: Error) => void
   close(cb?: (err?: Error) => void): this {
     this.closed++
     this.cb = cb
     return this
+  }
+  closeIdleConnections(): void {
+    this.closeIdleConnectionsCalls++
   }
   closeAllConnections(): void {
     this.closeAllConnectionsCalls++
@@ -177,6 +181,7 @@ describe('installSignalHandlers', () => {
       capturer,
       proc,
       exit: exit as unknown as (code?: number) => never,
+      drainGraceMs: 0, // no flush window: force-end connections synchronously
     })
 
     emit('SIGTERM')
@@ -210,6 +215,7 @@ describe('installSignalHandlers', () => {
       quiesce: () => order.push('quiesce'),
       proc,
       exit: exit as unknown as (code?: number) => never,
+      drainGraceMs: 0, // force-end synchronously so the ordering is observable without timers
     })
 
     emit('SIGTERM')
@@ -283,6 +289,7 @@ describe('installSignalHandlers', () => {
       quiesce: () => store.orphanAllPending(),
       proc,
       exit: exit as unknown as (code?: number) => never,
+      drainGraceMs: 0, // fire closeAllConnections (→ queue.disconnect) synchronously
     })
 
     emit('SIGTERM')
@@ -293,6 +300,229 @@ describe('installSignalHandlers', () => {
     expect(after?.status).toBe('orphaned')
     expect(after?.orphanedReason).toBe('boot') // NOT 'disconnect'
     store.close()
+  })
+
+  // Phase 1 clean-sever flush window: quiesce resolves live gates with a PARKED
+  // sentinel; that result must FLUSH over the still-open socket before it's
+  // destroyed. So closeIdleConnections fires immediately, but closeAllConnections
+  // is deferred by a bounded grace — otherwise the socket dies before the MCP
+  // tool-result is written and the agent gets a raw drop instead of the STOP.
+  it('defers closeAllConnections by the drain grace so the parked result can flush; closes idle connections immediately', () => {
+    vi.useFakeTimers()
+    try {
+      const { proc, emit } = fakeProcess()
+      const server = new FakeServer()
+      const store = { close: () => {} }
+      const exit = vi.fn()
+
+      installSignalHandlers({
+        server: server as unknown as import('node:http').Server,
+        store,
+        proc,
+        exit: exit as unknown as (code?: number) => never,
+        drainGraceMs: 300,
+      })
+
+      emit('SIGTERM')
+      // Idle keep-alives can go at once; the active gate sockets get the grace.
+      expect(server.closeIdleConnectionsCalls).toBe(1)
+      expect(server.closeAllConnectionsCalls).toBe(0)
+      vi.advanceTimersByTime(299)
+      expect(server.closeAllConnectionsCalls).toBe(0) // still within the flush window
+      vi.advanceTimersByTime(1)
+      expect(server.closeAllConnectionsCalls).toBe(1) // grace elapsed → hard-close
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clamps a misconfigured grace below the watchdog so the clean sever still fires before exit', () => {
+    vi.useFakeTimers()
+    try {
+      const { proc, emit } = fakeProcess()
+      const server = new FakeServer()
+      const order: string[] = []
+      const store = { close: () => order.push('store') }
+      const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+      installSignalHandlers({
+        server: server as unknown as import('node:http').Server,
+        store,
+        proc,
+        exit: exit as unknown as (code?: number) => never,
+        drainGraceMs: 10_000, // operator sets a grace LONGER than the watchdog
+        forceExitMs: 5_000,
+      })
+
+      emit('SIGTERM')
+      // The grace must be clamped under the watchdog: closeAllConnections fires
+      // (clean sever preserved) strictly before the force-exit, not skipped.
+      vi.advanceTimersByTime(4_999)
+      expect(server.closeAllConnectionsCalls).toBe(1)
+      expect(order).toEqual([]) // not yet exited
+      vi.advanceTimersByTime(1)
+      expect(order).toEqual(['store', 'exit:0'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the force-exit watchdog still bounds a wedged drain even with a grace window', () => {
+    vi.useFakeTimers()
+    try {
+      const { proc, emit } = fakeProcess()
+      const server = new FakeServer()
+      const order: string[] = []
+      const store = { close: () => order.push('store') }
+      const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+      installSignalHandlers({
+        server: server as unknown as import('node:http').Server,
+        store,
+        proc,
+        exit: exit as unknown as (code?: number) => never,
+        drainGraceMs: 300,
+        forceExitMs: 5_000,
+      })
+
+      emit('SIGTERM')
+      // server.close callback never fires; grace elapses, closeAllConnections runs,
+      // but the socket stays wedged — the watchdog must still force the exit.
+      vi.advanceTimersByTime(300)
+      expect(server.closeAllConnectionsCalls).toBe(1)
+      expect(order).toEqual([])
+      vi.advanceTimersByTime(4_700)
+      expect(order).toEqual(['store', 'exit:0'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('parks live gates (parkAllLive) on shutdown so the agent gets a STOP sentinel, not a raw drop', async () => {
+    const store = new Store(':memory:')
+    const queue = new Queue(store)
+    const parked: unknown[] = []
+    const card: Card = {
+      id: 'gate-2', stage: 'clarify',
+      session: { agent: 'claude-code', project: 'demo' },
+      headline: 'Which way?', blocks: [],
+      decisions: [{ id: 'd', prompt: 'Pick', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+      status: 'pending', createdAt: new Date().toISOString(), fingerprint: 'fp-2',
+    }
+    queue.submit(card, { resolve: r => parked.push(r), reject: () => {} })
+
+    const { proc, emit } = fakeProcess()
+    const server = new FakeServer()
+    const exit = vi.fn()
+    installSignalHandlers({
+      server: server as unknown as import('node:http').Server,
+      store: { close: () => {} },
+      // The real wiring app.ts uses: park live waiters, then sweep the rest.
+      quiesce: () => { queue.parkAllLive(); store.orphanAllPending() },
+      proc,
+      exit: exit as unknown as (code?: number) => never,
+      drainGraceMs: 0,
+    })
+
+    emit('SIGTERM')
+    server.finishClose()
+    await Promise.resolve()
+
+    expect(parked).toEqual([{ parked: true, cardId: 'gate-2' }])
+    expect(store.get('gate-2')?.orphanedReason).toBe('boot')
+    store.close()
+  })
+
+  it('detaches the mesh forwarder immediately and awaits flush() before closing the store', async () => {
+    const { proc, emit } = fakeProcess()
+    const server = new FakeServer()
+    const order: string[] = []
+    const store = { close: () => order.push('store') }
+    let releaseFlush!: () => void
+    const meshForwarder = {
+      stop: () => order.push('mesh-stop'),
+      flush: () => {
+        order.push('mesh-flush')
+        return new Promise<void>(resolve => { releaseFlush = resolve })
+      },
+    }
+    const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+    installSignalHandlers({
+      server: server as unknown as import('node:http').Server,
+      store,
+      meshForwarder,
+      proc,
+      exit: exit as unknown as (code?: number) => never,
+    })
+
+    emit('SIGTERM')
+    // Detached up front (like the capturer) so no new lifecycle records enqueue
+    // mid-drain; flush is NOT requested until the server has finished closing.
+    expect(order).toEqual(['mesh-stop'])
+    server.finishClose()
+    // The close callback kicks off the flush, and the store must stay open (and
+    // the process alive) while the in-flight relay POST / spool write settles.
+    expect(order).toEqual(['mesh-stop', 'mesh-flush'])
+    releaseFlush()
+    await Promise.resolve()
+    expect(order).toEqual(['mesh-stop', 'mesh-flush', 'store', 'exit:0'])
+  })
+
+  it('the watchdog still force-exits when a mesh flush never settles', () => {
+    vi.useFakeTimers()
+    try {
+      const { proc, emit } = fakeProcess()
+      const server = new FakeServer()
+      const order: string[] = []
+      const store = { close: () => order.push('store') }
+      const meshForwarder = {
+        stop: () => {},
+        flush: () => new Promise<void>(() => {}), // wedged: never settles
+      }
+      const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+
+      installSignalHandlers({
+        server: server as unknown as import('node:http').Server,
+        store,
+        meshForwarder,
+        proc,
+        exit: exit as unknown as (code?: number) => never,
+        forceExitMs: 5_000,
+      })
+
+      emit('SIGTERM')
+      server.finishClose() // the server drains fine, but the flush hangs
+      expect(order).toEqual([])
+      vi.advanceTimersByTime(5_000)
+      expect(order).toEqual(['store', 'exit:0'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still exits if the mesh forwarder stop() throws (logged), like every other drain step', async () => {
+    const { proc, emit } = fakeProcess()
+    const server = new FakeServer()
+    const order: string[] = []
+    const store = { close: () => order.push('store') }
+    const exit = vi.fn((code?: number) => { order.push(`exit:${code ?? 0}`) })
+    const log = vi.fn()
+
+    installSignalHandlers({
+      server: server as unknown as import('node:http').Server,
+      store,
+      meshForwarder: { stop: () => { throw new Error('detach wedged') }, flush: () => Promise.resolve() },
+      proc,
+      exit: exit as unknown as (code?: number) => never,
+      log,
+    })
+
+    emit('SIGTERM')
+    server.finishClose()
+    await Promise.resolve()
+    expect(order).toEqual(['store', 'exit:0'])
+    expect(log).toHaveBeenCalledWith('[shutdown] mesh forwarder stop failed:', expect.any(Error))
   })
 
   it('exits even if store.close() throws (logs the failure), so a redeploy is never blocked', async () => {

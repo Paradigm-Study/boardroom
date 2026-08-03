@@ -1,4 +1,5 @@
 import express from 'express'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,8 +9,10 @@ import type { Card } from '../shared/card.js'
 import { CapturedSession } from '../shared/session.js'
 import { buildApiRouter, isWithinRoot, safeSegment } from './api.js'
 import { Block } from '../shared/blocks.js'
+import type { Entry } from '../shared/entry.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
+import type { MeshForwarder, MeshPublishEvent } from './meshForward.js'
 
 function card(id: string): Card {
   return {
@@ -19,6 +22,43 @@ function card(id: string): Card {
     decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
     status: 'pending', createdAt: new Date().toISOString(),
   }
+}
+
+// Small local factory for a fully-formed pending Card, with overrides — used by
+// the session view-model tests below where cards are inserted directly via
+// store.insert (not queue.submit) so they can carry a specific claudeSessionId
+// and createdAt without going through the queue's fingerprint/reattach machinery.
+function cardFixture(overrides: Partial<Card> & { id: string }): Card {
+  return {
+    stage: 'clarify',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h', blocks: [],
+    decisions: [{ id: 'd1', prompt: 'p', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+    status: 'pending', createdAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+// Small local factory for a CapturedSession, with overrides.
+function capturedFixture(overrides: Partial<CapturedSession> & { sessionId: string }): CapturedSession {
+  return {
+    machineId: 'm', pid: 1, cwd: '/tmp/x', project: 'x',
+    status: 'alive', capturedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+// Small local factory for a ReportEntry, with overrides — used by the entries
+// route + SSE tests below.
+function reportFixture(overrides: Partial<Entry> & { id: string }): Entry {
+  return {
+    type: 'report',
+    session: { agent: 'claude-code', project: 'demo' },
+    headline: 'h',
+    blocks: [{ id: 'b1', type: 'markdown', text: 'content' }],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  } as Entry
 }
 
 const noop = { resolve: () => {}, reject: () => {} }
@@ -49,6 +89,21 @@ describe('GET /api/widgets', () => {
     expect(Array.isArray(res.body)).toBe(true)
     expect(res.body).toHaveLength(Block.options.length)
     expect(res.body.every((e: { type?: string; name?: string; whenToUse?: string }) => !!e.type && !!e.name && !!e.whenToUse)).toBe(true)
+  })
+})
+
+describe('Mesh publisher status', () => {
+  it('reports a stable disabled state when Mesh is not configured', async () => {
+    const status = await request(app).get('/api/mesh/status').expect(200)
+    expect(status.body).toEqual({
+      configured: false,
+      teamId: 'legacy-local',
+      queued: 0,
+      delivered: 0,
+      terminal: 0,
+    })
+    const publishes = await request(app).get('/api/mesh/publishes').expect(200)
+    expect(publishes.body).toEqual([])
   })
 })
 
@@ -108,6 +163,25 @@ describe('POST /api/cards/:id/decide', () => {
   })
 })
 
+describe('POST /api/cards/:id/dismiss', () => {
+  it('dismisses an orphaned card and drops it from the actionable surfaces', async () => {
+    const { cardId, gen } = queue.submit(card('c1'), noop)
+    queue.disconnect(cardId, gen)                                   // orphaned
+    const res = await request(app).post('/api/cards/c1/dismiss').expect(200)
+    expect(res.body.card.status).toBe('dismissed')
+    expect(store.get('c1')?.status).toBe('dismissed')
+    await request(app).get('/api/cards?status=orphaned').expect(200).then(r => expect(r.body).toHaveLength(0))
+  })
+
+  it('maps errors: 404 unknown, 409 on an already-decided card', async () => {
+    await request(app).post('/api/cards/nope/dismiss').expect(404)
+    queue.submit(card('c1'), noop)
+    queue.decide('c1', { d1: { chosen: ['a'] } })
+    const res = await request(app).post('/api/cards/c1/dismiss').expect(409)
+    expect(res.body.error).toMatch(/decided/)
+  })
+})
+
 describe('POST /api/cards/:id/attachments', () => {
   it('stores an uploaded file and returns a durable attachment reference', async () => {
     queue.submit(card('c1'), noop)
@@ -134,6 +208,25 @@ describe('POST /api/cards/:id/attachments', () => {
 
     const downloaded = await request(app).get(res.body.url).expect(200)
     expect(Buffer.from(downloaded.body).toString('utf8')).toBe('fake-image-bytes')
+  })
+
+  // The global card-level add-on is a reserved answer channel, never a decision
+  // id — the answer-id guard must accept it or the add-on is attachment-dead on
+  // every stage (the human's file just 400s).
+  it('accepts an upload for the reserved card_addon channel', async () => {
+    queue.submit(card('c1'), noop)
+
+    const res = await request(app)
+      .post('/api/cards/c1/attachments')
+      .set('content-type', 'image/png')
+      .set('x-answer-id', 'card_addon')
+      .set('x-field', 'note')
+      .set('x-file-name', 'mockup.png')
+      .send(Buffer.from('addon-bytes'))
+      .expect(201)
+
+    expect(res.body).toMatchObject({ name: 'mockup.png', field: 'note' })
+    expect(existsSync(res.body.path)).toBe(true)
   })
 
   it('returns 404 when uploading to a nonexistent card', async () => {
@@ -422,6 +515,102 @@ describe('GET /events', () => {
     expect(frames[0].total).toBe(1) // snapshot: one pending
     expect(frames[1].total).toBe(0) // after decide: cleared
   })
+
+  // Collect every SSE frame (any event type) until `enough` arrive, tagging each
+  // with its `event:` line so callers can filter by frame kind. Mirrors
+  // collectTrayFrames's destroy-on-enough pattern.
+  async function collectFrames(
+    enough: number,
+    onFrame?: (count: number) => void,
+  ): Promise<{ event: string; data: Record<string, unknown> }[]> {
+    const frames: { event: string; data: Record<string, unknown> }[] = []
+    await request(app)
+      .get('/events')
+      .buffer(false)
+      .parse((res, done) => {
+        let buf = ''
+        res.on('data', (chunk: Buffer) => {
+          buf += chunk.toString()
+          let idx
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const frame = buf.slice(0, idx); buf = buf.slice(idx + 2)
+            const eventLine = frame.split('\n').find(l => l.startsWith('event:'))
+            const dataLine = frame.split('\n').find(l => l.startsWith('data:'))
+            if (!eventLine || !dataLine) continue
+            frames.push({ event: eventLine.slice(6).trim(), data: JSON.parse(dataLine.slice(5).trim()) })
+            onFrame?.(frames.length)
+            if (frames.length >= enough) { (res as unknown as { destroy(): void }).destroy(); done(null, null); return }
+          }
+        })
+      })
+      .catch(() => {})
+    return frames
+  }
+
+  // Open the stream, wait for the initial tray snapshot (proof the listener is
+  // registered), THEN call postReport and assert the entry frame arrives.
+  it('emits `event: entry` with the entry JSON after queue.postReport (listener attached before firing)', async () => {
+    const report = reportFixture({ id: 'e1', claudeSessionId: 'cc-1' })
+    const frames = await collectFrames(2, n => {
+      if (n === 1) queue.postReport(report) // n===1 is the connect-time tray snapshot
+    })
+    const entryFrame = frames.find(f => f.event === 'entry')
+    expect(entryFrame).toBeDefined()
+    expect(entryFrame!.data).toEqual(report)
+  })
+
+  it('emits publisher receipt changes as `event: mesh` without changing card/tray frames', async () => {
+    const emitter = new EventEmitter()
+    const publisher = {
+      mesh: { url: 'http://127.0.0.1:4600', token: 'secret', person: 'alice' },
+      stop: () => {},
+      flush: () => Promise.resolve(),
+      close: () => {},
+      status: () => ({ configured: true as const, teamId: 'legacy-local', queued: 1, delivered: 0, terminal: 0 }),
+      listPublishes: () => [],
+      on: (event: 'status', listener: (status: MeshPublishEvent) => void) => { emitter.on(event, listener) },
+      off: (event: 'status', listener: (status: MeshPublishEvent) => void) => { emitter.off(event, listener) },
+    } satisfies MeshForwarder
+    app = express()
+    app.use(express.json({ limit: '4mb' }))
+    app.use(buildApiRouter(queue, store, {
+      attachmentDir: join(dir, 'attachments'),
+      configDir: dir,
+      meshForwarder: publisher,
+    }))
+    const event: MeshPublishEvent = {
+      type: 'delivered',
+      idempotencyKey: 'boardroom:c1:raised',
+      cardId: 'c1',
+      event: 'raised',
+      seq: 7,
+    }
+    const frames = await collectFrames(2, n => {
+      if (n === 1) emitter.emit('status', event)
+    })
+    expect(frames.find(frame => frame.event === 'mesh')?.data).toEqual(event)
+    expect(frames.filter(frame => frame.event === 'tray')).toHaveLength(1)
+  })
+
+  // HARD constraint (spec criterion tray-separation): the entry listener must
+  // NEVER call sendTray() — the tray never counts entries. Prove it directly:
+  // post several reports on an open connection and assert not one extra tray
+  // frame appears beyond the single connect-time snapshot.
+  it('tray-separation: entry activity never emits a tray frame (only the connect-time snapshot)', async () => {
+    const frames = await collectFrames(4, n => {
+      if (n === 1) {
+        queue.postReport(reportFixture({ id: 'e1' }))
+        queue.postReport(reportFixture({ id: 'e2' }))
+        queue.postReport(reportFixture({ id: 'e3' }))
+      }
+    })
+    const trayFrames = frames.filter(f => f.event === 'tray')
+    const entryFrames = frames.filter(f => f.event === 'entry')
+    expect(entryFrames).toHaveLength(3)
+    // Exactly the single connect-time snapshot — no tray frame was triggered by
+    // any of the three postReport calls above.
+    expect(trayFrames).toHaveLength(1)
+  })
 })
 
 describe('POST /api/session (Phase 2 wake registry)', () => {
@@ -458,6 +647,121 @@ describe('GET /api/sessions', () => {
     const res = await request(app).get('/api/sessions').expect(200)
     expect(res.body).toHaveLength(1)
     expect(res.body[0].sessionId).toBe('s1')
+  })
+
+  it('decorates captured sessions with status + counts', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-1', status: 'alive' }))
+    store.insert(cardFixture({ id: 'k1', claudeSessionId: 'cc-1' })) // status 'pending'
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-1')
+    expect(s.sessionStatus).toBe('needs-decision')
+    expect(s.pendingCount).toBe(1)
+    expect(s.cardCount).toBe(1)
+  })
+
+  it('reports zero counts and an idle-ish status for a session with no cards', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-empty', status: 'alive' }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-empty')
+    expect(s.pendingCount).toBe(0)
+    expect(s.cardCount).toBe(0)
+    expect(s.sessionStatus).toBe('idle')
+  })
+
+  it('excludes dismissed cards from session status and cardCount', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-dis', status: 'ended' }))
+    store.insert(cardFixture({ id: 'gone', claudeSessionId: 'cc-dis', status: 'dismissed', dismissedAt: new Date().toISOString() }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-dis')
+    expect(s.cardCount).toBe(0)                 // a dismissed card is not counted
+    expect(s.pendingCount).toBe(0)
+    expect(s.sessionStatus).toBe('ended')       // not derived from the dismissed card's createdAt
+  })
+
+  // NEW: the route must thread options.reattachWindowMs into deriveSessionStatus —
+  // same requirement as the tray VM (buildTrayVM) right below it in api.ts — so a
+  // reconnecting boot-orphan card's status honors the daemon's CONFIGURED window,
+  // not always the 24h default.
+  it('honors options.reattachWindowMs for a reconnecting boot-orphan card', async () => {
+    const customApp = express()
+    customApp.use(express.json({ limit: '4mb' }))
+    customApp.use(buildApiRouter(queue, store, {
+      attachmentDir: join(dir, 'attachments'),
+      configDir: dir,
+      reattachWindowMs: 5 * 60_000, // 5 minutes — much shorter than the 24h default
+    }))
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-boot', status: 'alive' }))
+    store.insert(cardFixture({
+      id: 'k-boot', claudeSessionId: 'cc-boot', status: 'orphaned',
+      orphanedReason: 'boot', orphanedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10m ago
+    }))
+    const res = await request(customApp).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-boot')
+    // 10 minutes old vs a configured 5-minute window → already expired, so this must
+    // NOT be reported as needs-decision (it would be, under the 24h default).
+    expect(s.sessionStatus).not.toBe('needs-decision')
+  })
+
+  // pendingCount must agree with sessionStatus: both count "on the human's plate"
+  // (needsHuman), not the literal status string. A reconnecting boot-orphan inside
+  // the reattach window drives sessionStatus to needs-decision — a pendingCount of 0
+  // beside that status would be a self-contradicting view-model row.
+  it('counts a reconnecting boot-orphan card in pendingCount, matching sessionStatus', async () => {
+    store.upsertCaptured(capturedFixture({ sessionId: 'cc-orphan', status: 'alive' }))
+    store.insert(cardFixture({
+      id: 'k-orphan', claudeSessionId: 'cc-orphan', status: 'orphaned',
+      orphanedReason: 'boot', orphanedAt: new Date().toISOString(), // just now — inside any window
+    }))
+    const res = await request(app).get('/api/sessions').expect(200)
+    const s = res.body.find((x: { sessionId: string }) => x.sessionId === 'cc-orphan')
+    expect(s.sessionStatus).toBe('needs-decision')
+    expect(s.pendingCount).toBe(1)
+  })
+})
+
+describe("GET /api/sessions/:id/cards", () => {
+  it("returns only that session's cards in stream order (createdAt ascending)", async () => {
+    store.insert(cardFixture({ id: 'k1', claudeSessionId: 'cc-1', createdAt: '2026-07-02T10:00:00.000Z' }))
+    store.insert(cardFixture({ id: 'k2', claudeSessionId: 'cc-1', createdAt: '2026-07-02T11:00:00.000Z' }))
+    store.insert(cardFixture({ id: 'other', claudeSessionId: 'cc-2' }))
+    const res = await request(app).get('/api/sessions/cc-1/cards').expect(200)
+    expect(res.body.map((c: { id: string }) => c.id)).toEqual(['k1', 'k2'])
+  })
+
+  it('returns an empty array for a session with no cards (not 404)', async () => {
+    const res = await request(app).get('/api/sessions/no-such-session/cards').expect(200)
+    expect(res.body).toEqual([])
+  })
+})
+
+describe('GET /api/entries', () => {
+  it('returns all entries in FIFO order (adversarial insert order)', async () => {
+    // Insert the LATER-timestamped entry first — the route must sort by
+    // created_at, not by insertion/table order.
+    store.insertEntry(reportFixture({ id: 'e2', createdAt: '2026-07-07T10:01:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'e1', createdAt: '2026-07-07T10:00:00.000Z' }))
+    const res = await request(app).get('/api/entries').expect(200)
+    expect(res.body.map((e: Entry) => e.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('returns an empty array when there are no entries', async () => {
+    const res = await request(app).get('/api/entries').expect(200)
+    expect(res.body).toEqual([])
+  })
+})
+
+describe("GET /api/sessions/:id/entries", () => {
+  it("returns only that session's entries in FIFO order", async () => {
+    store.insertEntry(reportFixture({ id: 'e2', claudeSessionId: 'cc-1', createdAt: '2026-07-07T11:00:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'e1', claudeSessionId: 'cc-1', createdAt: '2026-07-07T10:00:00.000Z' }))
+    store.insertEntry(reportFixture({ id: 'other', claudeSessionId: 'cc-2', createdAt: '2026-07-07T09:00:00.000Z' }))
+    const res = await request(app).get('/api/sessions/cc-1/entries').expect(200)
+    expect(res.body.map((e: Entry) => e.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('returns an empty array for a session with no entries (not 404)', async () => {
+    const res = await request(app).get('/api/sessions/no-such-session/entries').expect(200)
+    expect(res.body).toEqual([])
   })
 })
 

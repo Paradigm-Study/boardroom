@@ -6,7 +6,7 @@ import type { Card } from '../shared/card.js'
 import type { Config } from './config.js'
 import { Queue } from './queue.js'
 import { Store } from './store.js'
-import { isBenignNotifierNoise, startAutoOpen, startNotifications } from './notify.js'
+import { isBenignNotifierNoise, notifyWakeFailed, startAutoOpen, startNotifications } from './notify.js'
 
 const notifyMock = vi.fn()
 vi.mock('node-notifier', () => ({ default: { notify: (...args: unknown[]) => notifyMock(...args) } }))
@@ -78,6 +78,18 @@ beforeEach(() => {
 afterEach(() => {
   store.close()
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('notifyWakeFailed', () => {
+  it('tells the human the decision was NOT delivered and deep-links to the card', () => {
+    notifyWakeFailed(card('c9'), 4040)
+    expect(notifyMock).toHaveBeenCalledTimes(1)
+    const opts = notifyMock.mock.calls[0][0]
+    expect(opts.title).toContain('wake failed')
+    expect(opts.message).toContain('h') // the card headline
+    expect(opts.message.toLowerCase()).toContain('not delivered')
+    expect(opts.open).toBe('http://127.0.0.1:4040/#/card/c9')
+  })
 })
 
 describe('startNotifications', () => {
