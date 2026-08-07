@@ -13,11 +13,11 @@
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "electron": "^33.0.0",
+    "electron": "^43.3.0",
     "electron-builder": "^25.1.8"
   },
   "dependencies": {
-    "menubar": "^9.5.1"
+    "menubar": "^9.5.3"
   },
   "build": {
     "appId": "com.boardroom.menubar",
