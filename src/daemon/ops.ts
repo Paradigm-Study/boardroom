@@ -116,9 +116,12 @@ export function doctor(configDir: string, repair = false): DoctorReport {
   }
   const tokenConfigured = !!process.env.BOARDROOM_LOCAL_TOKEN ||
     existsSync(process.env.BOARDROOM_LOCAL_TOKEN_FILE || join(configDir, 'local-token'))
+  // Since 2026-08-02 loadConfig mints a token when none is configured, so a
+  // running daemon is never unguarded — "unset" here just means the daemon has
+  // not booted in this config dir yet (or the file was removed by hand).
   push({
     name: 'local-auth', ok: tokenConfigured, severity: tokenConfigured ? 'info' : 'warning',
-    detail: tokenConfigured ? 'install token configured' : 'unset (legacy development mode only)',
+    detail: tokenConfigured ? 'local token configured' : 'no local token yet — the daemon mints one on first boot',
   })
   return { ok: checks.every(check => check.severity !== 'error' || check.ok), configDir, checks }
 }

@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly run on main with no code change. Catches the two things that rotted
+  # silently in July/August 2026 while nothing was being merged: date-dependent
+  # tests (fixtures aged past a TTL) and new npm advisories against an unchanged
+  # lockfile. A failing scheduled run emails the repo owner by default.
+  schedule:
+    - cron: '0 16 * * 1' # Mondays 09:00 America/Los_Angeles (16:00 UTC)
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,6 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # `check` is the required status on main (branch protection). Keep it the
+  # single gate: everything that must block a merge lives here.
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -28,5 +37,31 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      # The dashboard bundle. Typecheck does not exercise Vite (asset imports,
+      # CSS, chunking) — a broken build was reaching main unnoticed.
+      - name: Build dashboard bundle
+        run: npm run build:web
       - name: Audit root dependencies
         run: npm audit --audit-level=high
+
+  # Visibility, not a gate: the menubar (Electron) tree carries high advisories
+  # that all resolve to MAJOR bumps of electron / electron-builder — a runtime
+  # upgrade of the desktop app that gets its own PR and its own testing, not a
+  # slip-in. Until that lands this job is expected red; continue-on-error keeps
+  # it from blocking while keeping the count visible in every run.
+  audit-menubar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Audit menubar dependencies (informational)
+        working-directory: menubar
+        # --package-lock-only: audit the lockfile without running menubar's
+        # postinstall (icon generation needs macOS iconutil).
+        run: npm audit --audit-level=high --package-lock-only
