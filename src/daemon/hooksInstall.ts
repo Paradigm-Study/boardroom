@@ -3,7 +3,7 @@
 // own — every read/write here is defensive: unknown keys and unrelated hook
 // entries must survive untouched, and a malformed file must never be silently
 // clobbered.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -102,8 +102,16 @@ function envObject(settings: SettingsShape): Record<string, unknown> | undefined
 // whether to fail the request rather than risk overwriting a file we can't parse.
 function readSettings(): SettingsShape {
   const p = claudeSettingsPath()
-  if (!existsSync(p)) return {}
-  const raw = readFileSync(p, 'utf8').trim()
+  // Read directly and treat ENOENT as "no settings yet" — no separate existence
+  // probe (a check-then-read pair is a TOCTOU window CodeQL rightly flags on a
+  // file another process also writes).
+  let raw: string
+  try {
+    raw = readFileSync(p, 'utf8').trim()
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw err
+  }
   if (!raw) return {}
   const parsed: unknown = JSON.parse(raw)
   // A non-object root (array, string, number) accepts property writes but drops
@@ -117,12 +125,24 @@ function readSettings(): SettingsShape {
 
 function writeSettings(settings: SettingsShape): void {
   const p = claudeSettingsPath()
+  mkdirSync(dirname(p), { recursive: true })
   // Snapshot the pre-mutation file every time we touch it, so a bad edit is
   // always one copy away from undo — this file is outside boardroom's own
   // config dir and controls the whole Claude Code install, not just this app.
-  if (existsSync(p)) writeFileSync(`${p}.bak`, readFileSync(p, 'utf8'))
-  else mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, `${JSON.stringify(settings, null, 2)}\n`)
+  // Read-then-copy with ENOENT as the first-install case; no exists() probe.
+  try {
+    writeFileSync(`${p}.bak`, readFileSync(p, 'utf8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  // Atomic replace: write a sibling temp file, then rename it over the target.
+  // Claude Code reads settings.json at every session start; a direct write could
+  // hand it a half-written file, and a crash mid-write would leave nothing
+  // valid behind. rename() within one directory is atomic on POSIX, so readers
+  // see either the old file or the new one, never a torn one.
+  const tmp = `${p}.tmp-${process.pid}`
+  writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`)
+  renameSync(tmp, p)
 }
 
 function sameMatcher(a: string | undefined, b: string | undefined): boolean {

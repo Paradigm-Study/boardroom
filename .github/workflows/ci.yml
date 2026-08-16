@@ -47,12 +47,12 @@ jobs:
   # Visibility, not a gate: the menubar (Electron) tree carries high advisories
   # that all resolve to MAJOR bumps of electron / electron-builder — a runtime
   # upgrade of the desktop app that gets its own PR and its own testing, not a
-  # slip-in. Until that lands this job is expected red; continue-on-error keeps
-  # it from blocking while keeping the count visible in every run.
+  # slip-in. The job always passes; the advisory count is raised as a warning
+  # annotation on the run (a red-but-ignored check just trains people to ignore
+  # CI). Promote to a hard gate once the Electron majors land.
   audit-menubar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,4 +64,11 @@ jobs:
         working-directory: menubar
         # --package-lock-only: audit the lockfile without running menubar's
         # postinstall (icon generation needs macOS iconutil).
-        run: npm audit --audit-level=high --package-lock-only
+        run: |
+          if npm audit --audit-level=high --package-lock-only; then
+            echo "::notice title=menubar audit::no high/critical advisories"
+          else
+            count=$(npm audit --json --package-lock-only 2>/dev/null \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).vulnerabilities||{};console.log(Object.values(v).filter(x=>x.severity==="high"||x.severity==="critical").length)})')
+            echo "::warning title=menubar audit::${count} high/critical advisories in menubar/ — all resolve to electron / electron-builder MAJOR bumps (see open Dependabot PRs). Informational until those land."
+          fi
