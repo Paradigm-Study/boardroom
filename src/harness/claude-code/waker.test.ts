@@ -6,7 +6,7 @@ import type { Card } from '../../shared/card.js'
 import { Queue } from '../../daemon/queue.js'
 import { Store } from '../../daemon/store.js'
 import { AuthStore } from '../../daemon/authStore.js'
-import { makeDefaultSpawn, resolveResumeEnv, resumeCredentialEnv, resumePath, Waker } from './waker.js'
+import { makeDefaultSpawn, resolveClaudeBin, resolveResumeEnv, resumeCredentialEnv, resumePath, Waker } from './waker.js'
 
 function decided(over: Partial<Card> = {}): Card {
   return {
@@ -292,6 +292,74 @@ describe('Waker', () => {
     }
   })
 
+  it('surfaces a spawn failure (e.g. ENOENT) via onWakeFailed and keeps the card claimable', () => {
+    const failures: string[] = []
+    const failing = new Waker(store, {
+      spawn: (_bin, _args, _cwd, hooks) => hooks?.onFailure?.('spawn claude-test ENOENT'),
+      claudeBin: 'claude-test',
+      onWakeFailed: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-enoent' }))
+    failing.onCard(decided({ fingerprint: 'fp-enoent' }))
+    expect(failures).toEqual(['spawn claude-test ENOENT'])
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp-enoent' }, Date.now())?.id).toBe('c1')
+  })
+
+  // Delivery is gated on EXIT 0, not on the process launching. This is the
+  // opposite of the pre-merge local behavior (which stamped delivered on the
+  // 'spawn' event and only notified afterwards) — that is exactly the 401-era
+  // bug: every resume launched fine, died on its first API call, and the
+  // spawn-stamp consumed the decision unread.
+  it('a launched-then-died resume (non-zero exit) does NOT mark delivered — stays claimable', () => {
+    const failures: string[] = []
+    const diedAtRuntime = new Waker(store, {
+      spawn: (_bin, _args, _cwd, hooks) => hooks?.onFailure?.('claude exited 1; stderr tail: boom'),
+      claudeBin: 'claude-test',
+      onWakeFailed: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-died' }))
+    diedAtRuntime.onCard(decided({ fingerprint: 'fp-died' }))
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('exited 1')
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp-died' }, Date.now())?.id).toBe('c1')
+  })
+
+  it('re-resolves the binary on demand: claude installed after daemon boot wakes the next card', () => {
+    // Explicitly initialized (not a bare `let`): the only assignment happens
+    // below, and prefer-const does not credit the closure read above it.
+    let installed: string | undefined = undefined
+    const lateBin = new Waker(store, {
+      spawn: (bin, args, cwd) => calls.push({ bin, args, cwd }),
+      resolveBin: () => installed,
+      onWakeFailed: () => {},
+    })
+    lateBin.onCard(decided({ id: 'c-before' }))
+    expect(calls).toHaveLength(0) // nothing resolvable yet
+    installed = '/late/claude'    // user installs claude; no daemon restart
+    lateBin.onCard(decided({ id: 'c-after' }))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].bin).toBe('/late/claude')
+  })
+
+  it('with no claude binary resolvable: never spawns, tells the human once per card, card stays claimable', () => {
+    const failures: string[] = []
+    const binless = new Waker(store, {
+      spawn: (bin, args, cwd) => calls.push({ bin, args, cwd }),
+      resolveBin: () => undefined,
+      onWakeFailed: (_card, detail) => failures.push(detail),
+    })
+    store.insert(decided({ fingerprint: 'fp-nobin' }))
+    binless.onCard(decided({ fingerprint: 'fp-nobin' }))
+    binless.onCard(decided({ fingerprint: 'fp-nobin' })) // one-shot: no second notice
+    expect(calls).toHaveLength(0)
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('BOARDROOM_CLAUDE_BIN')
+    expect(store.get('c1')?.deliveredAt).toBeUndefined()
+    expect(store.findReattachable({ fingerprint: 'fp-nobin' }, Date.now())?.id).toBe('c1')
+  })
+
   it('end-to-end via queue events: park then decide wakes the session exactly once', () => {
     const queue = new Queue(store)
     queue.on('card', c => waker.onCard(c))
@@ -308,6 +376,35 @@ describe('Waker', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toContain('sid-1')
     expect(calls[0].cwd).toBe(dir)
+  })
+})
+
+// Pure resolution: env + probe injected, so nothing here touches the real fs.
+describe('resolveClaudeBin', () => {
+  it('an explicit BOARDROOM_CLAUDE_BIN override wins and is trusted as-is (no probe)', () => {
+    const bin = resolveClaudeBin({ BOARDROOM_CLAUDE_BIN: '/custom/claude', PATH: '/usr/bin' }, () => false)
+    expect(bin).toBe('/custom/claude')
+  })
+
+  it('scans PATH directories in order for an executable claude', () => {
+    const probe = (p: string): boolean => p === join('/two', 'claude')
+    const bin = resolveClaudeBin({ PATH: ['/one', '/two'].join(':') }, probe)
+    expect(bin).toBe(join('/two', 'claude'))
+  })
+
+  it('falls back to known install locations when PATH has no claude', () => {
+    const probe = (p: string): boolean => p === '/opt/homebrew/bin/claude'
+    const bin = resolveClaudeBin({ PATH: '/one' }, probe)
+    expect(bin).toBe('/opt/homebrew/bin/claude')
+  })
+
+  it('returns undefined when nothing is executable anywhere (empty PATH, all probes fail)', () => {
+    expect(resolveClaudeBin({ PATH: '' }, () => false)).toBeUndefined()
+    expect(resolveClaudeBin({}, () => false)).toBeUndefined()
+  })
+
+  it('ignores a whitespace-only override', () => {
+    expect(resolveClaudeBin({ BOARDROOM_CLAUDE_BIN: '   ', PATH: '' }, () => false)).toBeUndefined()
   })
 })
 

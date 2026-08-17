@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Entry } from '../../src/shared/entry.js'
 import { isImplicitlyRead, isRead, markRead, READ_TTL_MS, unreadCount } from './readState.js'
 
@@ -121,6 +121,15 @@ describe('entry cap', () => {
 })
 
 describe('unreadCount', () => {
+  // The fixtures are dated 2026-07-07 and unreadCount applies isImplicitlyRead's
+  // 14-day TTL against the real clock, so without pinning it these tests passed
+  // until 2026-07-21 and then started failing on their own (they did, in CI and
+  // locally). Pin "now" to the fixture date, as the TTL tests above do.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-07T00:00:00.000Z'))
+  })
+
   it('counts only unread report entries, never tags', () => {
     const entries: Entry[] = [report('r1'), report('r2'), tag('t1'), tag('t2')]
     expect(unreadCount(entries)).toBe(2)

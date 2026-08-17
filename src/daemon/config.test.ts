@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -54,6 +54,49 @@ describe('loadConfig', () => {
     const cfgDir = join(dir, 'cfgdir')
     loadConfig(cfgDir)
     expect(statSync(cfgDir).mode & 0o777).toBe(0o700)
+  })
+
+  it('mints a per-machine local token and persists it locked to 0600', () => {
+    const first = loadConfig(dir)
+    expect(typeof first.localToken).toBe('string')
+    expect(first.localToken!.length).toBeGreaterThanOrEqual(32)
+    expect(statSync(join(dir, 'local-token')).mode & 0o777).toBe(0o600)
+    // Stable across reloads (the daemon must not rotate the token every boot).
+    expect(loadConfig(dir).localToken).toBe(first.localToken)
+  })
+
+  it('does not crash on an unparseable config.json with no last-good — falls back to defaults', () => {
+    writeFileSync(join(dir, 'config.json'), '{ this is not valid json ')
+    const cfg = loadConfig(dir)
+    expect(cfg.port).toBe(4040)
+    expect(cfg.notifications).toBe(true)
+  })
+
+  it('restores the last-good copy when config.json goes corrupt, keeping the corrupt file', () => {
+    const p = join(dir, 'config.json')
+    writeFileSync(p, JSON.stringify({ port: 4141, notifications: false }))
+    expect(loadConfig(dir).port).toBe(4141) // first good load snapshots .last-good
+    writeFileSync(p, '{ corrupted ')
+    const cfg = loadConfig(dir)
+    expect(cfg.port).toBe(4141) // the user's real settings survived
+    expect(cfg.notifications).toBe(false)
+    expect(readdirSync(dir).some(f => f.startsWith('config.json.corrupt-'))).toBe(true)
+  })
+
+  it('ignores config values of the wrong type (a string port never reaches listen)', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ port: '9999', remindEveryMinutes: 'soon', notifications: 'yes' }),
+    )
+    const cfg = loadConfig(dir)
+    expect(cfg.port).toBe(4040)
+    expect(cfg.remindEveryMinutes).toBe(10)
+    expect(cfg.notifications).toBe(true)
+  })
+
+  it('rejects an out-of-range port', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ port: 70000 }))
+    expect(loadConfig(dir).port).toBe(4040)
   })
 
   it('honors BOARDROOM_PORT — the convention seed.ts and every hook already use — over the default', () => {
@@ -133,8 +176,14 @@ describe('loadConfig local bearer', () => {
     expect(() => loadConfig(dir)).toThrow(/empty/)
   })
 
-  it('is disabled when neither env nor token file exists (legacy dev)', () => {
-    expect(loadConfig(dir).localToken).toBeUndefined()
+  // 2026-08-02 decision: an absent token no longer means "guard off" (the old
+  // "legacy dev" behavior) — loadConfig mints one, so a fresh install is never
+  // unguarded. The explicitly-configured-file path above still fails closed.
+  it('mints a token when neither env nor token file exists (never unguarded)', () => {
+    const token = loadConfig(dir).localToken
+    expect(typeof token).toBe('string')
+    expect(token!.length).toBeGreaterThanOrEqual(32)
+    expect(statSync(join(dir, 'local-token')).mode & 0o777).toBe(0o600)
   })
 })
 

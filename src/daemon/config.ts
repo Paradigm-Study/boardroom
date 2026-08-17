@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
+import { mintLocalToken } from './authToken.js'
 import { REATTACH_WINDOW_MS } from '../shared/needsHuman.js'
 
 // Optional mesh relay wiring (mesh-v0). Present only when ALL THREE fields
@@ -36,8 +37,31 @@ export interface Config {
   dbPath: string
   configDir: string
   mesh?: MeshConfig
-  /** Install-scoped API bearer; undefined keeps legacy loopback dev behavior. */
+  // The loopback token gating /api and /events. Optional so unit tests can
+  // construct a Config inline without one; loadConfig ALWAYS resolves one (it
+  // mints if nothing is configured), so production is never unguarded.
   localToken?: string
+}
+
+type FileConfig = Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>>
+  & { mesh?: Partial<MeshConfig> }
+
+// Keep only known keys of the expected type, so a hand-edited `"port": "4040"`
+// (valid JSON, wrong type) can never flow into app.listen. Applied to whatever
+// JSON we end up using — the live file or a restored .last-good copy.
+// `mesh` passes through unvalidated by design: every mesh field is re-resolved
+// (and env-overridden) below, and a partial block is dropped there.
+function validateFileConfig(raw: unknown): FileConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const r = raw as Record<string, unknown>
+  const out: FileConfig = {}
+  if (typeof r.port === 'number' && Number.isInteger(r.port) && r.port >= 0 && r.port <= 65535) out.port = r.port
+  if (typeof r.remindEveryMinutes === 'number' && r.remindEveryMinutes > 0) out.remindEveryMinutes = r.remindEveryMinutes
+  if (typeof r.notifications === 'boolean') out.notifications = r.notifications
+  if (typeof r.openOnPending === 'boolean') out.openOnPending = r.openOnPending
+  if (typeof r.reattachWindowMs === 'number' && r.reattachWindowMs > 0) out.reattachWindowMs = r.reattachWindowMs
+  if (r.mesh && typeof r.mesh === 'object' && !Array.isArray(r.mesh)) out.mesh = r.mesh as Partial<MeshConfig>
+  return out
 }
 
 function hasControlCharacters(value: string): boolean {
@@ -91,8 +115,7 @@ export function loadConfig(configDir?: string): Config {
   const dir = configDir ?? process.env.BOARDROOM_CONFIG_DIR ?? join(homedir(), '.config', 'boardroom')
   mkdirSync(dir, { recursive: true })
   try { chmodSync(dir, 0o700) } catch { /* best-effort */ }
-  let file: Partial<Pick<Config, 'port' | 'remindEveryMinutes' | 'notifications' | 'openOnPending' | 'reattachWindowMs'>>
-    & { mesh?: Partial<MeshConfig> } = {}
+  let file: FileConfig = {}
   const p = join(dir, 'config.json')
   // BOARDROOM_PORT is the port convention seed.ts and every hook already honor;
   // the daemon reads it too so a dev daemon can run on its own port (paired with
@@ -107,16 +130,36 @@ export function loadConfig(configDir?: string): Config {
   if (existsSync(p)) {
     const lastGood = `${p}.last-good`
     try {
-      file = JSON.parse(readFileSync(p, 'utf8'))
+      // Snapshot last-good on a successful PARSE, before validation: a file whose
+      // JSON is fine but whose `port` is a string is still the user's real
+      // settings and worth preserving — validation only decides what we USE.
+      file = validateFileConfig(JSON.parse(readFileSync(p, 'utf8')))
       copyFileSync(p, lastGood)
       try { chmodSync(p, 0o600); chmodSync(lastGood, 0o600) } catch { /* best effort */ }
-    } catch (error) {
-      if (!existsSync(lastGood)) throw error
-      const corrupt = `${p}.corrupt-${Date.now()}`
-      renameSync(p, corrupt)
-      copyFileSync(lastGood, p)
-      try { chmodSync(p, 0o600); chmodSync(corrupt, 0o600) } catch { /* best effort */ }
-      file = JSON.parse(readFileSync(p, 'utf8'))
+    } catch {
+      // Never throw out of loadConfig over a bad settings file. The daemon runs
+      // under launchd KeepAlive, where an unhandled boot throw is an invisible
+      // crash-respawn loop with nothing to diagnose from. Restore the last-good
+      // copy when there is one (the user's real settings survive); otherwise warn
+      // and take the built-in defaults — these are port/notification preferences,
+      // nothing security-critical. (2026-08-02 decision, replacing the rethrow.)
+      if (existsSync(lastGood)) {
+        const corrupt = `${p}.corrupt-${Date.now()}`
+        try {
+          renameSync(p, corrupt)
+          copyFileSync(lastGood, p)
+          try { chmodSync(p, 0o600); chmodSync(corrupt, 0o600) } catch { /* best effort */ }
+          file = validateFileConfig(JSON.parse(readFileSync(p, 'utf8')))
+          console.warn(`[config] ${p} was unreadable — restored the last-good copy; the corrupt file is kept at ${corrupt}`)
+        } catch (restoreError) {
+          // Both the live file AND the last-good copy are unusable.
+          console.warn(`[config] ${p} was unreadable and the last-good copy could not be restored (${(restoreError as Error).message}) — using defaults`)
+          file = {}
+        }
+      } else {
+        console.warn(`[config] ignoring unparseable ${p} (no last-good copy to restore) — using defaults`)
+        file = {}
+      }
     }
   }
   // Mesh (default-off): env overrides file, field by field; the resolved config
@@ -163,10 +206,16 @@ export function loadConfig(configDir?: string): Config {
       if (!localToken && explicitTokenFile) throw new Error('local token file is empty')
     } catch (error) {
       if (explicitTokenFile) throw error
-      // An unreadable auto-discovered optional token file leaves legacy dev
-      // mode intact; an explicitly configured path always fails closed above.
+      // An unreadable auto-discovered token file falls through to a fresh mint
+      // below; an explicitly configured path always fails closed above.
     }
   }
+  // Nothing configured → mint one, rather than running the guarded surface
+  // unguarded. This is the last link in the chain (env → explicit file →
+  // discovered file → mint) and the reason localToken is always set in
+  // production. (2026-08-02 decision: always-on, replacing "legacy dev mode",
+  // where an absent token disabled the API guard entirely.)
+  if (!localToken) localToken = mintLocalToken(tokenFile)
   return {
     port: 4040,
     remindEveryMinutes: 10,
@@ -176,7 +225,7 @@ export function loadConfig(configDir?: string): Config {
     ...file,
     ...(Number.isInteger(envPort) && envPort > 0 ? { port: envPort } : {}),
     mesh, // computed above; placed after ...file so a partial file block can't leak through
-    ...(localToken ? { localToken } : {}),
+    localToken, // always resolved above (minted if nothing was configured)
     dbPath: join(dir, 'boardroom.sqlite'),
     configDir: dir,
   }

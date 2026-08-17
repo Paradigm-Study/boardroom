@@ -94,9 +94,26 @@ npm run typecheck
 ```
 
 Config: `~/.config/boardroom/config.json` — `port` (4040),
-`remindEveryMinutes` (10), `notifications` (true). The daemon only ever
-binds 127.0.0.1; that is hardwired (it is the security predicate for
-running without auth).
+`remindEveryMinutes` (10), `notifications` (true). A corrupt config file is
+ignored (defaults are used) rather than crashing the daemon.
+
+## Access control
+
+The daemon only ever binds 127.0.0.1 (hardwired), but loopback binding alone
+does not stop a browser, so three controls enforce "this machine, our clients
+only":
+
+- **Host validation** (every route): a request whose `Host` is not loopback is
+  refused — this is what actually blocks DNS-rebinding pages.
+- **Origin validation** (`/mcp`, `/api`): a cross-origin browser request is
+  refused. Real MCP clients send no `Origin`, so `claude mcp add` is unchanged.
+- **Loopback token** (`/api`, `/events`): a per-machine secret (minted to
+  `~/.config/boardroom/token`, `0600`) that stops another local user or process
+  from reading cards or forging verdicts. It is applied transparently — the
+  daemon serves the dashboard with the token as an `HttpOnly; SameSite=Strict`
+  same-origin cookie, and the menu-bar app reads the token file — so nothing in
+  normal use has to present it by hand. `/mcp` is intentionally token-free (it
+  cannot decide cards or drive the waker) so agent setup stays zero-config.
 
 Optional mesh relay (mesh-v0, default-off): add `"mesh": { "url", "token",
 "person", "teamId"? }` to `config.json` (or set `BOARDROOM_MESH_URL` /

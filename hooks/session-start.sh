@@ -9,6 +9,13 @@
 port="${BOARDROOM_PORT:-4040}"
 input=$(cat)
 
+# /api is gated by the loopback token (authToken.ts); the 0600 token file is the
+# same-user trust boundary the menubar uses, so hooks read it the same way. Missing
+# file → no header → the POST 401s and is handled fail-open below.
+auth=()
+tokfile="${BOARDROOM_CONFIG_DIR:-$HOME/.config/boardroom}/token"
+[ -r "$tokfile" ] && auth=(-H "Authorization: Bearer $(cat "$tokfile")")
+
 # Liveness probe: any HTTP response within 2s → connected. Unreachable or
 # slow-past-2s → offline (we still inject, with fallback wording). One 2s shot, no
 # retry loop — retrying a daemon we just found down only adds latency, and the
@@ -37,7 +44,7 @@ if [ "$connected" = 1 ]; then
     # (Claude Code's debug log) — a silently failed registration breaks auto-wake
     # for the whole session with zero diagnostic otherwise. Still never blocks.
     curl -sf -o /dev/null --max-time 2 -X POST "http://127.0.0.1:${port}/api/session" \
-      -H 'content-type: application/json' -d "$body" \
+      "${auth[@]}" -H 'content-type: application/json' -d "$body" \
       || echo "boardroom session-start: session registration POST failed — auto-wake (claude --resume) may not target this session" >&2
   fi
 fi

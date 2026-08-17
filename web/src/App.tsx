@@ -12,6 +12,7 @@ import { needsHuman } from './helpers.js'
 import { notifyCard, notifyPermission, requestNotify } from './notify.js'
 import { ReportView } from './ReportView.js'
 import { SessionStream } from './SessionStream.js'
+import { SettingsView } from './SettingsView.js'
 import { TaskSidebar } from './TaskSidebar.js'
 
 function useHashRoute(): string {
@@ -272,7 +273,7 @@ export function App() {
   // back on the dashboard — never strands the window on a file, even on a deep link.
   const returnHash = useRef('')
   useEffect(() => {
-    if (route.kind !== 'file' && route.kind !== 'folders') returnHash.current = hash
+    if (route.kind !== 'file' && route.kind !== 'folders' && route.kind !== 'settings') returnHash.current = hash
   }, [hash, route.kind])
 
   // Sessions now feed the sidebar's status tags on every route, not just the Folders
@@ -357,6 +358,10 @@ export function App() {
         onClose={() => { window.location.hash = returnHash.current }}
       />
     )
+  }
+
+  if (route.kind === 'settings') {
+    return <SettingsView onClose={() => { window.location.hash = returnHash.current }} />
   }
 
   if (route.kind === 'session') {

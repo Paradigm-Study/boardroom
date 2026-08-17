@@ -45,9 +45,18 @@ describe('ReportEntryView', () => {
   })
 
   it('shows an unread dot when the entry is unread', () => {
-    isReadMock.mockReturnValue(false)
-    const { container } = render(<ReportEntryView entry={report()} />)
-    expect(container.querySelector('.entry-unread-dot')).toBeTruthy()
+    // isImplicitlyRead stays REAL here (only isRead is mocked) and hides the dot
+    // once the 2026-07-07 fixture is >14 days old against the wall clock — so pin
+    // "now" to the fixture date, exactly as ReportEntryView.readflow.test.tsx does.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-07T00:05:00.000Z'))
+    try {
+      isReadMock.mockReturnValue(false)
+      const { container } = render(<ReportEntryView entry={report()} />)
+      expect(container.querySelector('.entry-unread-dot')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('hides the unread dot once the entry is read', () => {

@@ -1,0 +1,44 @@
+name: CodeQL
+
+# Static security analysis of the TypeScript/JavaScript sources. Free on public
+# repos; findings land under the repo's Security tab. Runs on every PR (so a
+# new finding shows up on the change that introduced it), on main, and weekly
+# so newly-published query packs re-scan unchanged code.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '30 16 * * 1' # Mondays, shortly after CI's weekly run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-extended adds the lower-precision-but-useful queries on
+          # top of the default set; this daemon is security-sensitive.
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript

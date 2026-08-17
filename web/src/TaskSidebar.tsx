@@ -1,4 +1,4 @@
-import { Archive, Armchair, Bot, ChevronRight, CircleCheck, FileText, FolderTree, Inbox, ListChecks, MessageCircleQuestion, Route, type LucideIcon } from 'lucide-react'
+import { Archive, Armchair, Bot, ChevronRight, CircleCheck, FileText, FolderTree, Inbox, ListChecks, MessageCircleQuestion, Route, Settings, type LucideIcon } from 'lucide-react'
 import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import type { Card, Stage } from '../../src/shared/card.js'
 import type { Entry } from '../../src/shared/entry.js'
@@ -629,6 +629,9 @@ export function TaskSidebar({ cards, selectedId, sessions, entries = [] }: {
 
       <a href="#/folders" className="side-folders">
         <FolderTree size={13} aria-hidden /> Sessions by folder
+      </a>
+      <a href="#/settings" className="side-folders">
+        <Settings size={13} aria-hidden /> Settings
       </a>
 
       <div className="side-group"><Inbox size={12} aria-hidden />Needs you <span className="n">{pending.length}</span></div>

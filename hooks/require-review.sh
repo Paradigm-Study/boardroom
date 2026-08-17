@@ -24,8 +24,15 @@ edited=$(grep -cE '"name": ?"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript"
 # Reach the daemon via BOARDROOM_PORT, as seed.ts/menubar do (default 4040);
 # hardcoding it would silently fail-open if the daemon was relocated.
 port="${BOARDROOM_PORT:-4040}"
-cards=$(curl -s --max-time 2 "http://127.0.0.1:${port}/api/cards") || exit 0
+# /api is gated by the loopback token (authToken.ts) — read the same 0600 file the
+# menubar uses. Missing/stale token → 401 error object → the array guard below
+# fails open, so a broken token can never wrongly block a stop.
+auth=()
+tokfile="${BOARDROOM_CONFIG_DIR:-$HOME/.config/boardroom}/token"
+[ -r "$tokfile" ] && auth=(-H "Authorization: Bearer $(cat "$tokfile")")
+cards=$(curl -s --max-time 2 "${auth[@]}" "http://127.0.0.1:${port}/api/cards") || exit 0
 [ -z "$cards" ] && exit 0
+printf '%s' "$cards" | jq -e 'type=="array"' >/dev/null 2>&1 || exit 0
 
 # Session start = timestamp of the first transcript line (scopes "this session").
 sstart=$(head -n 1 "$transcript" | jq -r '.timestamp // empty' 2>/dev/null)

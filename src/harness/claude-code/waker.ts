@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { accessSync, closeSync, constants, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import type { Card } from '../../shared/card.js'
 import { buildSummary, flat } from '../../shared/summary.js'
 import type { Store } from '../../daemon/store.js'
@@ -22,6 +22,7 @@ export type SpawnFn = (bin: string, args: string[], cwd: string, hooks?: WakeHoo
 interface WakerOpts {
   spawn?: SpawnFn
   claudeBin?: string
+  resolveBin?: () => string | undefined
   permissionMode?: string
   onWakeFailed?: (card: Card, detail: string) => void
   wakeLogDir?: string
@@ -59,6 +60,36 @@ export function resolveResumeEnv(authStore?: AuthStore, env: NodeJS.ProcessEnv =
   return resumeCredentialEnv(env)
 }
 
+// Find the claude CLI without hard-coding one install location (the previous
+// '/opt/homebrew/bin/claude' default silently broke every auto-wake on machines
+// where claude lives elsewhere — or nowhere). Order: explicit BOARDROOM_CLAUDE_BIN
+// override (trusted as-is: user intent, and a typo then fails loudly at spawn),
+// then PATH, then known install locations. Pure with injected env/probe for tests.
+export function resolveClaudeBin(
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutable: (p: string) => boolean = isExecutableFile,
+): string | undefined {
+  const override = env.BOARDROOM_CLAUDE_BIN?.trim()
+  if (override) return override
+  const candidates = [
+    ...(env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir, 'claude')),
+    join(homedir(), '.claude', 'local', 'claude'),
+    join(homedir(), '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ]
+  return candidates.find(isExecutable)
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    accessSync(p, constants.X_OK)
+    return statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
+
 // Resumes the agent's Claude Code session when a card it left behind (parked, or
 // otherwise orphaned) gets decided. The daemon is an MCP server and cannot push
 // the agent, so this spawns an EXTERNAL `claude --resume` from the session's
@@ -70,7 +101,8 @@ export function resolveResumeEnv(authStore?: AuthStore, env: NodeJS.ProcessEnv =
 export class Waker {
   private woken = new Set<string>()
   private spawnFn: SpawnFn
-  private claudeBin: string
+  private claudeBin: string | undefined
+  private resolveBinFn: () => string | undefined
   private permissionMode: string
   private onWakeFailed?: (card: Card, detail: string) => void
   private authStore?: AuthStore
@@ -82,7 +114,12 @@ export class Waker {
       opts.wakeLogDir ?? join(homedir(), 'Library', 'Logs', 'boardroom-waker'),
       () => resolveResumeEnv(authStore), // lazy: re-read per wake so a fresh connect applies
     )
-    this.claudeBin = opts.claudeBin ?? process.env.BOARDROOM_CLAUDE_BIN ?? '/opt/homebrew/bin/claude'
+    // resolveClaudeBin already honors BOARDROOM_CLAUDE_BIN; opts.claudeBin stays
+    // first so tests (and embedders) can pin a binary without touching env. This
+    // replaces the hardcoded '/opt/homebrew/bin/claude' default, which ENOENTs on
+    // every machine where claude lives elsewhere — or nowhere at all.
+    this.resolveBinFn = opts.claudeBin ? () => opts.claudeBin : (opts.resolveBin ?? resolveClaudeBin)
+    this.claudeBin = this.resolveBinFn()
     this.permissionMode = opts.permissionMode ?? process.env.BOARDROOM_RESUME_PERMISSION ?? 'acceptEdits'
     this.onWakeFailed = opts.onWakeFailed
   }
@@ -137,6 +174,25 @@ export class Waker {
       return
     }
     this.woken.add(card.id)
+    // Re-probe on demand when boot-time resolution found nothing: a claude
+    // installed after the (long-lived, launchd) daemon started should wake the
+    // very next card, not wait for a daemon restart.
+    if (!this.claudeBin) this.claudeBin = this.resolveBinFn()
+    // No claude binary anywhere → auto-wake is impossible on this machine. Tell the
+    // human (once per card — woken already guards) instead of failing invisibly;
+    // the verdict stays claimable via reattach and the dashboard copy-paste.
+    if (!this.claudeBin) {
+      const detail = 'no claude binary found — set BOARDROOM_CLAUDE_BIN'
+      console.warn(`[waker] skip card ${card.id}: ${detail}`)
+      // Runs inside the queue's 'card' listener; a throwing handler would become
+      // an uncaughtException that takes the daemon down over a lost toast.
+      try {
+        this.onWakeFailed?.(card, detail)
+      } catch (err) {
+        console.warn(`[waker] onWakeFailed handler failed: ${(err as Error).message}`)
+      }
+      return
+    }
     // The credential THIS wake authenticates with. If it 401s we stale-mark only this
     // exact token — a concurrent reconnect may have already swapped in a fresh, valid
     // one, and a straggler's failure must never retire that (would loop the user back

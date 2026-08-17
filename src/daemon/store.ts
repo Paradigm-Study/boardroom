@@ -21,6 +21,11 @@ export class Store {
     this.path = path
     this.db = openRecoveringDatabase(path)
     this.db.pragma('journal_mode = WAL')
+    // Wait up to 5s for a competing writer instead of throwing SQLITE_BUSY on the
+    // first contended write. WAL already lets readers run during a write; this
+    // covers the brief write-write overlaps that appear once the daemon spawns and
+    // supervises its own agent sessions (more concurrent writers than today).
+    this.db.pragma('busy_timeout = 5000')
     runMigrations(this.db, path, 'boardroom', [{
       version: 1,
       name: 'baseline card session and entry schema',

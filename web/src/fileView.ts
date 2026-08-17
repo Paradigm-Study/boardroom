@@ -78,6 +78,7 @@ export type Route =
   | { kind: 'card'; id: string }
   | { kind: 'file'; url: string; name?: string; mime?: string }
   | { kind: 'folders' }
+  | { kind: 'settings' }
   // A real Claude Code session's stream view (#/session/<claudeSessionId>) — the
   // spine view, cards in chronological order within that one session.
   | { kind: 'session'; id: string }
@@ -122,6 +123,7 @@ export function parseHash(hash: string): Route {
     }
   }
   if (raw.replace(/\/$/, '') === '/folders') return { kind: 'folders' }
+  if (raw.replace(/\/$/, '') === '/settings') return { kind: 'settings' }
   const session = /^\/session\/(.+)$/.exec(raw)
   if (session) return { kind: 'session', id: safeDecode(session[1]) }
   const report = /^\/report\/(.+)$/.exec(raw)
