@@ -72,3 +72,27 @@ jobs:
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).vulnerabilities||{};console.log(Object.values(v).filter(x=>x.severity==="high"||x.severity==="critical").length)})')
             echo "::warning title=menubar audit::${count} high/critical advisories in menubar/ — all resolve to electron / electron-builder MAJOR bumps (see open Dependabot PRs). Informational until those land."
           fi
+
+  # Browser Playwright specs (hermetic: Vite dev server with a dead-daemon
+  # proxy; every API call is fulfilled by page.route — see playwright.config.ts).
+  # Separate and NOT required on main: `check` stays the single merge gate.
+  # playwright.config.ts keys off CI to skip the menubar (Electron) spec — it
+  # needs menubar/node_modules (postinstall icon generation wants macOS
+  # iconutil) and a display, so it stays local-only — and to drive Playwright's
+  # bundled Chromium instead of the branded Chrome dev machines have.
+  e2e-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run browser e2e specs
+        run: npm run test:e2e

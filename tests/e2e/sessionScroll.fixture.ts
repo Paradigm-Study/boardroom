@@ -198,6 +198,16 @@ export async function mockBoardroomApi(page: Page, cards: BrowserCard[] = scroll
     contentType: 'application/json',
     body: JSON.stringify({ machineId: 'qa-machine', deviceLabel: 'QA Mac' }),
   }))
+  // App.tsx polls this unconditionally on mount (the "Connect your Claude
+  // account" status). Unmocked it 502s through the dead-daemon proxy, and that
+  // browser console error fails the specs' logs-must-be-empty assertion.
+  // Disconnected-idle is inert for these tests: the only UI it can gate
+  // (CardView's offline-delivery interceptor) renders nothing until a submit.
+  await page.route('**/api/auth/status', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ connected: false, login: { state: 'idle' } }),
+  }))
   // Report/tag stream: derived from the `entries` param (default [] — existing
   // callers that don't pass entries keep getting a harmlessly empty feed rather
   // than hitting the (nonexistent, in this hermetic run) daemon port). Route both
