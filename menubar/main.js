@@ -66,6 +66,11 @@ function notifyNew(item) {
     silent: false,
   })
   n.on('click', () => openCard(item.id))
+  // Electron 42 moved macOS notifications to UNUserNotificationCenter, which
+  // refuses to display for binaries it deems unsigned (our local build is only
+  // ad-hoc signed). Log the failure so a notification that never appears is
+  // diagnosable instead of a silent no-op.
+  n.on('failed', (_e, error) => console.warn('[notify] failed:', error))
   n.show()
 }
 

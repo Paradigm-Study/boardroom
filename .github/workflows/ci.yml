@@ -44,12 +44,9 @@ jobs:
       - name: Audit root dependencies
         run: npm audit --audit-level=high
 
-  # Visibility, not a gate: the menubar (Electron) tree carries high advisories
-  # that all resolve to MAJOR bumps of electron / electron-builder — a runtime
-  # upgrade of the desktop app that gets its own PR and its own testing, not a
-  # slip-in. The job always passes; the advisory count is raised as a warning
-  # annotation on the run (a red-but-ignored check just trains people to ignore
-  # CI). Promote to a hard gate once the Electron majors land.
+  # Hard gate: the menubar (Electron) lockfile must stay free of high/critical
+  # advisories. The electron / electron-builder majors landed, so a new advisory
+  # here is a regression to fix, not background noise.
   audit-menubar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -60,15 +57,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Audit menubar dependencies (informational)
+      - name: Audit menubar dependencies
         working-directory: menubar
         # --package-lock-only: audit the lockfile without running menubar's
         # postinstall (icon generation needs macOS iconutil).
-        run: |
-          if npm audit --audit-level=high --package-lock-only; then
-            echo "::notice title=menubar audit::no high/critical advisories"
-          else
-            count=$(npm audit --json --package-lock-only 2>/dev/null \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).vulnerabilities||{};console.log(Object.values(v).filter(x=>x.severity==="high"||x.severity==="critical").length)})')
-            echo "::warning title=menubar audit::${count} high/critical advisories in menubar/ — all resolve to electron / electron-builder MAJOR bumps (see open Dependabot PRs). Informational until those land."
-          fi
+        run: npm audit --audit-level=high --package-lock-only
