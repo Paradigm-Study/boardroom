@@ -15,22 +15,38 @@ const {
   reconcileNotifications,
 } = require('./trayRender')
 
-const PORT = process.env.BOARDROOM_PORT || '4140'
+// 4040 is the repo-wide port decision (2026-07-16, matching config.ts) — this
+// constant still said 4140 from the brief forked-default era, so a hand-launched
+// app stared at an empty port.
+const PORT = process.env.BOARDROOM_PORT || '4040'
 const BASE = `http://127.0.0.1:${PORT}`
 const icon = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'))
 
-// The daemon now gates /api and /events with a loopback token. The embedded
+// The daemon gates /api and /events with a loopback token. The embedded
 // dashboard window authenticates via the same-origin cookie the daemon sets, but
-// this main-process /events reader is a bare fetch with no cookie jar, so it reads
-// the token from the daemon's 0600 file (same machine). Missing/older daemon → no
-// token → the guard is off anyway, so an absent header is correct.
+// this main-process /events reader is a bare fetch with no cookie jar, so it
+// resolves the token the same way loadConfig does: env override, explicit file,
+// then the daemon's 0600 local-token file ("token" is the pre-2026-08 filename,
+// kept readable so an app newer than its daemon still connects). No token found
+// → daemon has not booted in this config dir yet; the SSE loop's retries pick
+// life up on the dashboard side, and a tray restart picks up the minted token.
 function readToken() {
+  const envToken = (process.env.BOARDROOM_LOCAL_TOKEN || '').trim()
+  if (envToken) return envToken
   const dir = process.env.BOARDROOM_CONFIG_DIR || path.join(os.homedir(), '.config', 'boardroom')
-  try {
-    return fs.readFileSync(path.join(dir, 'token'), 'utf8').trim() || null
-  } catch {
-    return null
+  const candidates = [
+    process.env.BOARDROOM_LOCAL_TOKEN_FILE,
+    path.join(dir, 'local-token'),
+    path.join(dir, 'token'),
+  ]
+  for (const p of candidates) {
+    if (!p) continue
+    try {
+      const t = fs.readFileSync(p, 'utf8').trim()
+      if (t) return t
+    } catch { /* try the next candidate */ }
   }
+  return null
 }
 const TOKEN = readToken()
 
