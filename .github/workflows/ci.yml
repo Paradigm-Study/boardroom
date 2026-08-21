@@ -43,22 +43,13 @@ jobs:
         run: npm run build:web
       - name: Audit root dependencies
         run: npm audit --audit-level=high
-
-  # Hard gate: the menubar (Electron) lockfile must stay free of high/critical
-  # advisories. The electron / electron-builder majors landed, so a new advisory
-  # here is a regression to fix, not background noise.
-  audit-menubar:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+      # Inside `check` — the ONE required status on main — so a new menubar
+      # advisory actually blocks merges. As a separate job this was a "hard gate"
+      # in name only: branch protection requires just the `check` context, so a
+      # red sibling job never stopped a merge. The electron / electron-builder
+      # majors landed; a new advisory here is a regression to fix, not noise.
+      # --package-lock-only: audit the lockfile without running menubar's
+      # postinstall (icon generation needs macOS iconutil).
       - name: Audit menubar dependencies
         working-directory: menubar
-        # --package-lock-only: audit the lockfile without running menubar's
-        # postinstall (icon generation needs macOS iconutil).
         run: npm audit --audit-level=high --package-lock-only
