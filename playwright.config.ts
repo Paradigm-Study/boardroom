@@ -1,12 +1,17 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// GitHub Actions sets CI=true; parse strictly so CI="false" or CI="0" in a
+// local shell doesn't flip the config into CI mode (any non-empty string is
+// truthy to a bare `process.env.CI ?` check).
+const IS_CI = /^(1|true)$/i.test(process.env.CI ?? '')
+
 export default defineConfig({
   testDir: './tests/e2e',
   // CI (the non-required e2e-browser job) runs the browser specs only. The
   // menubar (Electron) spec stays local-only: it needs menubar/node_modules —
   // whose postinstall icon generation needs macOS iconutil — plus a display,
   // neither of which the ubuntu runner has.
-  testIgnore: process.env.CI ? '**/menubar-*.spec.ts' : [],
+  testIgnore: IS_CI ? '**/menubar-*.spec.ts' : [],
   outputDir: '/tmp/boardroom-playwright-results',
   fullyParallel: false,
   workers: 1,
@@ -17,7 +22,7 @@ export default defineConfig({
     // Local runs drive the branded Chrome already on dev machines; CI installs
     // Playwright's bundled Chromium (`npx playwright install --with-deps
     // chromium`) and must not ask for a channel it didn't install.
-    channel: process.env.CI ? undefined : 'chrome',
+    channel: IS_CI ? undefined : 'chrome',
     baseURL: 'http://127.0.0.1:5177',
     trace: 'retain-on-failure',
   },

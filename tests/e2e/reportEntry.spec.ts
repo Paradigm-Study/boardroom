@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { browserCard, browserReport, browserTag, mockBoardroomApi } from './sessionScroll.fixture.js'
+import { browserCard, browserReport, browserTag, expect, mockBoardroomApi, test } from './sessionScroll.fixture.js'
 
 test('session stream interleaves a report and a tag with the card, oldest-first, unread + drawer + FIFO count untouched', async ({ page }) => {
   // Seeded ADVERSARIAL order — newest-first in the array AND interleaved with
@@ -16,13 +15,6 @@ test('session stream interleaves a report and a tag with the card, oldest-first,
     browserReport('a-report', 'Session One', 'investigation findings', '2026-07-03T08:05:00.000Z', { claudeSessionId: 'cc-A' }),
   ]
   await mockBoardroomApi(page, cards, entries)
-  // Pin the browser clock to the fixtures' era. The unread-dot assertion below
-  // depends on readState's 14-day READ_TTL_MS (age-implies-read): against the
-  // real wall clock these 2026-07-03 fixtures aged past the TTL and the dot
-  // stopped rendering — the same date bomb PR #39 defused in the vitest suites
-  // with vi.setSystemTime. setFixedTime (not clock.install): only Date needs
-  // pinning; timers stay real so the app's polling keeps running.
-  await page.clock.setFixedTime(new Date('2026-07-03T10:00:00.000Z'))
   await page.goto('/#/session/cc-A')
 
   const stream = page.getByLabel('Session stream')
