@@ -1,10 +1,12 @@
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
+  expect,
   mockBoardroomApi,
   reachableScrollTop,
   safeScrollTarget,
   scrollCards,
   storedSessionScrollTop,
+  test,
 } from './sessionScroll.fixture.js'
 
 async function readState(page: Page): Promise<{ h1: string | undefined; scrollHeight: number; scrollY: number; url: string }> {
@@ -21,11 +23,6 @@ async function waitForCardHash(page: Page, id: string): Promise<void> {
 }
 
 test('browser dashboard restores a session scroll position after route switch and reload', async ({ page }) => {
-  const logs: string[] = []
-  page.on('console', msg => {
-    if (msg.type() === 'warning' || msg.type() === 'error') logs.push(`${msg.type()}: ${msg.text()}`)
-  })
-  page.on('pageerror', err => logs.push(`pageerror: ${err.message}`))
   await mockBoardroomApi(page)
 
   await page.goto(`/#/card/${scrollCards[0].id}`, { waitUntil: 'domcontentloaded' })
@@ -64,6 +61,4 @@ test('browser dashboard restores a session scroll position after route switch an
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(restoredA)
   expect(restoredA).toBeGreaterThan(250)
   await page.screenshot({ path: '/tmp/boardroom-e2e-browser-a-restored.png', fullPage: false })
-
-  expect(logs).toEqual([])
 })

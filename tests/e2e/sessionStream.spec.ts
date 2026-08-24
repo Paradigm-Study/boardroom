@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { browserCard, mockBoardroomApi } from './sessionScroll.fixture.js'
+import { browserCard, expect, mockBoardroomApi, test } from './sessionScroll.fixture.js'
 
 test('session stream shows one session\'s cards oldest-first with its status tag', async ({ page }) => {
   // Cards provided newest-first and interleaved with other session to catch sort regressions

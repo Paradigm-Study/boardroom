@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { browserCard, browserReport, browserTag, mockBoardroomApi } from './sessionScroll.fixture.js'
+import { browserCard, browserReport, browserTag, expect, mockBoardroomApi, test } from './sessionScroll.fixture.js'
 
 test('session stream interleaves a report and a tag with the card, oldest-first, unread + drawer + FIFO count untouched', async ({ page }) => {
   // Seeded ADVERSARIAL order — newest-first in the array AND interleaved with
