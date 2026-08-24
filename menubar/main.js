@@ -15,24 +15,54 @@ const {
   reconcileNotifications,
 } = require('./trayRender')
 
-const PORT = process.env.BOARDROOM_PORT || '4140'
-const BASE = `http://127.0.0.1:${PORT}`
+const CONFIG_DIR = process.env.BOARDROOM_CONFIG_DIR || path.join(os.homedir(), '.config', 'boardroom')
+
+// Port: validated env → config.json "port" → 4040, the same resolution (and the
+// same numeric validation — a garbage BOARDROOM_PORT must fall through, not build
+// http://127.0.0.1:NaN) that the daemon's loadConfig applies. Resolved once at
+// startup: changing the port needs a daemon restart, and the tray rides it.
+function resolvePort() {
+  const env = Number(process.env.BOARDROOM_PORT)
+  if (Number.isInteger(env) && env > 0 && env <= 65535) return String(env)
+  try {
+    const file = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'config.json'), 'utf8'))
+    if (Number.isInteger(file?.port) && file.port > 0 && file.port <= 65535) return String(file.port)
+  } catch { /* absent/unreadable config.json → default */ }
+  return '4040'
+}
+const BASE = `http://127.0.0.1:${resolvePort()}`
 const icon = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'))
 
-// The daemon now gates /api and /events with a loopback token. The embedded
-// dashboard window authenticates via the same-origin cookie the daemon sets, but
-// this main-process /events reader is a bare fetch with no cookie jar, so it reads
-// the token from the daemon's 0600 file (same machine). Missing/older daemon → no
-// token → the guard is off anyway, so an absent header is correct.
+// The daemon gates /api and /events with a loopback token. The embedded dashboard
+// window authenticates via the same-origin cookie the daemon sets, but this
+// main-process /events reader is a bare fetch with no cookie jar, so it resolves
+// the token like loadConfig: env value, else an EXPLICIT token file (which never
+// falls through to the default dir — the daemon fails closed there, and silently
+// substituting a different token would be a wrong-Bearer 401 loop with no trace),
+// else the daemon's 0600 local-token. Called PER CONNECT ATTEMPT, never cached:
+// a tray that starts before the daemon's first boot (fresh install) or survives a
+// token rotation must pick up the newly minted file on its next retry, not stay
+// wedged on a value frozen at require time.
 function readToken() {
-  const dir = process.env.BOARDROOM_CONFIG_DIR || path.join(os.homedir(), '.config', 'boardroom')
+  const envToken = (process.env.BOARDROOM_LOCAL_TOKEN || '').trim()
+  if (envToken) return envToken
+  const explicit = process.env.BOARDROOM_LOCAL_TOKEN_FILE
+  if (explicit) {
+    try {
+      const t = fs.readFileSync(explicit, 'utf8').trim()
+      if (!t) console.warn('[auth] BOARDROOM_LOCAL_TOKEN_FILE is empty — connecting without a token')
+      return t || null
+    } catch (err) {
+      console.warn(`[auth] BOARDROOM_LOCAL_TOKEN_FILE unreadable (${err.message}) — connecting without a token`)
+      return null
+    }
+  }
   try {
-    return fs.readFileSync(path.join(dir, 'token'), 'utf8').trim() || null
+    return fs.readFileSync(path.join(CONFIG_DIR, 'local-token'), 'utf8').trim() || null
   } catch {
-    return null
+    return null // daemon hasn't booted in this config dir yet; the next retry re-reads
   }
 }
-const TOKEN = readToken()
 
 const mb = menubar({
   index: `${BASE}/`,
@@ -66,6 +96,11 @@ function notifyNew(item) {
     silent: false,
   })
   n.on('click', () => openCard(item.id))
+  // Electron 42 moved macOS notifications to UNUserNotificationCenter, which
+  // refuses to display for binaries it deems unsigned (our local build is only
+  // ad-hoc signed). Log the failure so a notification that never appears is
+  // diagnosable instead of a silent no-op.
+  n.on('failed', (_e, error) => console.warn('[notify] failed:', error))
   n.show()
 }
 
@@ -119,10 +154,13 @@ async function streamOnce() {
   const controller = new AbortController()
   let watchdog = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS)
   try {
+    // Fresh read per attempt (see readToken): self-heals the fresh-install case
+    // where the daemon mints local-token after the tray already started.
+    const token = readToken()
     const res = await fetch(`${BASE}/events`, {
       headers: {
         Accept: 'text/event-stream',
-        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       signal: controller.signal,
     })

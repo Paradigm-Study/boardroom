@@ -43,36 +43,16 @@ jobs:
         run: npm run build:web
       - name: Audit root dependencies
         run: npm audit --audit-level=high
-
-  # Visibility, not a gate: the menubar (Electron) tree carries high advisories
-  # that all resolve to MAJOR bumps of electron / electron-builder — a runtime
-  # upgrade of the desktop app that gets its own PR and its own testing, not a
-  # slip-in. The job always passes; the advisory count is raised as a warning
-  # annotation on the run (a red-but-ignored check just trains people to ignore
-  # CI). Promote to a hard gate once the Electron majors land.
-  audit-menubar:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-      - name: Audit menubar dependencies (informational)
+      # Inside `check` — the ONE required status on main — so a new menubar
+      # advisory actually blocks merges. As a separate job this was a "hard gate"
+      # in name only: branch protection requires just the `check` context, so a
+      # red sibling job never stopped a merge. The electron / electron-builder
+      # majors landed; a new advisory here is a regression to fix, not noise.
+      # --package-lock-only: audit the lockfile without running menubar's
+      # postinstall (icon generation needs macOS iconutil).
+      - name: Audit menubar dependencies
         working-directory: menubar
-        # --package-lock-only: audit the lockfile without running menubar's
-        # postinstall (icon generation needs macOS iconutil).
-        run: |
-          if npm audit --audit-level=high --package-lock-only; then
-            echo "::notice title=menubar audit::no high/critical advisories"
-          else
-            count=$(npm audit --json --package-lock-only 2>/dev/null \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).vulnerabilities||{};console.log(Object.values(v).filter(x=>x.severity==="high"||x.severity==="critical").length)})')
-            echo "::warning title=menubar audit::${count} high/critical advisories in menubar/ — all resolve to electron / electron-builder MAJOR bumps (see open Dependabot PRs). Informational until those land."
-          fi
-
+        run: npm audit --audit-level=high --package-lock-only
   # Browser Playwright specs (hermetic: Vite dev server with a dead-daemon
   # proxy; every API call is fulfilled by page.route — see playwright.config.ts).
   # Separate and NOT required on main: `check` stays the single merge gate.
