@@ -72,3 +72,49 @@ jobs:
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).vulnerabilities||{};console.log(Object.values(v).filter(x=>x.severity==="high"||x.severity==="critical").length)})')
             echo "::warning title=menubar audit::${count} high/critical advisories in menubar/ — all resolve to electron / electron-builder MAJOR bumps (see open Dependabot PRs). Informational until those land."
           fi
+
+  # Browser Playwright specs (hermetic: Vite dev server with a dead-daemon
+  # proxy; every API call is fulfilled by page.route — see playwright.config.ts).
+  # Separate and NOT required on main: `check` stays the single merge gate.
+  # playwright.config.ts keys off CI to skip the menubar (Electron) spec — it
+  # needs menubar/node_modules (postinstall icon generation wants macOS
+  # iconutil) and a display, so it stays local-only — and to drive Playwright's
+  # bundled Chromium instead of the branded Chrome dev machines have.
+  e2e-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Cache the Chromium download keyed on the lockfile's Playwright version —
+      # browsers live outside node_modules (~/.cache/ms-playwright), so npm's
+      # cache never covers them and every run re-downloaded ~170MB.
+      - name: Read Playwright version
+        id: playwright-version
+        run: echo "version=$(node -e "console.log(require('./package-lock.json').packages['node_modules/@playwright/test'].version)")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      # Still runs on a cache hit: the browser download no-ops, but --with-deps
+      # installs the OS packages the runner image lacks.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run browser e2e specs
+        run: npm run test:e2e
+      # Traces (playwright.config.ts: retain-on-failure) outlive the runner so a
+      # red run can be debugged locally with `npx playwright show-trace`.
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results
+          path: /tmp/boardroom-playwright-results
+          retention-days: 7
